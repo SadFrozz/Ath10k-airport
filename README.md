@@ -1,6 +1,135 @@
 # Ath10kMac
 
-[Português (Brasil)](#português-brasil) | [English](#english)
+[English](#english) | [Português (Brasil)](#português-brasil)
+
+## English
+
+Ath10kMac is a kernel extension (kext) for macOS, created for **Qualcomm Atheros QCA6174 and QCA9377** Wi-Fi adapters. The driver was developed in C++/IOKit, using **Linux ath10k** as a reference for protocols, hardware initialization, and firmware communication.
+
+**The QCA6174 works on the test laptop, including recovery after sleep. The QCA9377 has been tested on a Dell Inspiron 15-3567 (PCI subsystem `1028:1810`) running macOS Sequoia 15.6; support remains experimental and needs reports from other systems.**
+
+### Compatibility
+
+| Adapter | PCI ID | Status |
+| --- | --- | --- |
+| **QCA6174** | `168c:003e` | **100% functional on the tested laptop**, including connection, traffic on 2.4 GHz and 5 GHz, and recovery after sleep. |
+| **QCA9377** | `168c:0042` | **Experimental; tested on a Dell Inspiron 15-3567**, subsystem `1028:1810`, with Sequoia 15.6. Scanning, connection, and internet traffic were confirmed; more hardware needs testing. |
+
+The project targets **macOS on Intel computers (x86_64)**. The QCA9377 test described above used **macOS Sequoia 15.6**. Results apply to the adapters, computer, and networks tested; other adapter revisions and configurations need community reports.
+
+### Ath10k Connectivity is required
+
+To scan for networks and connect to Wi-Fi, you must use the **Ath10k Connectivity** application together with the kext.
+
+The application lets you select a network, enter its password, manage saved networks, and monitor the connection. The current **0.1.11** version includes Brazilian Portuguese, English, and Spanish translations.
+
+Ath10kMac exposes the connection to macOS through an Ethernet network interface. Wi-Fi networks are selected through **Ath10k Connectivity**, which runs in the menu bar.
+
+### Features
+
+- Network scanning on the **2.4 GHz and 5 GHz** bands.
+- Client connections to open networks and **WPA2-Personal with AES/CCMP pairwise and AES/CCMP or TKIP group keys**, including experimental pairwise and group key renewal.
+- HT/VHT operation, including **802.11n and 802.11ac**, depending on the adapter and access point.
+- **20, 40, and 80 MHz** channel width negotiation, depending on network capabilities.
+- Data transmission and reception, with packet aggregation and queue management.
+- QoS and **WMM/EDCA** parameters.
+- Channel, transmit power, and regulatory domain handling.
+- Interface recovery after sleep, with hardware reinitialization and reconnection through the application.
+- Diagnostic information for initialization, firmware, and connection status.
+
+This release supports Wi-Fi client operation with open or WPA2-Personal networks. WPA2 uses AES/CCMP pairwise and accepts AES/CCMP or TKIP for the group key. **WPA3/SAE, required PMF, TKIP pairwise, DFS channels, Enterprise/EAP authentication, AirDrop, and AWDL are unsupported.** QCA9377 and key renewal remain experimental. Recovery after sleep uses reinitialization and reconnection; the previous connection is not retained through WoWLAN.
+
+### Observed performance
+
+Results reported during testing with the **QCA6174 and Ath10kMac 0.0.90**:
+
+| Band | Download | Upload |
+| --- | ---: | ---: |
+| **2.4 GHz** | **32.62 Mbps** | **31.23 Mbps** |
+| **5 GHz** | **275.62 Mbps** | **153.03 Mbps** |
+
+Version **0.0.91** was also confirmed in use with good speeds and recovery after sleep. The figures in the table are a reference from the tested machine; performance depends on signal strength, the router, the channel, and the internet connection.
+
+### Installation and usage
+
+**Warning:** this driver is still experimental; a failure may cause a kernel panic or prevent startup. Test with a USB EFI first and keep a restorable copy of the EFI that already works.
+
+1. Obtain **Ath10kMac.kext** and **Ath10k Connectivity**.
+2. Install the kext using your system's extension loading method and restart the computer.
+3. Place the application in the **Applications** folder and open it.
+4. Use the **Ath10k Connectivity** menu bar icon to select a network and connect.
+
+On systems using **OpenCore**, add the kext to `EFI/OC/Kexts` and register it under `Kernel → Add` in `config.plist`, following your bootloader configuration.
+
+To use **Ath10k Connectivity 0.1.11**, run **macOS 13 or later**. The QCA9377 validation described above used Sequoia 15.6.
+
+### Building
+
+Requirements:
+
+- macOS with Xcode and its command line tools.
+- Python 3.
+- **MacKernelSDK** in the project's `MacKernelSDK` directory.
+- The firmware and board data files supplied with the project.
+
+From the project directory, run:
+
+```sh
+make clean
+make kext
+```
+
+The kext will be generated at:
+
+```text
+build/out/Ath10kMac.kext
+```
+
+To build the menu bar application:
+
+```sh
+make app
+```
+
+The app will be created at `build/Ath10k Connectivity.app`.
+
+Firmware preparation is handled by the build process. Component license notices and credits are preserved in their respective files.
+
+### Testing reports and issues
+
+Reports from other machines are welcome, especially for the **QCA9377**.
+
+When opening an issue, include:
+
+- Adapter model and PCI ID.
+- macOS, kext, and Ath10k Connectivity versions.
+- Wi-Fi band and network security type.
+- What happened and how to reproduce it.
+- Whether the issue occurs during startup, connection, data transfers, or recovery after sleep.
+
+If you are using the source code, you can collect diagnostics in Terminal from the project directory:
+
+```sh
+sudo sh scripts/test-runtime.sh > ~/Desktop/ath10k-runtime.txt
+```
+
+Before publishing diagnostics, remove personal information such as network names, MAC addresses, and IP addresses.
+
+### Acknowledgments
+
+This project was made possible by the community's shared work:
+
+- **[acidanthera](https://github.com/acidanthera)**, for **[MacKernelSDK](https://github.com/acidanthera/MacKernelSDK)**, used to build and develop the kext.
+- **Qualcomm / Qualcomm Atheros**, for the drivers, firmware, and hardware logic that served as the basis for this project.
+- **Linux and the [ath10k](https://wireless.docs.kernel.org/en/latest/en/users/drivers/ath10k.html) developers**, for the driver code, documentation, and logic. **[Linux v6.12 ath10k](https://github.com/torvalds/linux/tree/v6.12/drivers/net/wireless/ath/ath10k)** was the main technical reference for the comparisons.
+- **[OpenIntelWireless](https://github.com/OpenIntelWireless)**, for **[itlwm](https://github.com/OpenIntelWireless/itlwm)** and **[HeliPort](https://github.com/OpenIntelWireless/HeliPort)**, references for Wi-Fi drivers and connection applications on macOS.
+- **[thegwchr](https://github.com/thegwchr)**, for **[Feixiao](https://github.com/thegwchr/Feixiao)**, studied as a reference for adapting Wi-Fi drivers to macOS.
+- **[laobamac](https://github.com/laobamac)**, for **[SimpleMtkWlan](https://github.com/laobamac/SimpleMtkWlan)**, used in comparisons of macOS integration, DMA, interrupts, and packet delivery.
+- **[flany-dev](https://github.com/flany-dev)**, for **[RealtekRTL8822C](https://github.com/flany-dev/RealtekRTL8822C)**, a reference for macOS integration, performance, and interface recovery.
+- The maintainers of **[linux-firmware](https://gitlab.com/kernel-firmware/linux-firmware)** and **[wireless-regdb](https://kernel.googlesource.com/pub/scm/linux/kernel/git/wens/wireless-regdb/)**, for the firmware files, board data, and regulatory data used in this project.
+- **Davi**, for providing the laptop with the **QCA6174**, allowing us to test the kext on real hardware, measure its performance, and confirm that it works after waking from sleep.
+
+Thank you also to everyone who contributes testing, issue reports, and improvements.
 
 ## Português (Brasil)
 
@@ -132,133 +261,3 @@ Este projeto foi possível graças ao trabalho compartilhado pela comunidade:
 Obrigado também a todos que contribuírem com testes, relatos de problemas e melhorias.
 
 ---
-
-## English
-
-Ath10kMac is a kernel extension (kext) for macOS, created for **Qualcomm Atheros QCA6174 and QCA9377** Wi-Fi adapters. The driver was developed in C++/IOKit, using **Linux ath10k** as a reference for protocols, hardware initialization, and firmware communication.
-
-**The QCA6174 works on the test laptop, including recovery after sleep. The QCA9377 has been tested on a Dell Inspiron 15-3567 (PCI subsystem `1028:1810`) running macOS Sequoia 15.6; support remains experimental and needs reports from other systems.**
-
-### Compatibility
-
-| Adapter | PCI ID | Status |
-| --- | --- | --- |
-| **QCA6174** | `168c:003e` | **100% functional on the tested laptop**, including connection, traffic on 2.4 GHz and 5 GHz, and recovery after sleep. |
-| **QCA9377** | `168c:0042` | **Experimental; tested on a Dell Inspiron 15-3567**, subsystem `1028:1810`, with Sequoia 15.6. Scanning, connection, and internet traffic were confirmed; more hardware needs testing. |
-
-The project targets **macOS on Intel computers (x86_64)**. The QCA9377 test described above used **macOS Sequoia 15.6**. Results apply to the adapters, computer, and networks tested; other adapter revisions and configurations need community reports.
-
-### Ath10k Connectivity is required
-
-To scan for networks and connect to Wi-Fi, you must use the **Ath10k Connectivity** application together with the kext.
-
-The application lets you select a network, enter its password, manage saved networks, and monitor the connection. The current **0.1.11** version includes Brazilian Portuguese, English, and Spanish translations.
-
-Ath10kMac exposes the connection to macOS through an Ethernet network interface. Wi-Fi networks are selected through **Ath10k Connectivity**, which runs in the menu bar.
-
-### Features
-
-- Network scanning on the **2.4 GHz and 5 GHz** bands.
-- Client connections to open networks and **WPA2-Personal with AES/CCMP pairwise and AES/CCMP or TKIP group keys**, including experimental pairwise and group key renewal.
-- HT/VHT operation, including **802.11n and 802.11ac**, depending on the adapter and access point.
-- **20, 40, and 80 MHz** channel width negotiation, depending on network capabilities.
-- Data transmission and reception, with packet aggregation and queue management.
-- QoS and **WMM/EDCA** parameters.
-- Channel, transmit power, and regulatory domain handling.
-- Interface recovery after sleep, with hardware reinitialization and reconnection through the application.
-- Diagnostic information for initialization, firmware, and connection status.
-
-This release supports Wi-Fi client operation with open or WPA2-Personal networks. WPA2 uses AES/CCMP pairwise and accepts AES/CCMP or TKIP for the group key. **WPA3/SAE, required PMF, TKIP pairwise, DFS channels, Enterprise/EAP authentication, AirDrop, and AWDL are unsupported.** QCA9377 and key renewal remain experimental. Recovery after sleep uses reinitialization and reconnection; the previous connection is not retained through WoWLAN.
-
-### Observed performance
-
-Results reported during testing with the **QCA6174 and Ath10kMac 0.0.90**:
-
-| Band | Download | Upload |
-| --- | ---: | ---: |
-| **2.4 GHz** | **32.62 Mbps** | **31.23 Mbps** |
-| **5 GHz** | **275.62 Mbps** | **153.03 Mbps** |
-
-Version **0.0.91** was also confirmed in use with good speeds and recovery after sleep. The figures in the table are a reference from the tested machine; performance depends on signal strength, the router, the channel, and the internet connection.
-
-### Installation and usage
-
-**Warning:** this driver is still experimental; a failure may cause a kernel panic or prevent startup. Test with a USB EFI first and keep a restorable copy of the EFI that already works.
-
-1. Obtain **Ath10kMac.kext** and **Ath10k Connectivity**.
-2. Install the kext using your system's extension loading method and restart the computer.
-3. Place the application in the **Applications** folder and open it.
-4. Use the **Ath10k Connectivity** menu bar icon to select a network and connect.
-
-On systems using **OpenCore**, add the kext to `EFI/OC/Kexts` and register it under `Kernel → Add` in `config.plist`, following your bootloader configuration.
-
-To use **Ath10k Connectivity 0.1.11**, run **macOS 13 or later**. The QCA9377 validation described above used Sequoia 15.6.
-
-### Building
-
-Requirements:
-
-- macOS with Xcode and its command line tools.
-- Python 3.
-- **MacKernelSDK** in the project's `MacKernelSDK` directory.
-- The firmware and board data files supplied with the project.
-
-From the project directory, run:
-
-```sh
-make clean
-make kext
-```
-
-The kext will be generated at:
-
-```text
-build/out/Ath10kMac.kext
-```
-
-To build the menu bar application:
-
-```sh
-make app
-```
-
-The app will be created at `build/Ath10k Connectivity.app`.
-
-Firmware preparation is handled by the build process. Component license notices and credits are preserved in their respective files.
-
-### Testing reports and issues
-
-Reports from other machines are welcome, especially for the **QCA9377**.
-
-When opening an issue, include:
-
-- Adapter model and PCI ID.
-- macOS, kext, and Ath10k Connectivity versions.
-- Wi-Fi band and network security type.
-- What happened and how to reproduce it.
-- Whether the issue occurs during startup, connection, data transfers, or recovery after sleep.
-
-If you are using the source code, you can collect diagnostics in Terminal from the project directory:
-
-```sh
-sudo sh scripts/test-runtime.sh > ~/Desktop/ath10k-runtime.txt
-```
-
-Before publishing diagnostics, remove personal information such as network names, MAC addresses, and IP addresses.
-
-### Acknowledgments
-
-This project was made possible by the community's shared work:
-
-- **[acidanthera](https://github.com/acidanthera)**, for **[MacKernelSDK](https://github.com/acidanthera/MacKernelSDK)**, used to build and develop the kext.
-- **Qualcomm / Qualcomm Atheros**, for the drivers, firmware, and hardware logic that served as the basis for this project.
-- **Linux and the [ath10k](https://wireless.docs.kernel.org/en/latest/en/users/drivers/ath10k.html) developers**, for the driver code, documentation, and logic. **[Linux v6.12 ath10k](https://github.com/torvalds/linux/tree/v6.12/drivers/net/wireless/ath/ath10k)** was the main technical reference for the comparisons.
-- **[OpenIntelWireless](https://github.com/OpenIntelWireless)**, for **[itlwm](https://github.com/OpenIntelWireless/itlwm)** and **[HeliPort](https://github.com/OpenIntelWireless/HeliPort)**, references for Wi-Fi drivers and connection applications on macOS.
-- **[thegwchr](https://github.com/thegwchr)**, for **[Feixiao](https://github.com/thegwchr/Feixiao)**, studied as a reference for adapting Wi-Fi drivers to macOS.
-- **[laobamac](https://github.com/laobamac)**, for **[SimpleMtkWlan](https://github.com/laobamac/SimpleMtkWlan)**, used in comparisons of macOS integration, DMA, interrupts, and packet delivery.
-- **[flany-dev](https://github.com/flany-dev)**, for **[RealtekRTL8822C](https://github.com/flany-dev/RealtekRTL8822C)**, a reference for macOS integration, performance, and interface recovery.
-- The maintainers of **[linux-firmware](https://gitlab.com/kernel-firmware/linux-firmware)** and **[wireless-regdb](https://kernel.googlesource.com/pub/scm/linux/kernel/git/wens/wireless-regdb/)**, for the firmware files, board data, and regulatory data used in this project.
-- **Davi**, for providing the laptop with the **QCA6174**, allowing us to test the kext on real hardware, measure its performance, and confirm that it works after waking from sleep.
-
-Thank you also to everyone who contributes testing, issue reports, and improvements.
-
