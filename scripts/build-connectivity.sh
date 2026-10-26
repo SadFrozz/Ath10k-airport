@@ -19,8 +19,8 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>Ath10kConnectivity</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
-<key>CFBundleShortVersionString</key><string>0.1.11</string>
-<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>0.1.13</string>
+<key>CFBundleVersion</key><string>9</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>LSUIElement</key><true/>
 </dict></plist>
