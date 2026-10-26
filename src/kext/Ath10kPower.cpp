@@ -36,6 +36,13 @@ void Ath10kPCIDevice::publishPowerState()
     setProperty("Ath10kPowerWakeCount",_power.wakes,32);
     setProperty("Ath10kPowerNotificationCount",_power.notifications,32);
     setProperty("Ath10kPowerStatus",_power.status);
+    // Keep the wake handoff visible on the PCI provider. That object survives
+    // the driver terminate/rematch cycle, unlike this service's properties.
+    if (_pci && _power.needsRestart) {
+        _pci->setProperty("Ath10kRecoveryPhase", _power.status);
+        _pci->setProperty("Ath10kRecoverySleepCount", _power.sleeps, 32);
+        _pci->setProperty("Ath10kRecoveryWakeCount", _power.wakes, 32);
+    }
 }
 void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
 {

@@ -433,6 +433,15 @@ private:
     bool _ceRingAllocationSucceeded = false;
     UInt32 _ceRingAllocatedCount = 0;
     UInt64 _ceRingAllocatedBytes = 0;
+    UInt32 _ceRingAllocationFailureCE = 0xffffffffu;
+    const char *_ceRingAllocationFailureDirection = "none";
+    const char *_ceRingAllocationFailureStage = "not-run";
+    IOReturn _ceRingAllocationFailureStatus = kIOReturnSuccess;
+    UInt64 _ceRingFailureRequestedBytes = 0;
+    UInt64 _ceRingFailureDMAAddress = 0;
+    UInt64 _ceRingFailureSegmentLength = 0;
+    UInt64 _ceRingFailurePhysicalAddress = 0;
+    UInt64 _ceRingFailureAlignment = 0;
     UInt32 _ceRingSyncOutCount = 0;
     UInt32 _ceRingSyncOutFailureCount = 0;
 

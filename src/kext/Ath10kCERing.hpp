@@ -17,20 +17,41 @@ public:
     {
         release();
 
-        if (ceId >= Ath10k::kCECount || !Ath10k::isPowerOfTwo(entries))
+        if (ceId >= Ath10k::kCECount || !Ath10k::isPowerOfTwo(entries)) {
+            _allocationFailure = "invalid-ce-or-entry-count";
+            _allocationFailureStatus = kIOReturnBadArgument;
             return false;
+        }
 
         const UInt64 bytes = static_cast<UInt64>(entries) * Ath10k::kCEDescriptorSize;
-        if (bytes == 0 || bytes > 0xffffffffULL)
+        if (bytes == 0 || bytes > 0xffffffffULL) {
+            _allocationFailure = "invalid-ring-size";
+            _allocationFailureStatus = kIOReturnBadArgument;
             return false;
+        }
 
-        if (!_dma.allocate(bytes, Ath10k::kCEDescriptorRingAlign, mapper))
+        if (!_dma.allocate(bytes, Ath10k::kCEDescriptorRingAlign, mapper)) {
+            _allocationFailure = _dma.allocationFailure();
+            _allocationFailureStatus = _dma.allocationFailureStatus();
+            _allocationFailureRequestedBytes = _dma.allocationFailureRequestedBytes();
+            _allocationFailureDMAAddress = _dma.allocationFailureDMAAddress();
+            _allocationFailureSegmentLength = _dma.allocationFailureSegmentLength();
+            _allocationFailurePhysicalAddress = _dma.allocationFailurePhysicalAddress();
+            _allocationFailureAlignment = _dma.allocationFailureAlignment();
             return false;
+        }
 
         _ceId = ceId;
         _direction = direction;
         _entries = entries;
         _bytes = bytes;
+        _allocationFailure = "none";
+        _allocationFailureStatus = kIOReturnSuccess;
+        _allocationFailureRequestedBytes = 0;
+        _allocationFailureDMAAddress = 0;
+        _allocationFailureSegmentLength = 0;
+        _allocationFailurePhysicalAddress = 0;
+        _allocationFailureAlignment = 0;
         return true;
     }
 
@@ -41,6 +62,13 @@ public:
         _direction = Ath10kCERingDirection::Source;
         _entries = 0;
         _bytes = 0;
+        _allocationFailure = "not-run";
+        _allocationFailureStatus = kIOReturnSuccess;
+        _allocationFailureRequestedBytes = 0;
+        _allocationFailureDMAAddress = 0;
+        _allocationFailureSegmentLength = 0;
+        _allocationFailurePhysicalAddress = 0;
+        _allocationFailureAlignment = 0;
     }
 
     bool allocated() const { return _dma.allocated() && _entries != 0; }
@@ -58,6 +86,13 @@ public:
     bool syncFromDevice() { return _dma.syncFromDevice(); }
     UInt32 syncOutCount() const { return _dma.syncOutCount(); }
     UInt32 syncInCount() const { return _dma.syncInCount(); }
+    const char *allocationFailure() const { return _allocationFailure; }
+    IOReturn allocationFailureStatus() const { return _allocationFailureStatus; }
+    UInt64 allocationFailureRequestedBytes() const { return _allocationFailureRequestedBytes; }
+    UInt64 allocationFailureDMAAddress() const { return _allocationFailureDMAAddress; }
+    UInt64 allocationFailureSegmentLength() const { return _allocationFailureSegmentLength; }
+    UInt64 allocationFailurePhysicalAddress() const { return _allocationFailurePhysicalAddress; }
+    UInt64 allocationFailureAlignment() const { return _allocationFailureAlignment; }
 
     const char *directionName() const
     {
@@ -70,4 +105,11 @@ private:
     Ath10kCERingDirection _direction = Ath10kCERingDirection::Source;
     UInt32 _entries = 0;
     UInt64 _bytes = 0;
+    const char *_allocationFailure = "not-run";
+    IOReturn _allocationFailureStatus = kIOReturnSuccess;
+    UInt64 _allocationFailureRequestedBytes = 0;
+    UInt64 _allocationFailureDMAAddress = 0;
+    UInt64 _allocationFailureSegmentLength = 0;
+    UInt64 _allocationFailurePhysicalAddress = 0;
+    UInt64 _allocationFailureAlignment = 0;
 };

@@ -4,7 +4,7 @@
 extern kern_return_t _start(kmod_info_t *, void *);
 extern kern_return_t _stop(kmod_info_t *, void *);
 
-KMOD_EXPLICIT_DECL(br.com.jonasw8.driver.ath10kmac, "0.0.94", _start, _stop)
+KMOD_EXPLICIT_DECL(br.com.jonasw8.driver.ath10kmac, "0.0.98", _start, _stop)
 
 static kern_return_t ath10kmac_module_start(kmod_info_t *ki, void *data)
 {

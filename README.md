@@ -17,6 +17,7 @@ There is currently no prebuilt release package or installer. Build from source a
 - Added a QCA9377 board-data profile selected by the adapter's PCI IDs: vendor/device **168c:0042**, subsystem **1028:1810**. The firmware preparation step includes the corresponding board data in the driver payload.
 - Extended the WPA2-Personal security path to handle AES/CCMP pairwise encryption with either AES/CCMP or TKIP group keys. This allows the tested mixed WPA2 configuration where the access point advertises both TKIP and CCMP pairwise suites and uses a TKIP group key. TKIP pairwise encryption is still unsupported.
 - Added and expanded regression coverage for QCA9377 identification, WPA2 security-suite parsing, key installation/rekey handling, and security diagnostics.
+- Fixed CE-ring DMA mapping to walk all `IODMACommand` segments and accept a ring only when they cover the full buffer contiguously within the adapter's 32-bit DMA address range. Added diagnostics for ring allocation failures. This addresses a 4 KiB segment result for a 64 KiB ring observed during recovery on the test system.
 - Improved the Ath10k Connectivity companion app: menu-bar connection states, animated connecting indicator, optional Keychain password storage, preferred saved-network reconnect, Launch at Login, and a copyable access-point security report that does not include the Wi-Fi password.
 
 ### Hardware and software validation
@@ -30,10 +31,12 @@ The QCA9377 work in this fork was tested on:
 | PCI vendor/device | 168c:0042 |
 | PCI subsystem | 1028:1810 |
 | Operating system | macOS Sequoia 15.6, build 24G84, x86_64 |
-| Driver | Ath10kMac 0.0.94; confirmed loaded by macOS |
+| Driver | Ath10kMac 0.0.98; loaded and CE-ring allocation succeeded in a follow-up run |
 | Build tools | Xcode 16.4 |
 
 On that configuration, network scanning, connection, and internet traffic were confirmed on the tested 2.4 GHz and 5 GHz networks. A WPA2-Personal mixed-cipher network using CCMP/AES pairwise and TKIP group encryption connected successfully.
+
+A follow-up v0.0.98 run reported active power and successful CE-ring allocation, and Wi-Fi connected after a delay. Repeated startup and sleep/wake validation is still needed; the stage responsible for the delay has not been isolated.
 
 These are results from one adapter, one laptop, and the networks tested. They are not a compatibility guarantee or a controlled throughput benchmark. The QCA6174 support and performance figures mentioned in the upstream project have not been independently revalidated as part of this QCA9377 work.
 
@@ -66,7 +69,7 @@ Security support is intentionally limited. A router that requires WPA3, PMF, TKI
 - QCA9377 support has been verified only on the PCI subsystem and laptop listed above. Other QCA9377 revisions need testing.
 - Automatic reconnect after startup can be delayed on the tested system. It has sometimes stayed at “Reconnecting” or “Negotiating” before completing. Reconnection is best-effort; keep the app open and use Scan/Retry if it does not finish.
 - Verbose/debug boot on the test system displayed repeated low-level Ath10kMac diagnostics and appeared to pause during startup. The boot-time impact and cause have not been measured or isolated. Reports should include whether verbose or Ath10k debug boot arguments were enabled.
-- Sleep recovery restarts the adapter and reconnects; it does not preserve the previous Wi-Fi session.
+- Sleep recovery restarts the adapter and reconnects; it does not preserve the previous Wi-Fi session. The v0.0.98 DMA-ring path succeeded in one follow-up run, but repeated wake tests are still needed.
 - The kext is experimental and can cause a kernel panic or prevent startup if a device or configuration is incompatible.
 
 ### Build from source
@@ -163,6 +166,7 @@ No momento não há pacote de instalação nem versão pré-compilada publicada.
 - Adicionado um perfil de dados de placa para QCA9377, selecionado pelos IDs PCI: vendor/device **168c:0042** e subsystem **1028:1810**. A preparação do firmware inclui os dados correspondentes no payload do driver.
 - Ampliado o caminho de segurança WPA2-Personal para aceitar criptografia pairwise AES/CCMP com chave de grupo AES/CCMP ou TKIP. Isso permite a configuração WPA2 mista testada, na qual o ponto de acesso anuncia TKIP e CCMP como opções pairwise e usa TKIP para a chave de grupo. TKIP pairwise continua sem suporte.
 - Ampliada a cobertura de testes de regressão para identificação da QCA9377, interpretação das suites WPA2, instalação/renovação de chaves e diagnósticos de segurança.
+- Corrigido o mapeamento DMA dos anéis CE para percorrer todos os segmentos `IODMACommand` e aceitar um anel somente quando eles cobrem o buffer inteiro de forma contígua dentro do limite de endereçamento DMA de 32 bits do adaptador. Foram adicionados diagnósticos de falha de alocação. Isso trata um resultado de segmento de 4 KiB para um anel de 64 KiB observado durante a recuperação no sistema de teste.
 - Melhorado o aplicativo Ath10k Connectivity: estados de conexão na barra de menu, indicador animado durante a conexão, armazenamento opcional da senha no Keychain, reconexão na ordem preferida das redes salvas, opção Launch at Login e relatório copiável da segurança anunciada pelo ponto de acesso, sem a senha do Wi-Fi.
 
 ### Hardware e software testados
@@ -176,10 +180,12 @@ O trabalho de QCA9377 deste fork foi testado em:
 | PCI vendor/device | 168c:0042 |
 | PCI subsystem | 1028:1810 |
 | Sistema operacional | macOS Sequoia 15.6, build 24G84, x86_64 |
-| Driver | Ath10kMac 0.0.94; carregamento confirmado pelo macOS |
+| Driver | Ath10kMac 0.0.98; carregado e alocação dos anéis CE confirmada em um teste posterior |
 | Ferramentas de compilação | Xcode 16.4 |
 
 Nessa configuração, foram confirmados a busca de redes, a conexão e o tráfego de internet nas redes testadas de 2,4 GHz e 5 GHz. Uma rede WPA2-Personal mista, com CCMP/AES pairwise e TKIP para a chave de grupo, conectou com sucesso.
+
+Em um teste posterior com v0.0.98, o sistema informou energia ativa e alocação bem-sucedida dos anéis CE, e o Wi-Fi conectou após um atraso. Ainda são necessários testes repetidos de inicialização e repouso/retomada; a etapa responsável pelo atraso não foi isolada.
 
 Esses resultados valem para um adaptador, um notebook e as redes testadas. Não são uma garantia de compatibilidade nem um benchmark controlado de velocidade. O suporte e os números de desempenho da QCA6174 mencionados no projeto upstream não foram revalidados independentemente neste trabalho com QCA9377.
 
@@ -212,7 +218,7 @@ O suporte de segurança é limitado intencionalmente. Um roteador que exija WPA3
 - O suporte QCA9377 só foi verificado no notebook e subsystem PCI listados acima. Outras revisões da QCA9377 precisam ser testadas.
 - A reconexão automática após iniciar o sistema pode demorar no equipamento testado. Às vezes permaneceu em “Reconnecting” ou “Negotiating” antes de concluir. A reconexão é best-effort; mantenha o aplicativo aberto e use Scan/Retry se não terminar.
 - Com boot verbose/debug no equipamento de teste, apareceram mensagens repetidas de diagnóstico de baixo nível da Ath10kMac e o início pareceu pausado. O impacto e a causa do atraso não foram medidos nem isolados. Relatos devem informar se os argumentos verbose ou Ath10k debug estavam ativos.
-- Ao voltar do repouso, o adaptador é reinicializado e reconectado; a sessão Wi-Fi anterior não é preservada.
+- Ao voltar do repouso, o adaptador é reinicializado e reconectado; a sessão Wi-Fi anterior não é preservada. O caminho de anéis DMA do v0.0.98 funcionou em um teste posterior, mas ainda são necessários testes repetidos de retomada.
 - A kext é experimental e pode causar kernel panic ou impedir o início do sistema se o dispositivo ou a configuração forem incompatíveis.
 
 ### Compilar do código-fonte

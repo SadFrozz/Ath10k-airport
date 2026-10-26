@@ -22,9 +22,23 @@ public:
     bool allocate(UInt64 size, UInt64 alignment, IOMapper *mapper = nullptr, Role role = Role::Ring)
     {
         release();
+        auto fail = [this, size, alignment](const char *reason, IOReturn status) {
+            const UInt64 dmaAddress = _dmaAddress;
+            const UInt64 segmentLength = _segmentLength;
+            const UInt64 physicalAddress = _physical;
+            release();
+            _allocationFailure = reason;
+            _allocationFailureStatus = status;
+            _allocationFailureRequestedBytes = size;
+            _allocationFailureDMAAddress = dmaAddress;
+            _allocationFailureSegmentLength = segmentLength;
+            _allocationFailurePhysicalAddress = physicalAddress;
+            _allocationFailureAlignment = alignment;
+            return false;
+        };
 
         if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0)
-            return false;
+            return fail("invalid-size-or-alignment", kIOReturnBadArgument);
 
         // Physical memory may live above 4 GiB. IODMACommand constrains the
         // device-visible address to 32 bits, as required by the legacy
@@ -38,13 +52,11 @@ public:
             physicalMask);
 
         if (!_descriptor)
-            return false;
+            return fail("contiguous-descriptor-allocation", kIOReturnNoMemory);
 
-        if (_descriptor->prepare() != kIOReturnSuccess) {
-            _descriptor->release();
-            _descriptor = nullptr;
-            return false;
-        }
+        const IOReturn prepareStatus = _descriptor->prepare();
+        if (prepareStatus != kIOReturnSuccess)
+            return fail("descriptor-prepare", prepareStatus);
         _prepared = true;
 
         // A nullptr mapper is valid for IODMACommand. On systems where
@@ -60,40 +72,67 @@ public:
             static_cast<UInt32>(alignment),
             mapper,
             nullptr);
-        if (!_command) {
-            release();
-            return false;
-        }
+        if (!_command)
+            return fail("dma-command-create", kIOReturnNoMemory);
 
-        if (_command->setMemoryDescriptor(_descriptor) != kIOReturnSuccess) {
-            release();
-            return false;
-        }
+        const IOReturn descriptorStatus = _command->setMemoryDescriptor(_descriptor);
+        if (descriptorStatus != kIOReturnSuccess)
+            return fail("dma-set-memory-descriptor", descriptorStatus);
         _commandHasDescriptor = true;
-
-        IODMACommand::Segment64 segment{};
-        UInt64 offset = 0;
-        UInt32 numSegments = 1;
-        if (_command->gen64IOVMSegments(&offset, &segment, &numSegments) != kIOReturnSuccess ||
-            numSegments != 1) {
-            release();
-            return false;
-        }
 
         _virtual = _descriptor->getBytesNoCopy();
         _physical = _descriptor->getPhysicalAddress();
-        _dmaAddress = segment.fIOVMAddr;
-        _segmentLength = segment.fLength;
         _length = size;
         _alignment = alignment;
         _explicitMapper = (mapper != nullptr);
         _cached = role == Role::Payload && ATH10K_PAYLOAD_CACHE;
 
-        if (!_virtual || _dmaAddress == 0 || _dmaAddress > 0xffffffffULL ||
-            _segmentLength < size || (_dmaAddress & (alignment - 1ULL)) != 0) {
-            release();
-            return false;
+        UInt64 offset = 0;
+        UInt64 previousDMAAddress = 0;
+        UInt64 previousSegmentLength = 0;
+        UInt64 coveredBytes = 0;
+        bool firstSegment = true;
+        while (coveredBytes < size) {
+            IODMACommand::Segment64 segment{};
+            const UInt64 previousOffset = offset;
+            UInt32 numSegments = 1;
+            const IOReturn segmentStatus =
+                _command->gen64IOVMSegments(&offset, &segment, &numSegments);
+            if (segmentStatus != kIOReturnSuccess)
+                return fail("dma-segment-generation", segmentStatus);
+            if (numSegments != 1)
+                return fail("dma-segment-count-invalid", kIOReturnBadArgument);
+            if (segment.fLength == 0 || segment.fLength > size - coveredBytes)
+                return fail("dma-segment-length-invalid", kIOReturnBadArgument);
+            if (offset <= previousOffset || offset > size || offset - previousOffset != segment.fLength)
+                return fail("dma-segment-offset-invalid", kIOReturnBadArgument);
+
+            if (firstSegment) {
+                _dmaAddress = segment.fIOVMAddr;
+                firstSegment = false;
+            } else {
+                if (previousDMAAddress > ~static_cast<UInt64>(0) - previousSegmentLength)
+                    return fail("dma-segment-address-overflow", kIOReturnBadArgument);
+                if (segment.fIOVMAddr != previousDMAAddress + previousSegmentLength)
+                    return fail("dma-segments-not-contiguous", kIOReturnBadArgument);
+            }
+
+            previousDMAAddress = segment.fIOVMAddr;
+            previousSegmentLength = segment.fLength;
+            coveredBytes += segment.fLength;
+            _segmentLength = coveredBytes;
         }
+        if (coveredBytes != size)
+            return fail("dma-segment-coverage-incomplete", kIOReturnBadArgument);
+
+        if (!_virtual)
+            return fail("dma-null-virtual-address", kIOReturnBadArgument);
+        if (_dmaAddress == 0)
+            return fail("dma-zero-address", kIOReturnBadArgument);
+        if (_dmaAddress > 0xffffffffULL || size - 1 > 0xffffffffULL - _dmaAddress)
+            return fail("dma-address-span-above-32bit", kIOReturnBadArgument);
+        if ((_dmaAddress & (alignment - 1ULL)) != 0)
+            return fail("dma-address-misaligned", kIOReturnBadArgument);
 
         // setMemoryDescriptor() auto-prepares the DMA command. If the command
         // had to create an internal bounce/double buffer, that prepare may have
@@ -101,10 +140,10 @@ public:
         // explicitly synchronize it to the device-visible DMA buffer.
         bzero(_virtual, static_cast<size_t>(_length));
         OSSynchronizeIO();
-        if (!syncForDevice()) {
-            release();
-            return false;
-        }
+        if (!syncForDevice())
+            return fail("dma-sync-for-device", _lastSyncOut);
+        _allocationFailure = "none";
+        _allocationFailureStatus = kIOReturnSuccess;
         return true;
     }
 
@@ -160,6 +199,13 @@ public:
         _syncInCount = 0;
         _lastSyncOut = kIOReturnNotReady;
         _lastSyncIn = kIOReturnNotReady;
+        _allocationFailure = "not-run";
+        _allocationFailureStatus = kIOReturnSuccess;
+        _allocationFailureRequestedBytes = 0;
+        _allocationFailureDMAAddress = 0;
+        _allocationFailureSegmentLength = 0;
+        _allocationFailurePhysicalAddress = 0;
+        _allocationFailureAlignment = 0;
     }
 
     bool allocated() const
@@ -180,6 +226,13 @@ public:
     UInt32 syncInCount() const { return _syncInCount; }
     IOReturn lastSyncOut() const { return _lastSyncOut; }
     IOReturn lastSyncIn() const { return _lastSyncIn; }
+    const char *allocationFailure() const { return _allocationFailure; }
+    IOReturn allocationFailureStatus() const { return _allocationFailureStatus; }
+    UInt64 allocationFailureRequestedBytes() const { return _allocationFailureRequestedBytes; }
+    UInt64 allocationFailureDMAAddress() const { return _allocationFailureDMAAddress; }
+    UInt64 allocationFailureSegmentLength() const { return _allocationFailureSegmentLength; }
+    UInt64 allocationFailurePhysicalAddress() const { return _allocationFailurePhysicalAddress; }
+    UInt64 allocationFailureAlignment() const { return _allocationFailureAlignment; }
 
 private:
     IOBufferMemoryDescriptor *_descriptor = nullptr;
@@ -199,4 +252,11 @@ private:
     UInt32 _syncInCount = 0;
     IOReturn _lastSyncOut = kIOReturnNotReady;
     IOReturn _lastSyncIn = kIOReturnNotReady;
+    const char *_allocationFailure = "not-run";
+    IOReturn _allocationFailureStatus = kIOReturnSuccess;
+    UInt64 _allocationFailureRequestedBytes = 0;
+    UInt64 _allocationFailureDMAAddress = 0;
+    UInt64 _allocationFailureSegmentLength = 0;
+    UInt64 _allocationFailurePhysicalAddress = 0;
+    UInt64 _allocationFailureAlignment = 0;
 };

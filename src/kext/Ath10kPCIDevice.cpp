@@ -31,6 +31,15 @@ static constexpr UInt16 kMSIControlEnable = 0x0001;
 static constexpr UInt16 kMSIControl64Bit = 0x0080;
 static constexpr UInt16 kMSIControlPerVectorMask = 0x0100;
 
+static void ath10kSetRecoveryStatus(IOService *provider, const char *phase, const char *detail)
+{
+    if (!provider)
+        return;
+    provider->setProperty("Ath10kRecoveryPhase", phase);
+    if (detail)
+        provider->setProperty("Ath10kRecoveryDetail", detail);
+}
+
 static bool ath10kBytesEqual(const void *lhs, const void *rhs, UInt32 length)
 {
     if (!lhs || !rhs)
@@ -79,7 +88,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if(auto *timeout=OSDynamicCast(OSNumber,getProperty("Ath10kBeaconTimeoutMs"))){
         const UInt32 value=timeout->unsigned32BitValue();_connection.beaconTimeoutMs=value>=10000 && value<=120000?value:30000;
     }
-    IOLog("Ath10kMac: start v0.0.94 (deferred device initialization)\n");
+    IOLog("Ath10kMac: start v0.0.98 (deferred device initialization)\n");
 
     if (!super::start(provider)) {
         IOLog("Ath10kMac: super::start failed\n");
@@ -91,6 +100,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
         IOLog("Ath10kMac: provider is not IOPCIDevice\n");
         return false;
     }
+    ath10kSetRecoveryStatus(_pci, "driver-starting", "Ath10kMac matched the PCI device");
 
     if (!_pci->open(this)) {
         IOLog("Ath10kMac: failed to open PCI provider\n");
@@ -127,6 +137,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     // Publish the service before the lengthy target/firmware probe. The probe
     // runs on a normal-priority thread call so IOConfigThread can return and
     // macOS can finish booting while Wi-Fi initialization continues.
+    ath10kSetRecoveryStatus(_pci, "probe-queued", "PCI setup complete; firmware probe is queued");
     registerService();
     _deferredProbeCall = thread_call_allocate_with_priority(
         deferredProbeCall, this, THREAD_CALL_PRIORITY_USER);
@@ -151,6 +162,8 @@ void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_
 void Ath10kPCIDevice::runDeferredProbe()
 {
     IOLog("Ath10kMac: deferred target probe begin\n");
+    ath10kSetRecoveryStatus(_pci, "probe-running", "Firmware and runtime initialization are in progress");
+    const char *probeFailure = "target-probe-did-not-run";
 
     // 0.0.91 probes for a device-specific IOMapper, but a null result is valid
     // on systems without an iommu-parent. IODMACommand::kMapped is still used
@@ -158,15 +171,19 @@ void Ath10kPCIDevice::runDeferredProbe()
     // memory is explicitly synchronized around DMA ownership changes.
     if (prepareDeviceDMAMapper()) {
         if (allocateCERings()) {
-            probeTarget();
+            const bool targetReady = probeTarget();
+            if (!targetReady)
+                probeFailure = "target-probe-failed";
             if (!_dmaQuarantine && !_runtimeActive)
                 runDMATest();
             else
                 IOLog("Ath10kMac: DMA regression test skipped while runtime or quarantine is active\n");
         } else {
+            probeFailure = "CE-ring-allocation-failed";
             IOLog("Ath10kMac: CE ring allocation failed; reset/CE transfer test skipped\n");
         }
     } else {
+        probeFailure = "DMA-mapper-preparation-failed";
         IOLog("Ath10kMac: DMA mapping policy preparation failed; invasive Phase 2 test skipped\n");
     }
 
@@ -190,6 +207,15 @@ void Ath10kPCIDevice::runDeferredProbe()
             changePowerStateTo(1);
             _wmiWorkLoop->runAction(controlWMIRuntime, this);
         }
+    }
+    if (_wmiLive.active && !_dmaQuarantine) {
+        ath10kSetRecoveryStatus(_pci, "ready", "Firmware runtime is active; waiting for app scan/connect");
+    } else {
+        const bool hasRuntimeFailure = _wmiLive.status &&
+            strcmp(_wmiLive.status, "not-run") != 0;
+        const char *detail = _dmaQuarantine ? "DMA safety quarantine blocked initialization" :
+            (hasRuntimeFailure ? _wmiLive.status : probeFailure);
+        ath10kSetRecoveryStatus(_pci, "probe-failed", detail);
     }
     IOLog("Ath10kMac: READY %s pci-rev=%02x BAR0=%p len=0x%llx\n",
           chipName(), _revisionId, _bar0,
@@ -241,6 +267,8 @@ void Ath10kPCIDevice::stop(IOService *provider)
     // stopped and detached. Retain provider until registerService returns.
     IOService *rematch=_reprobeRequested?provider:nullptr;
     if(rematch)rematch->retain();
+    if (_reprobeRequested)
+        ath10kSetRecoveryStatus(provider, "stop-started", "Driver stop began for a requested recovery rematch");
     IOLog("Ath10kMac: stop %s\n", chipName());
     releasePowerNotifications();
     if (_powerManaged) { PMstop(); _powerManaged=false; }
@@ -261,6 +289,12 @@ void Ath10kPCIDevice::stop(IOService *provider)
     }
 
     const bool releaseDMA = stopDMAForRelease();
+    if (_reprobeRequested) {
+        ath10kSetRecoveryStatus(provider,
+            releaseDMA && !_dmaQuarantine ? "stop-dma-released" : "stop-dma-blocked",
+            releaseDMA && !_dmaQuarantine ? "DMA ownership was released safely" :
+                "Safe DMA release failed; provider rematch was withheld");
+    }
     restorePCIeBringupParity();
     if (releaseDMA) {
         _ceDiagBounce.release();
@@ -295,7 +329,12 @@ void Ath10kPCIDevice::stop(IOService *provider)
     if(_networkInterface){detachInterface(_networkInterface,true);_networkInterface->release();_networkInterface=nullptr;}
     super::stop(provider);
     if(rematch){
-        if(releaseDMA && !_dmaQuarantine)rematch->registerService(kIOServiceAsynchronous);
+        if(releaseDMA && !_dmaQuarantine) {
+            ath10kSetRecoveryStatus(rematch, "rematch-queued", "PCI provider registration queued for a new driver instance");
+            rematch->registerService(kIOServiceAsynchronous);
+        } else {
+            ath10kSetRecoveryStatus(rematch, "rematch-suppressed", "Driver stopped without a safe DMA release");
+        }
         rematch->release();
     }
 }
@@ -6681,6 +6720,15 @@ bool Ath10kPCIDevice::allocateCERings()
     _ceRingAllocationSucceeded = false;
     _ceRingAllocatedCount = 0;
     _ceRingAllocatedBytes = 0;
+    _ceRingAllocationFailureCE = 0xffffffffu;
+    _ceRingAllocationFailureDirection = "none";
+    _ceRingAllocationFailureStage = "not-run";
+    _ceRingAllocationFailureStatus = kIOReturnSuccess;
+    _ceRingFailureRequestedBytes = 0;
+    _ceRingFailureDMAAddress = 0;
+    _ceRingFailureSegmentLength = 0;
+    _ceRingFailurePhysicalAddress = 0;
+    _ceRingFailureAlignment = 0;
     releaseCERings();
 
     if (!_dmaMapperReady) {
@@ -6700,6 +6748,15 @@ bool Ath10kPCIDevice::allocateCERings()
         if (cfg.srcEntries != 0) {
             if (!_ceSrcRings[ceId].allocate(ceId, Ath10kCERingDirection::Source,
                                            cfg.srcEntries, _dmaMapper)) {
+                _ceRingAllocationFailureCE = ceId;
+                _ceRingAllocationFailureDirection = "src";
+                _ceRingAllocationFailureStage = _ceSrcRings[ceId].allocationFailure();
+                _ceRingAllocationFailureStatus = _ceSrcRings[ceId].allocationFailureStatus();
+                _ceRingFailureRequestedBytes = _ceSrcRings[ceId].allocationFailureRequestedBytes();
+                _ceRingFailureDMAAddress = _ceSrcRings[ceId].allocationFailureDMAAddress();
+                _ceRingFailureSegmentLength = _ceSrcRings[ceId].allocationFailureSegmentLength();
+                _ceRingFailurePhysicalAddress = _ceSrcRings[ceId].allocationFailurePhysicalAddress();
+                _ceRingFailureAlignment = _ceSrcRings[ceId].allocationFailureAlignment();
                 IOLog("Ath10kMac: CE%u src ring allocation ERROR entries=%u\n",
                       ceId, cfg.srcEntries);
                 releaseCERings();
@@ -6717,6 +6774,15 @@ bool Ath10kPCIDevice::allocateCERings()
         if (cfg.dstEntries != 0) {
             if (!_ceDstRings[ceId].allocate(ceId, Ath10kCERingDirection::Destination,
                                            cfg.dstEntries, _dmaMapper)) {
+                _ceRingAllocationFailureCE = ceId;
+                _ceRingAllocationFailureDirection = "dst";
+                _ceRingAllocationFailureStage = _ceDstRings[ceId].allocationFailure();
+                _ceRingAllocationFailureStatus = _ceDstRings[ceId].allocationFailureStatus();
+                _ceRingFailureRequestedBytes = _ceDstRings[ceId].allocationFailureRequestedBytes();
+                _ceRingFailureDMAAddress = _ceDstRings[ceId].allocationFailureDMAAddress();
+                _ceRingFailureSegmentLength = _ceDstRings[ceId].allocationFailureSegmentLength();
+                _ceRingFailurePhysicalAddress = _ceDstRings[ceId].allocationFailurePhysicalAddress();
+                _ceRingFailureAlignment = _ceDstRings[ceId].allocationFailureAlignment();
                 IOLog("Ath10kMac: CE%u dst ring allocation ERROR entries=%u\n",
                       ceId, cfg.dstEntries);
                 releaseCERings();
@@ -7063,7 +7129,7 @@ void Ath10kPCIDevice::publishDiagnosticProperties()
     setProperty("Ath10kOTPMilestoneSucceeded", _otpDownloadSucceeded && _otpExecuteSucceeded &&
                 _otpResultAccepted && (_bmiQuiesceSucceeded || _runtimeActive) && !_dmaQuarantine);
     setProperty("Ath10kBMIDoneSent", _boot.doneSent);
-    setProperty("Ath10kDriverVersion", "0.0.94");
+    setProperty("Ath10kDriverVersion", "0.0.98");
     setProperty("Ath10kHTCAttempted", _htcAttempted);
     setProperty("Ath10kWMIInitStatus",_wmiInit.status);
     setProperty("Ath10kWMIInitSubmitted",_wmiInit.submitted);
@@ -7266,6 +7332,15 @@ void Ath10kPCIDevice::publishDiagnosticProperties()
     setProperty("Ath10kCERingAllocationSucceeded", _ceRingAllocationSucceeded);
     setProperty("Ath10kCERingsAllocated", (UInt64)_ceRingAllocatedCount, 32);
     setProperty("Ath10kCERingAllocatedBytes", (UInt64)_ceRingAllocatedBytes, 64);
+    setProperty("Ath10kCERingAllocationFailureCE", (UInt64)_ceRingAllocationFailureCE, 32);
+    setProperty("Ath10kCERingAllocationFailureDirection", _ceRingAllocationFailureDirection);
+    setProperty("Ath10kCERingAllocationFailureStage", _ceRingAllocationFailureStage);
+    setProperty("Ath10kCERingAllocationFailureStatus", (UInt64)(UInt32)_ceRingAllocationFailureStatus, 32);
+    setProperty("Ath10kCERingFailureRequestedBytes", _ceRingFailureRequestedBytes, 64);
+    setProperty("Ath10kCERingFailureDMAAddress", _ceRingFailureDMAAddress, 64);
+    setProperty("Ath10kCERingFailureSegmentLength", _ceRingFailureSegmentLength, 64);
+    setProperty("Ath10kCERingFailurePhysicalAddress", _ceRingFailurePhysicalAddress, 64);
+    setProperty("Ath10kCERingFailureAlignment", _ceRingFailureAlignment, 64);
     setProperty("Ath10kCERingProgramAttempted", _ceRingProgramAttempted);
     setProperty("Ath10kCERingProgramSucceeded", _ceRingProgramSucceeded);
     setProperty("Ath10kCERingRestoreSucceeded", _ceRingRestoreSucceeded);
