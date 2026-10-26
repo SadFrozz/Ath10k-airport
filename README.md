@@ -136,6 +136,14 @@ sudo sh scripts/test-runtime.sh > ~/Desktop/ath10k-runtime.txt
 
 The script samples Ath10kMac runtime state, reads recent kernel logs, and records network-interface/DHCP details. It writes the report to the Desktop; it does not upload it. Review and redact SSIDs, BSSIDs, MAC addresses, IP addresses, serial numbers, and any other private details before attaching it. Do not include Wi-Fi passwords or an unredacted EFI/config.plist.
 
+### License
+
+The Ath10kMac project code in this repository is released under the **GNU General Public License v3.0 (GPL-3.0)**. See the repository-root [LICENSE](LICENSE). Third-party files and bundled assets can have separate terms.
+
+The QCA9377 firmware is distributed under separate Qualcomm Atheros terms and includes additional notices. Review [the firmware license](firmware/LICENSE.QualcommAtheros_ath10k), [the firmware notices](firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt), and [the provenance record](firmware/QCA9377/hw1.0/PROVENANCE.json) before redistributing firmware. The prepared firmware payload is derived from those files; the root GPL license does not replace their terms.
+
+MacKernelSDK is included as a Git submodule and retains the license provided by its upstream project. See [Acidanthera/MacKernelSDK](https://github.com/acidanthera/MacKernelSDK) for its terms.
+
 ### Credits
 
 This fork builds on [jonasw8/Ath10kMac](https://github.com/jonasw8/Ath10kMac) and the wider community work already credited in the project. See the source files and firmware directory for component licenses, provenance, and detailed acknowledgments.
@@ -273,6 +281,14 @@ sudo sh scripts/test-runtime.sh > ~/Desktop/ath10k-runtime.txt
 ```
 
 O script coleta amostras do estado da Ath10kMac, lê logs recentes do kernel e registra detalhes de interfaces de rede/DHCP. Ele grava o relatório na pasta Desktop; não faz upload. Revise e remova SSIDs, BSSIDs, endereços MAC, endereços IP, números de série e outros dados privados antes de anexar. Não inclua senhas de Wi-Fi nem uma EFI/config.plist sem redigir os dados.
+
+### Licença
+
+O código do projeto Ath10kMac neste repositório é distribuído sob a **GNU General Public License versão 3.0 (GPL-3.0)**. Consulte o [LICENSE](LICENSE) na raiz do repositório. Arquivos de terceiros e recursos incluídos podem ter termos próprios.
+
+O firmware QCA9377 é distribuído sob termos separados da Qualcomm Atheros e inclui avisos adicionais. Antes de redistribuir firmware, consulte [a licença do firmware](firmware/LICENSE.QualcommAtheros_ath10k), [os avisos do firmware](firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt) e [o registro de proveniência](firmware/QCA9377/hw1.0/PROVENANCE.json). O payload de firmware preparado é derivado desses arquivos; a GPL na raiz não substitui os termos deles.
+
+O MacKernelSDK é incluído como submódulo Git e mantém a licença definida pelo projeto upstream. Consulte [Acidanthera/MacKernelSDK](https://github.com/acidanthera/MacKernelSDK).
 
 ### Créditos
 
