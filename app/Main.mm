@@ -33,15 +33,17 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
  NSString *_menuProgressText;
  NSTimeInterval _scanStartedAt;
  NSTimeInterval _wakeNextCheckAt,_wakeDeadline;
- NSUInteger _iconFrame;
+ NSUInteger _iconFrame,_wakeRestartAttempts;
  BOOL _disconnecting,_rekeyKeysReady,_rekeyResponsePending;
- BOOL _session,_secure,_keysSubmitted,_m4Sent,_authorized,_failed,_retryPending,_scanInProgress,_waitingForDriver,_waitingForInitialScan,_autoConnectAttempted,_didSaveCredentials,_menuShowsConnected,_wakeRecoveryPending,_wakeRestartIssued;
+ BOOL _session,_secure,_keysSubmitted,_m4Sent,_authorized,_failed,_scanInProgress,_waitingForDriver,_waitingForInitialScan,_autoConnectAttempted,_didSaveCredentials,_menuShowsConnected,_wakeRecoveryPending,_wakeRestartIssued;
 }
 -(void)updateMenuProgress:(NSString *)text;
 -(void)rebuildStatusMenu;
 -(void)updateStatusIcon;
 -(void)clearRekeyState;
 -(kern_return_t)openDriver;
+-(void)beginRecoveryWithHeading:(NSString *)heading message:(NSString *)message;
+-(void)requestSafeAdapterRestartAt:(NSTimeInterval)now;
 -(void)workspaceDidWake:(NSNotification *)note;
 -(void)recoverAfterWake;
 -(NSInteger)rowIndexForSSID:(NSString *)ssid;
@@ -65,7 +67,6 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
  if(_session)[self call:AthControl::Abort request:nullptr response:nullptr];
  _supplicant.reset();AthSecurity::wipe(_pending,sizeof(_pending));[self clearRekeyState];_password.stringValue=@"";
  _passwordForSave=nil;_pendingSSID=nil;_connect.enabled=NO;_disconnect.enabled=NO;_remember.enabled=YES;
- _retryPending=NO;
  [self updateMenuProgress:message];[self rebuildStatusMenu];
 }
 -(NSString *)ssidForRow:(const uint8_t *)b {
@@ -158,16 +159,43 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
  if(!service)return kIOReturnNotFound;
  kern_return_t result=IOServiceOpen(service,mach_task_self(),AthControl::clientType,&_driver);IOObjectRelease(service);return result;
 }
+-(void)beginRecoveryWithHeading:(NSString *)heading message:(NSString *)message {
+ NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+ _wakeRecoveryPending=YES;_wakeRestartIssued=NO;_wakeRestartAttempts=0;_wakeDeadline=now+120.0;_wakeNextCheckAt=now;
+ _failed=NO;_scanInProgress=NO;_waitingForInitialScan=NO;
+ _connect.enabled=NO;_networks.enabled=NO;_password.enabled=NO;_refresh.enabled=NO;
+ _statusHeading.stringValue=heading;_status.stringValue=message;
+ [self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];
+}
+-(void)requestSafeAdapterRestartAt:(NSTimeInterval)now {
+ AthControl::Request restart{};
+ kern_return_t result=[self call:AthControl::Restart request:&restart response:nullptr];
+ if(result){
+  if(result==kIOReturnNotAttached&&_driver){IOServiceClose(_driver);_driver=0;}
+  ++_wakeRestartAttempts;_wakeNextCheckAt=now+1.0;
+  if(_wakeRestartAttempts>=3){
+   _wakeRecoveryPending=NO;_failed=YES;_statusHeading.stringValue=@"Safe Wi-Fi restart unavailable";
+   _status.stringValue=[NSString stringWithFormat:@"Ath10kMac refused a safe adapter restart (0x%x). Restart macOS and try again.",result];
+  }else{
+   _statusHeading.stringValue=@"Retrying safe Wi-Fi restart";
+   _status.stringValue=[NSString stringWithFormat:@"The driver has not accepted a safe adapter restart yet (0x%x). Retrying…",result];
+  }
+  [self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];return;
+ }
+ if(_driver){IOServiceClose(_driver);_driver=0;}
+ _wakeRestartIssued=YES;_wakeNextCheckAt=now+1.0;
+ _statusHeading.stringValue=@"Restarting Wi-Fi safely";
+ _status.stringValue=@"The adapter is inactive. The driver accepted a safe restart; waiting for it to return…";
+ [self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];
+}
 -(void)workspaceDidWake:(NSNotification *)note {
  if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{[self workspaceDidWake:note];});return;}
  (void)note;if(!_timer)return;
- _wakeRecoveryPending=YES;_wakeRestartIssued=NO;_wakeDeadline=NSProcessInfo.processInfo.systemUptime+120.0;_wakeNextCheckAt=NSProcessInfo.processInfo.systemUptime+2.0;
- _failed=NO;_statusHeading.stringValue=@"Restoring Wi-Fi after wake";_status.stringValue=@"Checking whether the driver needs a safe restart after sleep…";
- [self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];
+ [self beginRecoveryWithHeading:@"Restoring Wi-Fi after wake" message:@"Checking the adapter state and restarting it safely if needed…"];
 }
 -(void)recoverAfterWake {
  NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;if(now<_wakeNextCheckAt)return;
- if(now>_wakeDeadline){_wakeRecoveryPending=NO;_failed=YES;_statusHeading.stringValue=@"Wi-Fi wake recovery timed out";_status.stringValue=@"The driver did not return after sleep. Restart macOS or reload Ath10kMac, then try again.";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];return;}
+ if(now>_wakeDeadline){_wakeRecoveryPending=NO;_failed=YES;_statusHeading.stringValue=@"Wi-Fi recovery timed out";_status.stringValue=@"The adapter did not return after a safe restart. Restart macOS, then try again.";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];return;}
  if(_wakeRestartIssued){
   kern_return_t result=[self openDriver];if(result){_wakeNextCheckAt=now+1.0;return;}
   _wakeRecoveryPending=NO;_wakeRestartIssued=NO;_waitingForDriver=YES;_waitingForInitialScan=NO;_scanInProgress=NO;_scanStartedAt=now;_autoConnectAttempted=NO;_session=NO;_secure=NO;_disconnecting=NO;_menuShowsConnected=NO;_connectedSSID=nil;
@@ -186,17 +214,23 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
  uint32_t state=readLE32(info.data+28);
  if(state&1u){_wakeNextCheckAt=now+1.0;return;}
  if(state&2u){_wakeRecoveryPending=NO;_failed=YES;_statusHeading.stringValue=@"Wi-Fi recovery is blocked";_status.stringValue=@"The driver reports a DMA safety quarantine. It refused automatic restart; a full system restart may be required.";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];return;}
- if(state&4u){
-  AthControl::Request restart{};result=[self call:AthControl::Restart request:&restart response:nullptr];
-  if(result){if(result==kIOReturnNotAttached&&_driver){IOServiceClose(_driver);_driver=0;}_wakeNextCheckAt=now+1.0;return;}
-  if(_driver){IOServiceClose(_driver);_driver=0;}_wakeRestartIssued=YES;_wakeNextCheckAt=now+1.0;
-  _statusHeading.stringValue=@"Restarting Wi-Fi safely";_status.stringValue=@"The driver requested a rematch after sleep. Waiting for the adapter to come back…";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];return;
- }
+ if(state&4u){[self requestSafeAdapterRestartAt:now];return;}
  AthControl::Response status{};result=[self call:AthControl::Status request:nullptr response:&status];
- if(result||!(status.flags&1)){_wakeNextCheckAt=now+1.0;return;}
+ if(result){_wakeNextCheckAt=now+1.0;return;}
+ if(!(status.flags&1u)){
+  // Some wake paths leave the service inactive without setting the explicit
+  // restart bit. The driver's Restart operation still performs its guarded
+  // quiesce/rematch checks and refuses quarantine or suspended hardware.
+  [self requestSafeAdapterRestartAt:now];return;
+ }
  _wakeRecoveryPending=NO;_autoConnectAttempted=NO;
- if(status.flags&4){_menuShowsConnected=YES;_statusHeading.stringValue=@"Wi-Fi restored";_status.stringValue=@"The driver kept the connection through wake.";}
- else if(status.stage!=0){if(_session)[self call:AthControl::Abort request:nullptr response:nullptr];_session=NO;_disconnecting=NO;_secure=NO;_connectedSSID=nil;_menuShowsConnected=NO;_supplicant.reset();AthSecurity::wipe(_pending,sizeof(_pending));_pendingLength=0;[self clearRekeyState];_wakeRecoveryPending=YES;_wakeNextCheckAt=now+1.0;return;}
+ if(status.flags&4){_menuShowsConnected=YES;_statusHeading.stringValue=@"Wi-Fi restored";_status.stringValue=@"The driver kept the connection through wake.";_connect.enabled=NO;_disconnect.enabled=YES;_networks.enabled=NO;_password.enabled=NO;_refresh.enabled=NO;}
+ else if(status.stage!=0){
+  if(!_session){[self requestSafeAdapterRestartAt:now];return;}
+  kern_return_t abortResult=[self call:AthControl::Abort request:nullptr response:nullptr];
+  if(abortResult){[self requestSafeAdapterRestartAt:now];return;}
+  _session=NO;_disconnecting=NO;_secure=NO;_connectedSSID=nil;_menuShowsConnected=NO;_supplicant.reset();AthSecurity::wipe(_pending,sizeof(_pending));_pendingLength=0;[self clearRekeyState];_wakeRecoveryPending=YES;_wakeNextCheckAt=now+1.0;return;
+ }
  else{_session=NO;_disconnecting=NO;_connectedSSID=nil;_menuShowsConnected=NO;_connect.enabled=YES;_networks.enabled=YES;_password.enabled=YES;_remember.enabled=YES;_refresh.enabled=YES;_statusHeading.stringValue=@"Checking saved networks";_status.stringValue=@"The adapter is ready. Scanning and reconnecting to your preferred saved network…";[self refresh:nil];}
  [self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];
 }
@@ -239,7 +273,7 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
 -(void)updateStatusIcon {
  if(!_statusItem.button)return;
  BOOL connected=_session&&_menuShowsConnected&&!_disconnecting;
- BOOL connecting=!_failed&&(_waitingForDriver||_waitingForInitialScan||_scanInProgress||_disconnecting||_retryPending||(_session&&!_disconnecting&&!connected)||_wakeRecoveryPending);
+ BOOL connecting=!_failed&&(_waitingForDriver||_waitingForInitialScan||_scanInProgress||_disconnecting||(_session&&!_disconnecting&&!connected)||_wakeRecoveryPending);
  NSImage *image=[[NSImage alloc] initWithSize:NSMakeSize(18,18)];[image lockFocus];
  NSColor *ink=NSColor.labelColor;
  CGFloat alpha[3]={1,1,1};
@@ -267,7 +301,7 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
  _menuProgress=[[NSMenuItem alloc] initWithTitle:_menuProgressText?:(_waitingForDriver?@"Wi-Fi adapter is starting…":(_failed?@"Connection needs attention":@"Ready")) action:nil keyEquivalent:@""];_menuProgress.enabled=NO;[menu addItem:_menuProgress];
  if(_failed){NSMenuItem *retry=[[NSMenuItem alloc] initWithTitle:@"Retry Wi-Fi" action:@selector(retryConnection:) keyEquivalent:@""];retry.target=self;retry.enabled=_driver!=0;[menu addItem:retry];}
  NSMenuItem *scan=[[NSMenuItem alloc] initWithTitle:_scanInProgress?@"Scanning…":@"Scan Networks…" action:@selector(refresh:) keyEquivalent:@""];
- scan.target=self;scan.enabled=_driver&&!_session&&!_scanInProgress&&!_waitingForDriver&&!_waitingForInitialScan;[menu addItem:scan];[menu addItem:NSMenuItem.separatorItem];
+ scan.target=self;scan.enabled=_driver&&!_session&&!_scanInProgress&&!_waitingForDriver&&!_waitingForInitialScan&&!_wakeRecoveryPending;[menu addItem:scan];[menu addItem:NSMenuItem.separatorItem];
  NSArray<NSString *> *profiles=[self savedNetworks];
  if(profiles.count){NSMenuItem *savedHeading=[[NSMenuItem alloc] initWithTitle:@"Saved Networks · preferred first" action:nil keyEquivalent:@""];savedHeading.enabled=NO;[menu addItem:savedHeading];
   for(NSString *ssid in profiles){NSInteger row=[self rowIndexForSSID:ssid];NSMenuItem *profile=[[NSMenuItem alloc] initWithTitle:row==NSNotFound?[NSString stringWithFormat:@"%@  ·  not in range",ssid]:ssid action:nil keyEquivalent:@""];
@@ -305,8 +339,8 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
 -(void)forgetNetworkFromMenu:(NSMenuItem *)sender {[self forgetSSID:sender.representedObject];}
 -(void)retryConnection:(NSMenuItem *)sender {
  (void)sender;if(!_driver||!_failed)return;
- _failed=NO;_retryPending=YES;_scanStartedAt=NSProcessInfo.processInfo.systemUptime;_supplicant.reset();AthSecurity::wipe(_pending,sizeof(_pending));[self clearRekeyState];_pendingLength=0;
- _statusHeading.stringValue=@"Retrying Wi-Fi";_status.stringValue=@"Waiting for the previous connection attempt to stop safely…";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];
+ _supplicant.reset();AthSecurity::wipe(_pending,sizeof(_pending));[self clearRekeyState];_pendingLength=0;
+ [self beginRecoveryWithHeading:@"Retrying Wi-Fi" message:@"Checking the driver state and restarting the adapter safely if needed…"];
 }
 -(void)toggleLaunchAtLogin:(NSMenuItem *)sender {
  (void)sender;
@@ -506,15 +540,9 @@ static uint32_t readLE32(const uint8_t *p){return uint32_t(p[0])|(uint32_t(p[1])
   _waitingForDriver=NO;_connect.enabled=YES;_networks.enabled=YES;_password.enabled=YES;_remember.enabled=YES;_refresh.enabled=YES;_statusHeading.stringValue=@"Driver ready";_status.stringValue=@"The adapter is ready. Checking for nearby networks…";[self updateMenuProgress:_status.stringValue];[self rebuildStatusMenu];[self refresh:nil];return;
  }
  if(statusResult){[self fail:@"Lost communication with the kext."];return;}
- if(!(status.flags&1)){[self fail:[NSString stringWithFormat:@"Kext stopped: %s. Reload it to try again.",status.error]];return;}
- if(_retryPending){
-  if(status.stage!=0){
-   if(NSProcessInfo.processInfo.systemUptime-_scanStartedAt>60){[self fail:@"The previous session did not stop within a minute. Check the driver diagnostics before retrying."];return;}
-   _statusHeading.stringValue=@"Stopping previous attempt";_status.stringValue=@"Waiting for the driver to release the adapter safely…";[self updateMenuProgress:_status.stringValue];return;
-  }
-  _retryPending=NO;_session=NO;_disconnecting=NO;_secure=NO;_keysSubmitted=NO;_m4Sent=NO;_authorized=NO;_menuShowsConnected=NO;_connectedSSID=nil;
-  _connect.enabled=YES;_networks.enabled=YES;_password.enabled=YES;_remember.enabled=YES;_refresh.enabled=YES;_failed=NO;
-  _statusHeading.stringValue=@"Retrying";_status.stringValue=@"Scanning again before retrying the preferred network…";[self refresh:nil];return;
+ if(!(status.flags&1u)){
+  [self beginRecoveryWithHeading:@"Wi-Fi adapter inactive" message:@"The kext is loaded, but the adapter service is inactive. Attempting a safe recovery…"];
+  return;
  }
  if(_scanInProgress){
   if(status.flags&2){_scanInProgress=NO;[self loadNetworks];return;}
