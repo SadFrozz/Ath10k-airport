@@ -272,7 +272,7 @@ Para coletar diagnósticos na pasta do projeto:
 sudo sh scripts/test-runtime.sh > ~/Desktop/ath10k-runtime.txt
 ```
 
-O script coleta amostras do estado da Ath10kMac, lê logs recentes do kernel e registra detalhes de interfaces de rede/DHCP. Ele grava o relatório na Mesa; não faz upload. Revise e remova SSIDs, BSSIDs, endereços MAC, endereços IP, números de série e outros dados privados antes de anexar. Não inclua senhas de Wi-Fi nem uma EFI/config.plist sem redigir os dados.
+O script coleta amostras do estado da Ath10kMac, lê logs recentes do kernel e registra detalhes de interfaces de rede/DHCP. Ele grava o relatório na pasta Desktop; não faz upload. Revise e remova SSIDs, BSSIDs, endereços MAC, endereços IP, números de série e outros dados privados antes de anexar. Não inclua senhas de Wi-Fi nem uma EFI/config.plist sem redigir os dados.
 
 ### Créditos
 
