@@ -13,7 +13,7 @@ public:
     bool exchangeOK = true;
     unsigned executions = 0;
     explicit OtpDriver(bool qca9377=false) {
-        if(qca9377){_deviceId=0x0042;_subsystemVendorId=0x1235;_subsystemId=0x0901;
+        if(qca9377){_deviceId=0x0042;_subsystemVendorId=0x1028;_subsystemId=0x1810;
             _selectedHw=Ath10k::findCandidate(0x0042,1);_bmiTargetVersion=0x05020001;
             _bmiBoardDataAddress=0x401100;}
 

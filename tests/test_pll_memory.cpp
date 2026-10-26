@@ -5,7 +5,7 @@ static void absolutetime_to_nanoseconds(uint64_t t,uint64_t *n){*n=t;}
 #include "pll_methods.inc"
 
 static void use9377(Ath10kPCIDevice &d){
-    d._deviceId=0x0042;d._subsystemVendorId=0x1235;d._subsystemId=0x0901;
+    d._deviceId=0x0042;d._subsystemVendorId=0x1028;d._subsystemId=0x1810;
     d._selectedHw=Ath10k::findCandidate(0x0042,1);d._bmiTargetVersion=0x05020001;
 }
 static void connectedPLL(Ath10kPCIDevice &d){

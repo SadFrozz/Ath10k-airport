@@ -1,9 +1,9 @@
 {
   "profile": "QCA9377/hw1.1",
-  "board_key": "bus=pci,vendor=168c,device=0042,subsystem-vendor=1235,subsystem-device=0901",
-  "board_selection": "board-api1-fallback",
+  "board_key": "bus=pci,vendor=168c,device=0042,subsystem-vendor=1028,subsystem-device=1810",
+  "board_selection": "board-api2-exact",
   "board_bytes": 8124,
-  "board_sha256": "127d35d82edb46278f30c448cbca664d755ff0d5fed57b649959cdbc4208c768",
+  "board_sha256": "b2713b77c725b0ff81af75c85c3aeba97885d0f40174f715b1e39d5a9d50f4e7",
   "board_container_sha256": "0fdcc7838f478da81704de88f7b33e28862110c6d5decf7818543f8e37e6cd98",
   "firmware_container_sha256": "8f8b002fccfe81d42238f27dd1f56d189604f180bd4772c7c8e75ae1fef16f01",
   "firmware_version": "WLAN.TF.2.1-00021-QCARMSWP-1",

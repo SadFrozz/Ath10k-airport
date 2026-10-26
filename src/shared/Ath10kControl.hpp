@@ -18,7 +18,7 @@ struct Response {
 // BSS: same prefix, [40]=channel, [41]=supported WPA2, [42..43]=RSN length, [44..]=RSN.
 // Extensions keep ABI 1 and structure sizes; Status flag 512 advertises them.
 // Scan: index 0 starts a fresh passive scan, index 1 cancels the active scan.
-// RekeyGroup/RekeyPair: same 39-byte layout as InstallKeys. Same keys are rejected.
+// RekeyGroup/RekeyPair: same 56-byte layout as InstallKeys. Same keys are rejected.
 // Info data: [0] capabilities u32, [4] scan generation u32, [8] last channel u32,
 // [12] RSSI signed u32 (INT32_MIN unavailable), [16] width u32, [20] NSS u32,
 // [24] security generation u32, [28] state bits (1 suspended,2 quarantined,4 wake restart required),
@@ -35,7 +35,8 @@ struct Response {
 // index 0 releases it after the serial EAPOL transaction.
 // Cancel stops a connection at an ownership-safe boundary; Restart asynchronously
 // terminates and rematches the PCI driver only after verified quiescence.
-// InstallKeys: TK[16], GTK[16], GTK index[1], GTK RSC[6]. Never persisted/logged.
+// InstallKeys: TK[16], GTK[32] (zero-padded when CCMP), group cipher[1] (2 TKIP, 4 CCMP),
+// GTK index[1], GTK RSC[6]. Never persisted/logged.
 // Disconnect: asynchronous, completed association only. Wait for flag 64 to clear.
 // Flag 128 advertises reusable disconnect support; 64 means teardown in progress.
 // Flags: 1 runtime, 2 scan done, 4 link, 8 TX busy, 16 secure, 32 EAPOL TX failed.

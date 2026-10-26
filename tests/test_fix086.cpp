@@ -48,7 +48,7 @@ static void baEpochAndGroup(ConnectionState &s){
     assert(q->sessions[0].head==100 && delivered==std::vector<UInt16>{1000} && q->held==1);
     b=rx86(s,100);q->receive(s,b,3,clone,release,destroy);
     assert(delivered==std::vector<UInt16>({1000,100,101}) && !q->late && !q->held);
-    q->reset(destroy);delivered.clear();base(s);s.secure=true;s.securityPhase=5;s.groupIndex=1;s.groupInstalled[1]=true;s.pairInstalled=true;
+    q->reset(destroy);delivered.clear();base(s);s.secure=true;s.securityPhase=5;s.groupCipher=AthSecurity::cipherCCMP;s.groupIndex=1;s.groupInstalled[1]=true;s.pairInstalled=true;
     s.ba[0].peer=7;s.ba[0].tid=0;s.ba[0].window=64;s.ba[0].startValid=true;s.ba[0].startSeq=100;
     auto secureRelease=[&](RXBatch &batch){if(acceptSecureRX(s,batch.descriptor,batch.data,batch.lengths[0]))delivered.push_back(batch.sequence);};
     b=rx86(s,101,false,11);q->receive(s,b,1,clone,secureRelease,destroy);

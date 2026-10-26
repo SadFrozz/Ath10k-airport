@@ -16,7 +16,7 @@ inline bool ethernetFrameAllowed(const UInt8 *p,UInt32 n){
     return n-header<=kEthernetMTU;
 }
 // STA legacy/HT/VHT up to 80MHz/2SS. Wire layouts: Linux v6.12 wmi-tlv.h,
-// htt.h and rx_desc.h; open and WPA2-CCMP association share this state.
+// htt.h and rx_desc.h; open and WPA2-PSK association share this state.
 enum class LinkStage : UInt32 { Disabled, Scan, Start, Peer, Auth, Assoc,
     PeerAssoc, Authorize, Up, Barrier, Connected, Failed };
 inline const char *linkStageName(LinkStage s) {
@@ -185,7 +185,7 @@ struct ConnectionState {
     bool cancelRequested=false,rekeySkipGroup=false,vdevStarted=false,vdevUp=false,eapolPause=false;
     UInt8 rekeyKind=0;UInt32 securityGeneration=0,beaconSerial=0;
     int32_t signalDbm=INT32_MIN;
-    UInt8 installedPair[16]{},installedGroups[4][16]{};bool pairInstalled=false,groupInstalled[4]{};
+    UInt8 installedPair[16]{},installedGroups[4][32]{};bool pairInstalled=false,groupInstalled[4]{};
     UInt32 securityPhase=0; // 0 EAPOL, 1 PTK, 2 GTK, 3 authorize, 4 barrier, 5 ready
     // Only protocol metadata; no key bytes or replay counters from SEC_IND.
     struct SecurityIndDiagnostics {
@@ -194,7 +194,7 @@ struct ConnectionState {
         bool mapped=false,retired=false,ack=false;
         const char *action="none";
     } securityInd{};
-    UInt8 temporalKey[16]{},groupKey[16]{},groupIndex=0,groupRSC[6]{};
+    UInt8 temporalKey[16]{},groupKey[32]{},groupIndex=0,groupCipher=0,groupRSC[6]{};
     UInt16 pairSeq[17]{},groupSeq[17]{};
     UInt8 pairAmsduCount[17]{},groupAmsduCount[17]{};
     bool pairSeqValid[17]{},groupSeqValid[17]{};
@@ -532,7 +532,7 @@ inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
         if(!sameMAC(ap.bssid,s.bssid) || (!(s.hiddenSSID && ap.hidden) && ap.ssidLength!=s.ssidLength))continue;
         bool equal=true;for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
         if(!equal && !(s.hiddenSSID && ap.hidden))continue;
-        if(s.secure){if(!ap.privacy || !AthSecurity::supportsWPA2(ap.rsn,ap.rsnLength))return "wpa2-ccmp-psk-required";}
+        if(s.secure){if(!ap.privacy || !AthSecurity::supportsWPA2(ap.rsn,ap.rsnLength))return "wpa2-psk-ccmp-pairwise-required";}
         else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
         if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
         if(!ap.beaconInterval || !ap.rateCount || !ap.ratesValid)return "bss-missing-valid-rates";
@@ -545,6 +545,7 @@ inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
         if(channelNeedsDFS(channel) && !s.regulatory.stationDFS)return "dfs-connection-not-supported";
         s.operatingChannel=channel;
         s.ap=ap;s.ap.rateCount=0;
+        s.groupCipher=s.secure?AthSecurity::wpa2GroupCipher(ap.rsn,ap.rsnLength):0;
         for(UInt32 j=0;j<ap.rateCount;++j){
             if(!supportedLegacyRate(ap.rates[j],channel>14)){
                 if(ap.rates[j]&128)return "unsupported-basic-rate";
@@ -740,18 +741,23 @@ inline UInt32 buildDisconnectWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const C
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,static_cast<UInt16>(bytes-8));htcWriteLE32(f+8,cmd);
     return bytes;
 }
-// INSTALL_KEY follows Linux ath10k's 92-byte fixed command and 16-byte CCMP key.
+// INSTALL_KEY follows Linux ath10k's 92-byte fixed command. Pairwise uses
+// 16-byte CCMP; group uses 16-byte CCMP or 32-byte TKIP (16+8+8 MIC keys).
 inline UInt32 buildSecurityWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const ConnectionState &s){
     if(!f || capacity<256 || !endpoint || !s.secure)return 0;
     htcZero(f,256);UInt32 bytes=0,cmd=0;UInt8 *p=f+16;
     if(s.securityPhase==1 || s.securityPhase==2){
         bool group=s.securityPhase==2;cmd=0x5009;bytes=128;connTLV(f+12,96,92);
+        if(group && s.groupCipher!=AthSecurity::cipherCCMP && s.groupCipher!=AthSecurity::cipherTKIP)return 0;
         for(UInt32 i=0;i<6;++i)p[4+i]=s.bssid[i];
         htcWriteLE32(p+12,group?s.groupIndex:0);htcWriteLE32(p+16,group?1:0);
-        htcWriteLE32(p+20,4);htcWriteLE32(p+80,16);
+        const UInt32 keyLength=group?(s.groupCipher==AthSecurity::cipherTKIP?32:16):16;
+        htcWriteLE32(p+20,group?s.groupCipher:AthSecurity::cipherCCMP);htcWriteLE32(p+80,keyLength);
+        if(group && s.groupCipher==AthSecurity::cipherTKIP){htcWriteLE32(p+84,8);htcWriteLE32(p+88,8);}
         if(group)for(UInt32 i=0;i<6;++i)p[24+i]=s.groupRSC[i];
-        connTLV(f+108,17,16);
-        for(UInt32 i=0;i<16;++i)f[112+i]=group?s.groupKey[i]:s.temporalKey[i];
+        connTLV(f+108,17,static_cast<UInt16>(keyLength));
+        for(UInt32 i=0;i<keyLength;++i)f[112+i]=group?s.groupKey[i]:s.temporalKey[i];
+        bytes=112+keyLength;
     }else if(s.securityPhase==3){
         cmd=0x6004;bytes=36;connTLV(f+12,100,20);
         for(UInt32 i=0;i<6;++i)p[4+i]=s.bssid[i];
@@ -781,14 +787,16 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         }
         f[start+1]=static_cast<UInt8>(n-start-2);
     }
-    const UInt32 tail=2+s.ap.rateCount+(s.ap.rateCount>8?2:0)+(s.secure?sizeof(AthSecurity::stationRSN):0)+
+    size_t stationRSNLength=0;const UInt8 *stationRSN=s.secure?AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength):nullptr;
+    if(s.secure&&!stationRSN)return 0;
+    const UInt32 tail=2+s.ap.rateCount+(s.ap.rateCount>8?2:0)+(s.secure?stationRSNLength:0)+
         (s.ap.wmmPresent?(s.ap.wmmVendor?9:3):0)+(s.htEnabled?28:0)+(s.vhtEnabled?17:0);
     if(tail>capacity-n)return 0;
     UInt32 first=s.ap.rateCount<8?s.ap.rateCount:8;f[n++]=1;f[n++]=static_cast<UInt8>(first);
     for(UInt32 i=0;i<first;++i)f[n++]=s.ap.rates[i];
     if(s.ap.rateCount>8){f[n++]=50;f[n++]=s.ap.rateCount-8;
         for(UInt32 i=8;i<s.ap.rateCount;++i)f[n++]=s.ap.rates[i];}
-    if(s.secure){for(UInt8 b:AthSecurity::stationRSN)f[n++]=b;}
+    if(s.secure){for(size_t i=0;i<stationRSNLength;++i)f[n++]=stationRSN[i];}
     if(s.ap.wmmPresent){
         if(s.ap.wmmVendor){const UInt8 wmm[]={221,7,0,0x50,0xf2,2,0,1,0};for(UInt8 b:wmm)f[n++]=b;}
         else {f[n++]=46;f[n++]=1;f[n++]=0;}}
@@ -1240,6 +1248,14 @@ inline bool mappedPeer(const ConnectionState &s,UInt16 id){
 inline bool retiredPeer(const ConnectionState &s,UInt16 id){
     return id<2048 && (s.retiredPeerIDs[id/32]&(1u<<(id%32)));
 }
+inline UInt8 expectedSecurityIndication(const ConnectionState &s){
+    if(s.securityPhase==1)return 0x86; // CCMP pairwise/unicast.
+    if(s.securityPhase==2){
+        if(s.groupCipher==AthSecurity::cipherTKIP)return 4; // HTT_SECURITY_TKIP, group.
+        if(s.groupCipher==AthSecurity::cipherCCMP)return 6; // HTT_SECURITY_AES_CCMP, group.
+    }
+    return 0xff;
+}
 inline const char *validateConnectionHTT(const ConnectionState &s,const UInt8 *f,UInt32 end) {
     if(!f || end<9)return "htt-connection-short";
     switch(f[8]){
@@ -1259,7 +1275,7 @@ inline const char *validateConnectionHTT(const ConnectionState &s,const UInt8 *f
         if(!(f[9]&0x7f))break;
         if(s.disconnect!=DisconnectStage::None || !s.secure || s.securityPhase<1 || s.securityPhase>2 ||
            !s.submitted || !mappedPeer(s,htcReadLE16(f+10)) ||
-           f[9]!=(s.securityPhase==1?0x86:6))return "security-indication-unexpected";
+           f[9]!=expectedSecurityIndication(s))return "security-indication-unexpected";
         break;
     case 7: {
         if(end<16 || !f[10] || f[10]>kDataTxSlots || 12u+2u*f[10]>end)return "data-completion-length";
@@ -1296,7 +1312,7 @@ inline void commitConnectionHTT(ConnectionState &s,const UInt8 *f) {
         d.disconnect=static_cast<UInt32>(s.disconnect);
         d.mapped=mappedPeer(s,d.peer);d.retired=retiredPeer(s,d.peer);d.ack=false;
         if(f[9]&0x7f){
-            // The validator has matched mapped peer, CCMP, cast and install phase.
+            // The validator matched the expected cipher, cast, peer, and install phase.
             s.securityAck=d.ack=true;d.action="install-ack";return;
         }
         const bool clearing=s.disconnect==DisconnectStage::ClearPair || s.disconnect==DisconnectStage::ClearGroup;
@@ -1541,7 +1557,7 @@ inline void recordRxBlockAck(ConnectionState &s,const UInt8 *d){
 }
 // QCA6174 v1 descriptor: MPDU start at 12, original RX header at 236.
 // Fail closed on plaintext data, unsupported ciphers/fragmentation,
-// wrong key index and replay. Firmware verifies CCMP MIC; host enforces PN.
+// wrong key index and replay. Firmware verifies CCMP/TKIP MIC; host enforces PN/TSC.
 inline bool acceptSecureRX(ConnectionState &s,const UInt8 *d,const UInt8 *frame,UInt32 bytes,UInt16 peer=0xffff){
     if(!s.secure)return true;
     auto reject=[&](ConnectionState::RxDrop reason){s.rxLastReason=reason;return false;};
@@ -1549,7 +1565,7 @@ inline bool acceptSecureRX(ConnectionState &s,const UInt8 *d,const UInt8 *frame,
     const bool eapol=frame[12]==0x88 && frame[13]==0x8e;
     UInt32 info=connLE32(d+12);bool encrypted=info&(1u<<13);
     if(!encrypted)return eapol?true:reject(ConnectionState::Plaintext);
-    if((info>>28)!=6 || (s.securityPhase<3 && !s.rekeyKind))return reject(ConnectionState::Key);
+    if(s.securityPhase<3 && !s.rekeyKind)return reject(ConnectionState::Key);
     const UInt8 *h=d+236;UInt16 fc=htcReadLE16(h);
     auto headerReject=[&](RXSecurityFault fault){
         s.rxSecurity.record(d,fault,s.bssid,peer,info);return reject(ConnectionState::Security);};
@@ -1563,10 +1579,19 @@ inline bool acceptSecureRX(ConnectionState &s,const UInt8 *d,const UInt8 *frame,
     if(!sameMAC(h+10,s.bssid))return headerReject(RXSecurityFault::Transmitter);
     bool qos=(fc&0x80)!=0;UInt32 tid=qos?(h[24]&15):16;
     const UInt8 *iv=h+(qos?((fc&0x8000)?32:28):24);
-    // CCMP key selection follows the MPDU receiver address, not an A-MSDU DA.
+    // Key selection follows the MPDU receiver address, not an A-MSDU DA.
     const bool group=(h[4]&1)!=0;
+    const bool tkipGroup=group && s.groupCipher==AthSecurity::cipherTKIP;
+    if((group && !tkipGroup && s.groupCipher!=AthSecurity::cipherCCMP) ||
+       (tkipGroup?(info>>28)!=4:(info>>28)!=6))return reject(ConnectionState::Key);
     if(!(iv[3]&0x20) || (iv[3]>>6)!=(group?s.groupIndex:0))return reject(ConnectionState::Key);
     UInt64 pn=UInt64(connLE32(d+16))|(UInt64(htcReadLE16(d+20))<<32);
+    if(tkipGroup){
+        // TKIP IV bytes are TSC1, WEPSeed, TSC0, ExtIV, TSC2..TSC5.
+        if(iv[1]!=static_cast<UInt8>((iv[0]|0x20)&0x7f))return reject(ConnectionState::Security);
+        pn=UInt64(iv[2])|(UInt64(iv[0])<<8)|(UInt64(iv[4])<<16)|(UInt64(iv[5])<<24)|
+           (UInt64(iv[6])<<32)|(UInt64(iv[7])<<40);
+    }
     UInt64 &last=group?s.groupPN[tid]:s.pairPN[tid];
     UInt64 rsc=0;if(group)for(UInt32 i=0;i<6;++i)rsc|=UInt64(s.groupRSC[i])<<(8*i);
     if(!pn || pn<=last || (group && pn<=rsc))return reject(ConnectionState::Replay);

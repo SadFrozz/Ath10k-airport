@@ -46,7 +46,7 @@ int main(){
  good._wmiScan.generation=10;good.fillControlInfo(response);
  assert(response.length==112 && response.data[32]==3 && !memcmp(response.data+33,"abc",3));
  assert(Ath10k::wmiReadLE32(response.data+4)==10 && int32_t(Ath10k::wmiReadLE32(response.data+12))==-50);
- assert(!strcmp(reinterpret_cast<char *>(response.data+68),"0.0.91"));
+ assert(!strcmp(reinterpret_cast<char *>(response.data+68),"0.0.94"));
  assert(Ath10k::wmiReadLE32(response.data)&512);
  good._wmiScan.completed=true;good._wmiScan.failed=true;good._wmiScan.cancelRequested=true;good._wmiScan.started=true;
  good.fillControlInfo(response);assert(Ath10k::wmiReadLE32(response.data+108)==15);

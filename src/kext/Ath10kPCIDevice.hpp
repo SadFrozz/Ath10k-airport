@@ -10,6 +10,7 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOFilterInterruptEventSource.h>
 #include <IOKit/IOLocks.h>
+#include <kern/thread_call.h>
 #include "Ath10kPerformance.hpp"
 #include "Ath10kPower.hpp"
 #include <IOKit/IONotifier.h>
@@ -219,6 +220,10 @@ private:
     Ath10k::WMIInitState _wmiEvents{};
 
     bool probeTarget();
+    static void deferredProbeCall(thread_call_param_t, thread_call_param_t);
+    void runDeferredProbe();
+    void cancelDeferredProbe();
+    thread_call_t _deferredProbeCall=nullptr;
     bool wakeTarget(bool &assertedWake);
     void releaseTargetWake(bool assertedWake);
     bool coldResetTarget();

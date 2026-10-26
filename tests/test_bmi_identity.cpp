@@ -3,7 +3,7 @@
 #include "bmi_identity_method.inc"
 int main(){
     for(UInt32 version:{0x05020001u,0x05030000u,0u,0xffffffffu})for(UInt32 type:{8u,0u,7u})for(UInt32 length:{12u,0u,8u}){
-        Ath10kPCIDevice d;d._deviceId=0x0042;d._subsystemVendorId=0x1235;d._subsystemId=0x0901;d._selectedHw=Ath10k::findCandidate(0x0042,1);
+        Ath10kPCIDevice d;d._deviceId=0x0042;d._subsystemVendorId=0x1028;d._subsystemId=0x1810;d._selectedHw=Ath10k::findCandidate(0x0042,1);
         d.exchange=[&](const void *request,UInt32 n,void *out,UInt32 &bytes){
             assert(n==4 && *static_cast<const UInt32 *>(request)==8 && bytes==12);
             *static_cast<Ath10k::BMIGetTargetInfoResponse *>(out)={length,version,type};return true;

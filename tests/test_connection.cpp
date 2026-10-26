@@ -458,6 +458,15 @@ static void peerMapTests(){
     assert(!s.peerCount && s.stage==LinkStage::Failed);
 }
 static void secureConnectionTests(){
+    {
+        Ath10k::ConnectionState tkip{};tkip.secure=true;tkip.securityPhase=2;tkip.groupCipher=AthSecurity::cipherTKIP;tkip.groupIndex=3;
+        UInt8 command[256]{};const UInt32 bytes=Ath10k::buildSecurityWMI(command,sizeof(command),2,tkip);
+        assert(bytes==144 && Ath10k::htcReadLE16(command+2)==136);
+        assert(Ath10k::wmiReadLE32(command+36)==AthSecurity::cipherTKIP && Ath10k::wmiReadLE32(command+96)==32);
+        assert(Ath10k::wmiReadLE32(command+100)==8 && Ath10k::wmiReadLE32(command+104)==8);
+        assert(Ath10k::htcReadLE16(command+108)==32 && Ath10k::htcReadLE16(command+110)==17);
+        tkip.groupCipher=0;assert(Ath10k::buildSecurityWMI(command,sizeof(command),2,tkip)==0);
+    }
     ConnectionDriver d;auto &s=d._connection;s.secure=true;
     auto &b=d._wmiBSS.entries[0];b.privacy=b.rsnPresent=true;b.capabilities|=0x10;
     b.rsnLength=sizeof(AthSecurity::stationRSN);memcpy(b.rsn,AthSecurity::stationRSN,b.rsnLength);
@@ -535,6 +544,13 @@ static void secureConnectionTests(){
     for(unsigned n=0;n<36;++n)assert(Ath10k::validateConnectionHTT(state,event,n));
     event[10]=8;assert(Ath10k::validateConnectionHTT(state,event,36));event[10]=7;
     event[9]=6;assert(Ath10k::validateConnectionHTT(state,event,36));
+    state.securityPhase=2;state.groupCipher=AthSecurity::cipherTKIP;event[9]=4;
+    assert(!Ath10k::validateConnectionHTT(state,event,36));
+    state.securityAck=false;Ath10k::commitConnectionHTT(state,event);
+    assert(state.securityAck && state.securityInd.ack && state.securityInd.flags==4 && state.securityInd.received==1);
+    event[9]=6;assert(Ath10k::validateConnectionHTT(state,event,36));
+    state.groupCipher=AthSecurity::cipherCCMP;event[9]=6;
+    assert(!Ath10k::validateConnectionHTT(state,event,36));
     // Original header + descriptor PN is independent of the decapped Ethernet data.
     UInt8 desc[2048]{},ether[64]{};state.securityPhase=5;state.portAuthorized=true;state.groupIndex=1;
     Ath10k::htcWriteLE32(desc+12,(6u<<28)|(1u<<13));Ath10k::htcWriteLE32(desc+16,5);

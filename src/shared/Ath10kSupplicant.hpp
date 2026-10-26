@@ -2,7 +2,8 @@
 #include "Ath10kSecurity.hpp"
 namespace AthSecurity {
 // Crypto supplies HMAC-SHA1 and AES-128-ECB decrypt (CommonCrypto on macOS).
-// Limited RSN/PSK/CCMP, descriptor version 2. No EAP, TKIP or PMF. Group and pairwise rekey retain replay protection.
+// Limited RSN/PSK, CCMP pairwise, CCMP or TKIP group, descriptor version 2.
+// No EAP, TKIP pairwise or PMF. Group and pairwise rekey retain replay protection.
 // Retransmitted M3 returns cached M4; never asks the driver to reinstall a key.
 template<class Crypto> class Supplicant {
  uint8_t pmk[32]{},ptk[48]{},snonce[32]{},anonce[32]{},local[6]{},ap[6]{};
@@ -10,9 +11,9 @@ template<class Crypto> class Supplicant {
  size_t rsnLength=0,savedLength=0,m2Length=0,m4Length=0;
  uint64_t replay1=0,replay3=0;
  unsigned state=0;
- uint8_t establishedPTK[48]{},establishedANonce[32]{},establishedSNonce[32]{},currentGTK[16]{};
+ uint8_t establishedPTK[48]{},establishedANonce[32]{},establishedSNonce[32]{},currentGTK[32]{};
  uint8_t savedGroup[512]{},groupAck[128]{};size_t savedGroupLength=0,groupAckLength=0;
- uint64_t groupReplay=0;uint8_t currentGTKIndex=0;bool pairRekey=false;
+ uint64_t groupReplay=0;uint8_t currentGTKIndex=0,groupCipher=0;bool pairRekey=false;
  bool derive(){
   static constexpr char label[]="Pairwise key expansion";
   uint8_t input[sizeof(label)+76+1]{},digest[20]{};
@@ -28,10 +29,12 @@ template<class Crypto> class Supplicant {
  }
  bool mic(uint8_t *p,size_t n){uint8_t digest[20]{};bool ok=Crypto::hmac(ptk,16,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,20);return ok;}
  size_t response(uint8_t *frame,const uint8_t *request,bool second,bool group=false){
-  size_t n=99+(second?sizeof(stationRSN):0);wipe(frame,n+14);copy(frame,ap,6);copy(frame+6,local,6);frame[12]=0x88;frame[13]=0x8e;
+  size_t rsnBytes=0;const uint8_t *rsn=stationRSNForGroup(groupCipher,rsnBytes);
+  if(second&&!rsn)return 0;
+  size_t n=99+(second?rsnBytes:0);wipe(frame,n+14);copy(frame,ap,6);copy(frame+6,local,6);frame[12]=0x88;frame[13]=0x8e;
   uint8_t *p=frame+14;p[0]=request[0];p[1]=3;put16(p+2,uint16_t(n-4));p[4]=2;
   put16(p+5,second?0x010a:(group?0x0302:0x030a));copy(p+9,request+9,8);
-  if(second){copy(p+17,snonce,32);put16(p+97,sizeof(stationRSN));copy(p+99,stationRSN,sizeof(stationRSN));}
+  if(second){copy(p+17,snonce,32);put16(p+97,uint16_t(rsnBytes));copy(p+99,rsn,rsnBytes);}
   return mic(p,n)?n+14:0;
  }
  bool unwrap(const uint8_t *in,size_t n,uint8_t *out){
@@ -48,7 +51,9 @@ template<class Crypto> class Supplicant {
  }
 public:
  enum Result { Ignore, Reply, Keys, Fatal, GroupKeys, PairKeys };
- uint8_t output[160]{},keys[39]{};size_t outputLength=0;
+ static constexpr size_t keyPayloadLength=56;
+ // PTK[16], GTK[32], group cipher[1], GTK index[1], GTK RSC[6].
+ uint8_t output[160]{},keys[keyPayloadLength]{};size_t outputLength=0;
  const char *error="none";
  bool pairwisePending() const {return pairRekey && state==2;}
  void cancelPairwiseAttempt(){
@@ -60,6 +65,7 @@ public:
  void reset(){wipe(this,sizeof(*this));error="none";}
  bool begin(const uint8_t *master,const uint8_t *nonce,const uint8_t *station,const uint8_t *bssid,const uint8_t *rsn,size_t n){
   reset();if(!supportsWPA2(rsn,n))return false;
+  groupCipher=wpa2GroupCipher(rsn,n);
   copy(pmk,master,32);copy(snonce,nonce,32);copy(local,station,6);copy(ap,bssid,6);copy(apRSN,rsn,n);rsnLength=n;state=1;return true;
  }
  Result fail(const char *reason){error=reason;return Fatal;}
@@ -91,13 +97,13 @@ public:
     if(n!=savedGroupLength || !equal(p,savedGroup,n))return Ignore;
     copy(output,groupAck,groupAckLength);outputLength=groupAckLength;return Reply;
    }
-   uint8_t check[512]{},plain[384]{},candidate[39]{};copy(check,p,n);wipe(check+81,16);
+   uint8_t check[512]{},plain[384]{},candidate[keyPayloadLength]{};copy(check,p,n);wipe(check+81,16);
    bool verified=mic(check,n) && equal(check+81,p+81,16);wipe(check,sizeof(check));
    if(!verified)return Ignore;
    size_t encrypted=be16(p+97);
    if(!unwrap(p+99,encrypted,plain)){wipe(plain,sizeof(plain));return fail("GTK de renovação inválida.");}
    size_t bytes=encrypted-8,at=0;bool haveGTK=false,valid=true;
-   copy(candidate+33,p+65,6);
+   copy(candidate+50,p+65,6);candidate[48]=groupCipher;
    while(at<bytes){
     if(plain[at]==221 && (at+1==bytes || plain[at+1]==0)){
      for(size_t j=at+1;j<bytes;++j)if(plain[j])valid=false;
@@ -107,19 +113,21 @@ public:
     size_t len=size_t(plain[at+1])+2;
     if(plain[at]==48 && (len!=rsnLength || !equal(plain+at,apRSN,len)))valid=false;
     if(plain[at]==221 && len>=6 && suite(plain+at+2,1)){
-     if(haveGTK || len!=24 || (plain[at+6]&0xf8) || plain[at+7])valid=false;
-     else {candidate[32]=plain[at+6]&3;copy(candidate+16,plain+at+8,16);}haveGTK=true;
+     const size_t gtkBytes=groupCipher==cipherTKIP?32:16;
+     if(haveGTK || len!=8+gtkBytes || (plain[at+6]&0xf8) || plain[at+7])valid=false;
+     else {candidate[49]=plain[at+6]&3;copy(candidate+16,plain+at+8,gtkBytes);}haveGTK=true;
     }
     at+=len;
    }
    if(!valid || !haveGTK){wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("KDE de GTK inválida.");}
-   const bool sameKey=equal(currentGTK,candidate+16,16);
-   if(sameKey && currentGTKIndex!=candidate[32]){wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("GTK reutilizada em outro índice.");}
+   const size_t gtkBytes=groupCipher==cipherTKIP?32:16;
+   const bool sameKey=equal(currentGTK,candidate+16,gtkBytes);
+   if(sameKey && currentGTKIndex!=candidate[49]){wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("GTK reutilizada em outro índice.");}
    groupAckLength=response(groupAck,p,false,true);
    if(!groupAckLength){wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("Falha no MIC de renovação GTK.");}
    copy(savedGroup,p,n);savedGroupLength=n;groupReplay=replay;
    copy(output,groupAck,groupAckLength);outputLength=groupAckLength;
-   if(!sameKey){copy(keys,candidate,39);copy(currentGTK,candidate+16,16);currentGTKIndex=candidate[32];}
+   if(!sameKey){copy(keys,candidate,keyPayloadLength);copy(currentGTK,candidate+16,gtkBytes);currentGTKIndex=candidate[49];}
    wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return sameKey?Reply:GroupKeys;
   }
   if(info!=0x13ca){
@@ -149,7 +157,7 @@ public:
   size_t encrypted=be16(p+97);
   if(!unwrap(p+99,encrypted,plain)){wipe(plain,sizeof(plain));return fail("Dados de chave inválidos.");}
   size_t bytes=encrypted-8,at=0;bool haveRSN=false,haveGTK=false,valid=true;
-  uint8_t candidate[39]{};copy(candidate,ptk+32,16);copy(candidate+33,p+65,6);
+  uint8_t candidate[keyPayloadLength]{};copy(candidate,ptk+32,16);copy(candidate+50,p+65,6);candidate[48]=groupCipher;
   while(at<bytes){
    if(plain[at]==221 && (at+1==bytes || plain[at+1]==0)){
     for(size_t j=at+1;j<bytes;++j)if(plain[j])valid=false;
@@ -159,8 +167,9 @@ public:
    size_t len=plain[at+1]+2;
    if(plain[at]==48){if(haveRSN||len!=rsnLength||!equal(plain+at,apRSN,len))valid=false;haveRSN=true;}
    if(plain[at]==221 && len>=6 && suite(plain+at+2,1)){
-    if(haveGTK||len!=24||(plain[at+6]&0xf8)||plain[at+7])valid=false;
-    else {candidate[32]=plain[at+6]&3;copy(candidate+16,plain+at+8,16);}haveGTK=true;
+    const size_t gtkBytes=groupCipher==cipherTKIP?32:16;
+    if(haveGTK||len!=8+gtkBytes||(plain[at+6]&0xf8)||plain[at+7])valid=false;
+    else {candidate[49]=plain[at+6]&3;copy(candidate+16,plain+at+8,gtkBytes);}haveGTK=true;
    }
    at+=len;
   }
@@ -170,7 +179,7 @@ public:
   copy(savedM3,p,n);savedLength=n;replay3=replay;state=3;
   const bool wasRekey=pairRekey;
   copy(establishedPTK,ptk,48);copy(establishedANonce,anonce,32);copy(establishedSNonce,snonce,32);
-  copy(currentGTK,keys+16,16);currentGTKIndex=keys[32];pairRekey=false;
+  copy(currentGTK,keys+16,groupCipher==cipherTKIP?32:16);currentGTKIndex=keys[49];pairRekey=false;
   copy(output,m4,m4Length);outputLength=m4Length;return wasRekey?PairKeys:Keys;
  }
  // PMK is retained only for the live session to permit pairwise rekey.

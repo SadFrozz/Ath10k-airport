@@ -38,22 +38,23 @@ class PayloadTests(unittest.TestCase):
 
     def test_qca9377_profile(self):
         folder = ROOT / 'firmware/QCA9377/hw1.0'
-        with self.assertRaises(p.BoardNotFound):
-            p.select_board((folder / 'board-2.bin').read_bytes(), p.QCA9377_BOARD_KEY)
+        selected = p.select_board((folder / 'board-2.bin').read_bytes(), p.QCA9377_BOARD_KEY)
+        self.assertEqual(p.sha(selected), 'b2713b77c725b0ff81af75c85c3aeba97885d0f40174f715b1e39d5a9d50f4e7')
         files, header, entry = p.prepare_profile(ROOT, folder, 'Ath10kPayload9377',
             p.QCA9377_BOARD_KEY, 'QCA9377/hw1.1',
-            ('0x0042', '0x1235', '0x0901', '1', '0x05020001u'), True)
+            ('0x0042', '0x1028', '0x1810', '1', '0x05020001u'), True)
         import json
         manifest = json.loads(files[ROOT / 'firmware/prepared/QCA9377/manifest.json'])
-        self.assertEqual(manifest['board_selection'], 'board-api1-fallback')
+        self.assertEqual(manifest['board_selection'], 'board-api2-exact')
         self.assertEqual(manifest['firmware_version'], 'WLAN.TF.2.1-00021-QCARMSWP-1')
         self.assertEqual(manifest['otp_bytes'], 24193)
         self.assertEqual(manifest['firmware_bytes'], 727125)
         self.assertEqual(manifest['firmware_segment_data_bytes'], 727053)
         self.assertEqual(manifest['board_sha256'],
-            '127d35d82edb46278f30c448cbca664d755ff0d5fed57b649959cdbc4208c768')
+            'b2713b77c725b0ff81af75c85c3aeba97885d0f40174f715b1e39d5a9d50f4e7')
 
-    def test_fallback_rejects_corrupt_container_and_foreign_firmware(self):
+    def test_exact_board_rejects_corrupt_container_and_foreign_firmware(self):
+        import json
         import tempfile
         import shutil
         folder = ROOT / 'firmware/QCA9377/hw1.0'
@@ -62,15 +63,20 @@ class PayloadTests(unittest.TestCase):
             for name in ('board-2.bin', 'board.bin', 'firmware-6.bin'):
                 shutil.copyfile(folder / name, tmp / name)
             args = (ROOT, tmp, 'Ath10kPayload9377', p.QCA9377_BOARD_KEY, 'QCA9377/hw1.1',
-                ('0x0042', '0x1235', '0x0901', '1', '0x05020001u'), True)
+                ('0x0042', '0x1028', '0x1810', '1', '0x05020001u'), True)
             bad = [b'corrupt', container(p.BOARD_MAGIC, board_entry(p.QCA9377_BOARD_KEY,b'a'*8124)*2),
                    container(p.BOARD_MAGIC,board_entry(p.QCA9377_BOARD_KEY,b'a'*8000))]
             for data in bad:
                 (tmp/'board-2.bin').write_bytes(data)
                 with self.assertRaises(ValueError): p.prepare_profile(*args)
+            foreign = container(p.BOARD_MAGIC, board_entry(
+                'bus=pci,vendor=168c,device=0042,subsystem-vendor=17aa,subsystem-device=0901',b'a'*8124))
+            (tmp/'board-2.bin').write_bytes(foreign)
+            self.assertEqual(json.loads(p.prepare_profile(*args)[0][ROOT / 'firmware/prepared/QCA9377/manifest.json'])
+                             ['board_selection'], 'board-api1-fallback')
             shutil.copyfile(folder/'board-2.bin',tmp/'board-2.bin')
             (tmp/'board.bin').write_bytes((ROOT/'firmware/prepared/board.bin').read_bytes())
-            with self.assertRaises(ValueError): p.prepare_profile(*args)
+            p.prepare_profile(*args)  # exact API2 match must not consume the fallback board
             shutil.copyfile(folder/'board.bin',tmp/'board.bin')
             shutil.copyfile(ROOT/'firmware/firmware-6.bin',tmp/'firmware-6.bin')
             with self.assertRaises(ValueError): p.prepare_profile(*args)

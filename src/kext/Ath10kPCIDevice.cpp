@@ -79,7 +79,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if(auto *timeout=OSDynamicCast(OSNumber,getProperty("Ath10kBeaconTimeoutMs"))){
         const UInt32 value=timeout->unsigned32BitValue();_connection.beaconTimeoutMs=value>=10000 && value<=120000?value:30000;
     }
-    IOLog("Ath10kMac: start v0.0.91 (STA HT/VHT, secure RX and Ethernet traffic)\n");
+    IOLog("Ath10kMac: start v0.0.94 (deferred device initialization)\n");
 
     if (!super::start(provider)) {
         IOLog("Ath10kMac: super::start failed\n");
@@ -124,6 +124,34 @@ bool Ath10kPCIDevice::start(IOService *provider)
     validateRegisterLayer();
     dumpHardwareCandidates();
 
+    // Publish the service before the lengthy target/firmware probe. The probe
+    // runs on a normal-priority thread call so IOConfigThread can return and
+    // macOS can finish booting while Wi-Fi initialization continues.
+    registerService();
+    _deferredProbeCall = thread_call_allocate_with_priority(
+        deferredProbeCall, this, THREAD_CALL_PRIORITY_USER);
+    if (_deferredProbeCall) {
+        thread_call_enter(_deferredProbeCall);
+        IOLog("Ath10kMac: deferred target probe queued; network becomes available after initialization\n");
+        return true;
+    }
+
+    IOLog("Ath10kMac: deferred probe worker unavailable; falling back to synchronous initialization\n");
+    runDeferredProbe();
+    return true;
+}
+
+void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_param_t)
+{
+    auto *self = static_cast<Ath10kPCIDevice *>(param0);
+    if (self)
+        self->runDeferredProbe();
+}
+
+void Ath10kPCIDevice::runDeferredProbe()
+{
+    IOLog("Ath10kMac: deferred target probe begin\n");
+
     // 0.0.91 probes for a device-specific IOMapper, but a null result is valid
     // on systems without an iommu-parent. IODMACommand::kMapped is still used
     // with the default/null mapper path, and all potentially double-buffered
@@ -158,13 +186,11 @@ bool Ath10kPCIDevice::start(IOService *provider)
         if (registerPowerDriver(this, states, 2) != kIOReturnSuccess) {
             _wmiWorkLoop->runAction(controlWMIRuntime, this, const_cast<char *>("power-registration-failed"));
         } else {
-            provider->joinPMtree(this);
+            _pci->joinPMtree(this);
             changePowerStateTo(1);
             _wmiWorkLoop->runAction(controlWMIRuntime, this);
         }
     }
-    registerService();
-
     IOLog("Ath10kMac: READY %s pci-rev=%02x BAR0=%p len=0x%llx\n",
           chipName(), _revisionId, _bar0,
           (unsigned long long)_bar0Map->getLength());
@@ -175,7 +201,16 @@ bool Ath10kPCIDevice::start(IOService *provider)
         IOLog("Ath10kMac: target profile unresolved after cold-reset diagnostic\n");
     }
     IOLog("Ath10kMac: next=explicit open STA configuration; Ethernet stays down until association\n");
-    return true;
+}
+
+void Ath10kPCIDevice::cancelDeferredProbe()
+{
+    if (!_deferredProbeCall)
+        return;
+    thread_call_cancel_wait(_deferredProbeCall);
+    if (!thread_call_free(_deferredProbeCall))
+        IOLog("Ath10kMac: deferred probe worker could not be released\n");
+    _deferredProbeCall = nullptr;
 }
 
 bool Ath10kPCIDevice::stopDMAForRelease()
@@ -200,6 +235,8 @@ bool Ath10kPCIDevice::stopDMAForRelease()
 
 void Ath10kPCIDevice::stop(IOService *provider)
 {
+    // Do not release BAR, DMA, or PCI state while the deferred probe uses it.
+    cancelDeferredProbe();
     // Rematching is queued only after every old DMA mapping/IRQ has been
     // stopped and detached. Retain provider until registerService returns.
     IOService *rematch=_reprobeRequested?provider:nullptr;
@@ -265,6 +302,7 @@ void Ath10kPCIDevice::stop(IOService *provider)
 
 void Ath10kPCIDevice::free()
 {
+    cancelDeferredProbe();
     releasePowerNotifications();
     if (_powerManaged) { PMstop(); _powerManaged=false; }
     releaseWMIRuntime();
@@ -7025,7 +7063,7 @@ void Ath10kPCIDevice::publishDiagnosticProperties()
     setProperty("Ath10kOTPMilestoneSucceeded", _otpDownloadSucceeded && _otpExecuteSucceeded &&
                 _otpResultAccepted && (_bmiQuiesceSucceeded || _runtimeActive) && !_dmaQuarantine);
     setProperty("Ath10kBMIDoneSent", _boot.doneSent);
-    setProperty("Ath10kDriverVersion", "0.0.91");
+    setProperty("Ath10kDriverVersion", "0.0.94");
     setProperty("Ath10kHTCAttempted", _htcAttempted);
     setProperty("Ath10kWMIInitStatus",_wmiInit.status);
     setProperty("Ath10kWMIInitSubmitted",_wmiInit.submitted);

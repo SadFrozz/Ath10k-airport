@@ -50,7 +50,8 @@ static void extensionTests(){
  d._wmiScan.completed=true;
  r.index=1;assert(call(SecurityHold)==0 && s.eapolPause);
  r.index=0;assert(call(SecurityHold)==0 && !s.eapolPause && s.txWakePending);
- r.length=39;r.data[32]=1;memset(r.data,0x25,16);memset(r.data+16,0x45,16);
+ r.length=56;r.data[48]=AthSecurity::cipherCCMP;r.data[49]=1;memset(r.data,0x25,16);memset(r.data+16,0x45,16);
+ s.groupCipher=AthSecurity::cipherCCMP;
  memcpy(s.installedPair,r.data,16);s.pairInstalled=true;
  assert(call(RekeyPair)==kIOReturnBadArgument);
  assert(call(RekeyGroup,&b)==kIOReturnNotPermitted);
@@ -61,7 +62,7 @@ static void extensionTests(){
  assert(call(RekeyGroup)==kIOReturnBusy);
  d._wmiScan.completed=true;
  s.rekeyKind=0;s.portAuthorized=true;s.securityPhase=5;
- memcpy(s.installedGroups[1],r.data+16,16);s.groupInstalled[1]=true;s.groupIndex=1;
+ memcpy(s.installedGroups[1],r.data+16,32);s.groupInstalled[1]=true;s.groupIndex=1;
  assert(call(RekeyGroup)==kIOReturnBadArgument);memset(r.data,0x26,16);
  assert(call(RekeyPair)==0 && s.rekeyKind==2 && s.rekeySkipGroup && s.securityPhase==1);
  assert(call(Cancel)==0 && s.cancelRequested && d._wmiLive.active);
@@ -88,13 +89,13 @@ int main(){
  assert(call(Connect)==0 && d._controlOwner==&a);
  assert(call(Connect,&b)==kIOReturnExclusiveAccess);
  assert(call(Abort,&b)==kIOReturnNotPermitted);
- d._connection.stage=Ath10k::LinkStage::Connected;d._connection.secure=true;
+ d._connection.stage=Ath10k::LinkStage::Connected;d._connection.secure=true;d._connection.groupCipher=AthSecurity::cipherCCMP;
  assert(call(ReceiveEAPOL)==kIOReturnNotReady);
  auto &s=d._connection;s.eapolCount=1;s.eapolLength[0]=20;s.eapolFrames[0][0]=42;
  assert(call(ReceiveEAPOL)==0 && o.length==20 && o.data[0]==42 && s.eapolFrames[0][0]==0);
- r.length=38;assert(call(InstallKeys)==kIOReturnBadArgument);
- r.length=39;r.data[32]=4;assert(call(InstallKeys)==kIOReturnBadArgument);
- r.data[32]=1;r.data[33]=9;assert(call(InstallKeys)==0 && s.securityPhase==1 && s.groupPN[0]==9);
+ r.length=55;assert(call(InstallKeys)==kIOReturnBadArgument);
+ r.length=56;r.data[48]=AthSecurity::cipherCCMP;r.data[49]=4;assert(call(InstallKeys)==kIOReturnBadArgument);
+ r.data[49]=1;r.data[50]=9;assert(call(InstallKeys)==0 && s.securityPhase==1 && s.groupPN[0]==9);
  assert(call(InstallKeys)==kIOReturnBadArgument);
  assert(call(Authorize)==kIOReturnNotReady);
  s.securityPhase=3;s.lastTxEAPOL=true;s.txComplete=true;s.txOwned=true;

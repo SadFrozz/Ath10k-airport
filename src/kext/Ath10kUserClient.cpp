@@ -66,7 +66,7 @@ void Ath10kPCIDevice::fillControlInfo(AthControl::Response &o){
  Ath10k::htcWriteLE32(o.data+24,_connection.securityGeneration);
  Ath10k::htcWriteLE32(o.data+28,(_systemSuspended?1u:0u)|(_dmaQuarantine?2u:0u)|(_power.needsRestart?4u:0u));
  o.data[32]=_connection.ssidLength;bcopy(_connection.ssid,o.data+33,_connection.ssidLength);
- strlcpy(reinterpret_cast<char *>(o.data+68),"0.0.91",16);o.length=112;
+ strlcpy(reinterpret_cast<char *>(o.data+68),"0.0.94",16);o.length=112;
  const auto &r=_connection.radio;
  Ath10k::htcWriteLE32(o.data+84,(r.requestedPS?1u:0u)|(r.appliedPS?2u:0u)|(r.step?4u:0u));
  Ath10k::htcWriteLE32(o.data+88,_connection.beaconMisses);Ath10k::htcWriteLE32(o.data+92,_connection.txPowerHalfDbm);
@@ -193,13 +193,15 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   return kIOReturnSuccess;
  }
  if(r.operation==RekeyGroup || r.operation==RekeyPair){
-  if(s.stats.step || s.maintenance.step || s.radio.step || s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || r.length!=39 || r.data[32]>3 || !s.portAuthorized || s.securityPhase!=5 || s.wmiOwned || s.rekeyKind)return kIOReturnBusy;
+  if(s.stats.step || s.maintenance.step || s.radio.step || s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || r.length!=56 || r.data[48]!=s.groupCipher || r.data[49]>3 || !s.portAuthorized || s.securityPhase!=5 || s.wmiOwned || s.rekeyKind)return kIOReturnBusy;
+  const UInt32 groupKeyLength=s.groupCipher==AthSecurity::cipherTKIP?32:16;
+  if(groupKeyLength==16)for(unsigned i=16;i<32;++i)if(r.data[16+i])return kIOReturnBadArgument;
   const bool pair=r.operation==RekeyPair;
   if(pair && AthSecurity::equal(r.data,s.installedPair,16))return kIOReturnBadArgument;
-  bool sameGroup=s.groupInstalled[r.data[32]] && AthSecurity::equal(r.data+16,s.installedGroups[r.data[32]],16);
-  for(unsigned i=0;i<4;++i)if(s.groupInstalled[i] && AthSecurity::equal(r.data+16,s.installedGroups[i],16) && i!=r.data[32])return kIOReturnBadArgument;
-  if(sameGroup && (!pair || r.data[32]!=s.groupIndex))return kIOReturnBadArgument;
-  bcopy(r.data,s.temporalKey,16);bcopy(r.data+16,s.groupKey,16);s.groupIndex=r.data[32];bcopy(r.data+33,s.groupRSC,6);
+  bool sameGroup=s.groupInstalled[r.data[49]] && AthSecurity::equal(r.data+16,s.installedGroups[r.data[49]],groupKeyLength);
+  for(unsigned i=0;i<4;++i)if(s.groupInstalled[i] && AthSecurity::equal(r.data+16,s.installedGroups[i],groupKeyLength) && i!=r.data[49])return kIOReturnBadArgument;
+  if(sameGroup && (!pair || r.data[49]!=s.groupIndex))return kIOReturnBadArgument;
+  bcopy(r.data,s.temporalKey,16);bcopy(r.data+16,s.groupKey,32);s.groupIndex=r.data[49];bcopy(r.data+50,s.groupRSC,6);
   if(!self->_wmiScan.completed)self->_wmiScan.cancelRequested=true;
   s.rekeyKind=pair?2:1;s.rekeySkipGroup=pair && sameGroup;s.securityPhase=pair?1:2;
   s.portAuthorized=false;s.submitted=false;s.authorizeRequested=false;s.securityAck=false;
@@ -207,8 +209,9 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   return kIOReturnSuccess;
  }
  if(r.operation==InstallKeys){
-  if(r.length!=39 || r.data[32]>3 || s.securityPhase || s.portAuthorized)return kIOReturnBadArgument;
-  bcopy(r.data,s.temporalKey,16);bcopy(r.data+16,s.groupKey,16);s.groupIndex=r.data[32];bcopy(r.data+33,s.groupRSC,6);
+  if(r.length!=56 || r.data[48]!=s.groupCipher || r.data[49]>3 || s.securityPhase || s.portAuthorized)return kIOReturnBadArgument;
+  if(s.groupCipher==AthSecurity::cipherCCMP)for(unsigned i=16;i<32;++i)if(r.data[16+i])return kIOReturnBadArgument;
+  bcopy(r.data,s.temporalKey,16);bcopy(r.data+16,s.groupKey,32);s.groupIndex=r.data[49];bcopy(r.data+50,s.groupRSC,6);
   UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);
   for(auto &v:s.groupPN)v=pn;
   s.securityPhase=1;s.submitted=false;return kIOReturnSuccess;

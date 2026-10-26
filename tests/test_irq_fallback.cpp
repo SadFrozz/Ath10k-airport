@@ -4,7 +4,7 @@
 #include <vector>
 #include <cstdint>
 using UInt16=uint16_t;using UInt32=uint32_t;using SInt32=int32_t;using IOReturn=int;
-constexpr int kIOReturnSuccess=0,kIOInterruptTypePCIMessaged=0x10000,kIOInterruptTypeLevel=1,kIOInterruptTypeEdge=0;
+constexpr int kIOReturnSuccess=0,kIOInterruptTypePCIMessaged=0x10000;
 constexpr UInt16 kIOPCIConfigCommand=4,kMSIMessageControlOffset=2,kMSIControlEnable=1;
 static void IOLog(const char *,...){}
 class Ath10kPCIDevice;

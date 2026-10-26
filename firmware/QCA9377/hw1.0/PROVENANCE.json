@@ -24,5 +24,5 @@
     }
   },
   "license": "../../LICENSE.QualcommAtheros_ath10k; notice_ath10k_firmware-6.txt",
-  "board_policy": "Exact API2 PCI key first. No 1235:0901 match in supplied board-2.bin; API1 board.bin fallback following Linux v6.12 core.c. Do not use the 17aa:0901 entry as an exact 1235 match."
+  "board_policy": "Exact API2 PCI key for Dell 1028:1810; do not substitute another subsystem's calibration."
 }

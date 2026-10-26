@@ -129,7 +129,7 @@ int main(){
         aggregate(frame,s,true);batch._rxBatch.reset();batch.deliverNetworkRX(frame,1,7,0,2048);batch.finishNetworkRX();
         batch.flushNetworkRX();assert(batch.interface.frames.size()==65);
     }
-    Ath10kPCIDevice d;auto &s=d._connection;s.stage=LinkStage::Connected;s.secure=true;s.securityPhase=5;s.portAuthorized=true;
+    Ath10kPCIDevice d;auto &s=d._connection;s.stage=LinkStage::Connected;s.secure=true;s.securityPhase=5;s.groupCipher=AthSecurity::cipherCCMP;s.portAuthorized=true;
     s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
     s.firmwareReorder=true;UInt8 desc[2048];
     auto feed=[&](){d._rxBatch.reset();d.deliverNetworkRX(desc,1,7,0,2048);d.finishNetworkRX();};

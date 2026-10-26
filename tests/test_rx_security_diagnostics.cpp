@@ -14,7 +14,20 @@ static void descriptor(UInt8 *d,const ConnectionState &s){
     d[263]=d[267]=d[271]=0x20; // all possible IV/key-control offsets
     memcpy(d+300,s.local,6);memcpy(d+306,s.bssid,6);d[312]=8;d[314]=0x45;
 }
+static void tkipGroupReplay(){
+    auto s=connected();s.groupCipher=AthSecurity::cipherTKIP;s.groupIndex=2;
+    UInt8 d[2048];descriptor(d,s);htcWriteLE16(d+236,0x4208);
+    const UInt8 multicast[]={1,0,0x5e,0,0,1};memcpy(d+240,multicast,6);memcpy(d+300,multicast,6);
+    htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);
+    UInt8 *iv=d+260;iv[0]=2;iv[1]=0x22;iv[2]=1;iv[3]=0xa0;iv[4]=3;iv[5]=4;iv[6]=5;iv[7]=6;
+    const UInt64 tsc=1u|(UInt64(2)<<8)|(UInt64(3)<<16)|(UInt64(4)<<24)|(UInt64(5)<<32)|(UInt64(6)<<40);
+    assert(acceptSecureRX(s,d,d+300,18,7));assert(s.groupPN[16]==tsc);
+    assert(!acceptSecureRX(s,d,d+300,18,7)&&s.rxLastReason==ConnectionState::Replay);
+    s.groupPN[16]=0;htcWriteLE32(d+12,(6u<<28)|(1u<<13)|7);
+    assert(!acceptSecureRX(s,d,d+300,18,7)&&s.rxLastReason==ConnectionState::Key&&!s.groupPN[16]);
+}
 int main(){
+    tkipGroupReplay();
     auto s=connected();UInt8 d[2048];descriptor(d,s);
     // Exhaustive FC equivalence: instrumentation must not widen acceptance.
     for(UInt32 fc=0;fc<=0xffff;++fc){

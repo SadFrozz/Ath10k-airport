@@ -736,9 +736,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(s.securityPhase<=2 && !s.securityAck)return nullptr;
         if(s.securityPhase==4 && (!_connectionEcho.replyReceived || (s.rekeyKind && _rxSetup.pendingMPDUs)))return nullptr;
         if(s.securityPhase==1){bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;}
-        if(s.securityPhase==2){bcopy(s.groupKey,s.installedGroups[s.groupIndex],16);s.groupInstalled[s.groupIndex]=true;}
+        if(s.securityPhase==2){bcopy(s.groupKey,s.installedGroups[s.groupIndex],32);s.groupInstalled[s.groupIndex]=true;}
         if(s.securityPhase==1 && s.rekeySkipGroup)s.securityPhase=2;
-        if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,16);AthSecurity::wipe(s.groupKey,16);}
+        if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,16);AthSecurity::wipe(s.groupKey,32);}
         ++s.securityPhase;s.submitted=false;
         if(s.rekeyKind && s.securityPhase==3)s.securityPhase=4;
         if(s.securityPhase==5){
