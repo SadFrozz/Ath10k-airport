@@ -22,7 +22,9 @@ struct Gate{
  bool inside=false;
  template<class F> int runAction(F fn,Ath10kPCIDevice *d,void *p){inside=true;int r=fn(d,p,nullptr,nullptr,nullptr);inside=false;return r;}
 };
+struct MockPCI {template<class... T> bool setProperty(T...){return true;}};
 class Ath10kPCIDevice{
+ MockPCI mockPCI;MockPCI *_pci=&mockPCI;
 public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
  Ath10k::PowerState _power{};volatile UInt32 _powerIOBlock=0;

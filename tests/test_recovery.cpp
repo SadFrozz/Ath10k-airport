@@ -11,11 +11,12 @@ struct Gate {
  bool inside=false;
  template<class F,class D,class C,class R,class O> int runAction(F f,D *d,C *c,R *r,O *o){inside=true;int result=f(d,c,r,o);inside=false;return result;}
 };
+struct MockPCI {bool setProperty(const char *,const char *){return true;}};
 class Ath10kPCIDevice {
 public:
  Ath10k::PowerState _power{};
  bool _systemSuspended=false,_reprobeRequested=false,_dmaQuarantine=false,inactive=false;
- void *_pci=this;bool terminateOK=true,resetQuarantines=false;unsigned resets=0,terminations=0,options=0,refs=1;
+ MockPCI mockPCI;MockPCI *_pci=&mockPCI;bool terminateOK=true,resetQuarantines=false;unsigned resets=0,terminations=0,options=0,refs=1;
  Gate gate;Gate *_wmiWorkLoop=&gate;
  struct {bool active=true;} _wmiLive;
  Ath10k::WMIScanState _wmiScan{};Ath10k::ConnectionState _connection{};

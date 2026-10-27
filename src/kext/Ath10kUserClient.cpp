@@ -98,8 +98,8 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
    if(Ath10k::requestDisconnect(s,n/1000000u)){s.diagnostics.cancelOrigin=s.diagnostics.lastCancelOrigin="client-close";self->networkLink(false);self->publishConnection();}
    else if(self->_wmiLive.active && s.stage!=Ath10k::LinkStage::Disabled){s.diagnostics.cancelOrigin="client-close";s.cancelRequested=true;s.portAuthorized=false;self->networkLink(false);self->publishConnection();}}return kIOReturnSuccess;}
  const auto &r=*static_cast<const Request *>(input);auto &o=*static_cast<Response *>(output);
- if(r.version!=version || r.length>512 || r.operation>RadioOptions)return kIOReturnBadArgument;
- bzero(&o,sizeof(o));o.version=version;o.stage=static_cast<UInt32>(s.stage);o.phase=s.securityPhase;
+ if(r.version!=AthControl::version || r.length>512 || r.operation>RadioOptions)return kIOReturnBadArgument;
+ bzero(&o,sizeof(o));o.version=AthControl::version;o.stage=static_cast<UInt32>(s.stage);o.phase=s.securityPhase;
  o.flags=128|512|((self->_wmiScan.attempted && !self->_wmiScan.completed)?256:0)|(s.disconnect!=Ath10k::DisconnectStage::None?64:0)|(self->_wmiLive.active?1:0)|(self->_wmiScan.completed?2:0)|(self->_networkLinkUp?4:0)|(s.txOwned?8:0)|(s.secure?16:0)|(s.eapolTxFailed?32:0);
  o.count=self->_wmiBSS.count;bcopy(s.local,o.local,6);bcopy(s.bssid,o.bssid,6);
  if(s.stage==Ath10k::LinkStage::Disabled)bcopy(self->_wmiInit.mac,o.local,6);
@@ -115,10 +115,18 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   Ath10k::htcWriteLE32(o.data+o.length,b.hidden?2u:0u);o.length+=4;return kIOReturnSuccess;
  }
  if(r.operation==Info){self->fillControlInfo(o);return kIOReturnSuccess;}
+#ifdef ATH10K_NATIVE
+ // Native WCL exclusively owns mutations, including hardware restart.
+ return kIOReturnNotPermitted;
+#endif
  if(r.operation==Restart){
   if(self->_controlOwner && self->_controlOwner!=who)return kIOReturnNotPermitted;
   return self->requestDeviceRestart()?kIOReturnSuccess:kIOReturnNotReady;
  }
+#ifdef ATH10K_NATIVE
+ // Native WCL owns association and keys; diagnostic clients are read-only.
+ return kIOReturnNotPermitted;
+#endif
  if(!self->_wmiLive.active)return kIOReturnNotReady;
  if(s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnBusy;
  if(r.operation==RadioOptions){

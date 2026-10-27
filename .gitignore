@@ -3,3 +3,6 @@ __pycache__/
 *.py[cod]
 /build/
 /usb-backup/
+/.cache/
+/src/kext/Ath10kPayload.hpp
+/firmware/prepared/

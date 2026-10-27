@@ -1,0 +1,63 @@
+diff --git a/cctools/include/foreign/dlfcn.h b/cctools/include/foreign/dlfcn.h
+index 57bbec7..02df383 100644
+--- a/cctools/include/foreign/dlfcn.h
++++ b/cctools/include/foreign/dlfcn.h
+@@ -2,7 +2,7 @@
+ #define __CCTOOLS_PORT_DLFCN_H__
+ #include_next <dlfcn.h>
+ #include <stdio.h> /* stderr */
+-#ifdef __CYGWIN__
++#if defined(__CYGWIN__) && !__GNU_VISIBLE
+ typedef struct dl_info {
+     const char  *dli_fname;
+     void        *dli_fbase;
+diff --git a/cctools/include/foreign/machine/endian.h b/cctools/include/foreign/machine/endian.h
+index 6cf3901..66a521c 100644
+--- a/cctools/include/foreign/machine/endian.h
++++ b/cctools/include/foreign/machine/endian.h
+@@ -28,7 +28,7 @@
+ /*
+  * Copyright 1995 NeXT Computer, Inc. All rights reserved.
+  */
+-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
++#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__CYGWIN__)
+ #include_next <machine/endian.h>
+ #else
+ #ifndef _BSD_MACHINE_ENDIAN_H_
+diff --git a/cctools/ld64/src/ld/Options.cpp b/cctools/ld64/src/ld/Options.cpp
+index 4e55ced..c2172d9 100644
+--- a/cctools/ld64/src/ld/Options.cpp
++++ b/cctools/ld64/src/ld/Options.cpp
+@@ -1400,24 +1400,14 @@ Options::Treatment Options::parseTreatment(const char* treatment)
+ 
+ void Options::setMacOSXVersionMin(const char* version)
+ {
+-	if ( version == NULL )
+-		throw "-macosx_version_min argument missing";
+-
+-	if ( (strncmp(version, "10.", 3) == 0) && isdigit(version[3]) ) {
+-		unsigned int minorVersion = 0;
+-		for (int i=3; isdigit(version[i]); ++i) {
+-			minorVersion = minorVersion*10 + (version[i] - '0');
+-		}
+-		if ( minorVersion > 255 ) {
+-			warning("Mac OS X minor version > 255 in '%s'", version);
+-			minorVersion = 255;
+-		}
+-		fMacVersionMin = (ld::MacVersionMin)(0x000A0000 | (minorVersion << 8));
+-		fPlatform = kPlatformOSX;
+-	}
+-	else {
+-		warning("unknown option to -macosx_version_min, not 10.x");
+-	}
++    if ( version == NULL )
++        throw "-macosx_version_min argument missing";
++    // Preserve modern versions rather than silently falling back to 10.6.
++    uint32_t parsed = parseVersionNumber32(version);
++    if ( parsed < 0x000A0000 )
++        throw "unsupported macOS minimum version";
++    fMacVersionMin = (ld::MacVersionMin)parsed;
++    fPlatform = kPlatformOSX;
+ }
+ 
+ void Options::setIOSVersionMin(const char* version)

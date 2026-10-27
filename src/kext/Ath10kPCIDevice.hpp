@@ -1,5 +1,11 @@
 #pragma once
 
+#ifdef ATH10K_NATIVE
+#include "native/Ath10kNativeInterface.hpp"
+#define ATH10K_CONTROLLER_BASE IO80211Controller
+#else
+#define ATH10K_CONTROLLER_BASE IOEthernetController
+#endif
 #include <IOKit/network/IOEthernetController.h>
 #include <IOKit/network/IOEthernetInterface.h>
 #include <IOKit/IOInterrupts.h>
@@ -32,9 +38,12 @@
 #include <IOKit/IOUserClient.h>
 #include "../shared/Ath10kControl.hpp"
 
-class Ath10kPCIDevice : public IOEthernetController
+class Ath10kPCIDevice : public ATH10K_CONTROLLER_BASE
 {
     OSDeclareDefaultStructors(Ath10kPCIDevice)
+#ifdef ATH10K_NATIVE
+#include "native/Ath10kControllerDecl.inc"
+#endif
 
 public:
     IOReturn newUserClient(task_t,void *,UInt32,OSDictionary *,IOUserClient **) override;
@@ -224,6 +233,8 @@ private:
     void runDeferredProbe();
     void cancelDeferredProbe();
     thread_call_t _deferredProbeCall=nullptr;
+    IOLock *_deferredProbeLock=nullptr;
+    bool _deferredProbePending=false;
     bool wakeTarget(bool &assertedWake);
     void releaseTargetWake(bool assertedWake);
     bool coldResetTarget();
