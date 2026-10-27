@@ -5,6 +5,12 @@
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 int main(){
+ UInt8 latency[8];memset(latency,0xa5,sizeof(latency));
+ assert(!nativeLowLatencySessions(nullptr,4));assert(!nativeLowLatencySessions(latency,3));
+ assert(nativeLowLatencySessions(latency,4));
+ for(unsigned i=0;i<4;++i)assert(latency[i]==0);
+ for(unsigned i=4;i<8;++i)assert(latency[i]==0xa5);
+
  Ath10k::RegulatoryPolicy policy;AirportWCL::ChannelInfo channels{};
  assert(nativeWCLChannels(policy,channels));
  assert(channels.count==Ath10k::kWMIScanChannelCount && !channels.supports6GHz);

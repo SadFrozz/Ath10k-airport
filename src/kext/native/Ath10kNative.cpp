@@ -311,6 +311,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             if(!Ath10k::regulatoryPower(_regulatory,ch,ch,20,false))continue;
             auto &c=d->supported_channels[d->num_channels++];c.version=1;c.channel=ch;c.flags=channelFlags(ch);
         }return kIOReturnSuccess;}
+    case N::getWCL_LOW_LATENCY_INFO:
+        setProperty("Ath10kNativeLowLatencyQuerySeen",true);
+        return nativeLowLatencySessions(data,4)?kIOReturnSuccess:kIOReturnBadArgument;
     case N::getWCL_CHANNELS_INFO:{
         auto &channels=*static_cast<AirportWCL::ChannelInfo *>(data);
         bool ok=nativeWCLChannels(_regulatory,channels);

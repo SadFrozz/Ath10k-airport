@@ -92,3 +92,10 @@ inline bool nativeWCLChannels(const Ath10k::RegulatoryPolicy &policy,AirportWCL:
     }
     return out.count!=0;
 }
+
+// No low-latency/P2P session is implemented. WCL's query is a four-byte
+// session mask, not a request to enable an unsupported offload.
+inline bool nativeLowLatencySessions(void *out,size_t capacity) {
+    if(!out || capacity<4)return false;
+    memset(out,0,4);return true;
+}

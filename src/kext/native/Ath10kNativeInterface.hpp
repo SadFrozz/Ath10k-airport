@@ -63,7 +63,7 @@ public:
     IOReturn getTIMESYNC_INFO(apple80211_timesync_info* data) override { return kIOReturnUnsupported; }
     IOReturn getSENSING_DATA(apple80211_sensing_data_t* data) override { return kIOReturnUnsupported; }
     IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels* data) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info* data) override { return kIOReturnUnsupported; }
+    IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info* data) override { return perform(AthNativeOp::getWCL_LOW_LATENCY_INFO,data); }
     IOReturn getWCL_BSS_INFO(apple80211_beacon_msg* data) override { return perform(AthNativeOp::getWCL_BSS_INFO,data); }
     IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters* data) override { return perform(AthNativeOp::getWCL_TRAFFIC_COUNTERS,data); }
     IOReturn getWCL_GET_TX_BLANKING_STATUS(unsigned int* data) override { return kIOReturnUnsupported; }
