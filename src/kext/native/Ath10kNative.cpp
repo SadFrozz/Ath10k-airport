@@ -5,6 +5,9 @@
 #include "Ath10kNativeWire.hpp"
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
+#include "Ath10kNativeMAC.hpp"
+#include <kern/clock.h>
+#include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
@@ -188,13 +191,7 @@ bool Ath10kNativeInterface::initWithController(Ath10kPCIDevice *owner) {
 }
 IOReturn Ath10kNativeInterface::perform(AthNativeOp op,void *data){return controller?controller->nativeRequest(op,data):kIOReturnNotAttached;}
 IOReturn Ath10kNativeInterface::setMacAddress(ether_addr &address) {
-    IOEthernetAddress current{};
-    if(!controller || controller->getHardwareAddress(&current)!=kIOReturnSuccess)return kIOReturnNotReady;
-    // A firmware restart with a changed vdev address is not implemented yet.
-    // Never claim a new address while transmitting with the permanent address.
-    const bool same=bcmp(&current,&address,6)==0;
-    controller->setProperty("Ath10kNativeMACChangeRequested",!same);
-    return same?kIOReturnSuccess:kIOReturnUnsupported;
+    return controller?controller->nativeRequest(AthNativeOp::MACSet,&address):kIOReturnNotAttached;
 }
 IONetworkInterface *Ath10kPCIDevice::createInterface() {
     auto interface=new Ath10kBSDInterface;
@@ -203,6 +200,7 @@ IONetworkInterface *Ath10kPCIDevice::createInterface() {
 }
 bool Ath10kPCIDevice::prepareNativeInterface() {
     _nativeStopping=false;
+    bcopy(_wmiInit.mac,_nativeMACCurrent,6);_nativeMACValid=true;
     // Strict profile/OS guard; unrelated adapters must not enter the WCL path.
     if(_vendorId!=0x168c || _deviceId!=0x42 || _subsystemVendorId!=0x1a3b || _subsystemId!=0x2b51)return false;
     _nativeGate=IOCommandGate::commandGate(this);
@@ -240,6 +238,7 @@ IOReturn Ath10kPCIDevice::nativeStopAction(OSObject *owner,void *,void *,void *,
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
     self->_nativeStopping=true;
+    if(self->_nativeMACWaiting){self->_nativeMACResult=kIOReturnAborted;self->_nativeGate->commandWakeup(&self->_nativeMACResult);}
     return kIOReturnSuccess;
 }
 void Ath10kPCIDevice::stopNativeRequests() {
@@ -280,6 +279,7 @@ IOReturn Ath10kPCIDevice::nativeRequest(AthNativeOp op,void *data) {
     IOReturn result=_nativeGate->runAction(nativeAction,reinterpret_cast<void *>(uintptr_t(op)),data);
     if(scan)setProperty("Ath10kNativeScanReturn",UInt64(result),32);
     if(joinRequest)setProperty("Ath10kNativeJoinReturn",UInt64(result),32);
+    if(op==AthNativeOp::MACSet)setProperty("Ath10kNativeMACReturn",UInt64(result),32);
     return result;
 }
 IOReturn Ath10kPCIDevice::nativeAction(OSObject *target,void *op,void *data,void *,void *) {
@@ -293,7 +293,37 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     if(!data && op!=N::setCLEAR_PMKSA_CACHE && op!=N::setWCL_SCAN_ABORT &&
        op!=N::setWCL_JOIN_ABORT && op!=N::setWCL_LEAVE_NETWORK && op!=N::setWCL_LINK_UP_DONE &&
        op!=N::NativeReady)return kIOReturnBadArgument;
+    if((_nativeMACActive || _nativeMACWaiting) && op!=N::MACSet && op!=N::PowerGet && op!=N::getHW_ADDR)return kIOReturnBusy;
     switch(op){
+    case N::MACSet:{
+        const auto address=static_cast<const UInt8 *>(data);
+        if(!AthNative::validMAC(address))return kIOReturnBadArgument;
+        if(_nativeMACWaiting || _nativeMACActive)return kIOReturnBusy;
+        const bool same=!bcmp(_nativeMACCurrent,address,6);
+        setProperty("Ath10kNativeMACChangeRequested",!same);
+        if(same)return kIOReturnSuccess;
+        if(!_nativeMACValid || !_nativeGate || getWorkLoop()->onThread())return kIOReturnNotReady;
+        if(!_networkInterface || !_networkInterface->getIfnet() || !_wmiScanChannels.completed || !_wmiScan.completed ||
+           _nativeScanPending || _nativeJoinPending || s.stage!=Ath10k::LinkStage::Disabled ||
+           s.disconnect!=Ath10k::DisconnectStage::None || s.peerCount || s.wmiOwned || s.txOwned || _wmi.credits.outstanding)return kIOReturnBusy;
+        if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return kIOReturnNoMemory;
+        bcopy(address,_nativeMACRequested,6);_nativeMACResult=kIOReturnNotReady;
+        _nativeMACStep=1;_nativeMACSubmitted=false;_nativeMACActive=_nativeMACWaiting=true;
+        _nativeMACSince=Ath10k::uptimeNS()/1000000u;++_nativeMACGeneration;
+        setProperty("Ath10kNativeMACStatus","recreating-vdev");
+        // This callback runs on the separate WCL queue. Sleep releases the
+        // network gate so the runtime timer can drain DMA and ECHO responses.
+        AbsoluteTime deadline;clock_interval_to_deadline(6000,kMillisecondScale,&deadline);
+        while(_nativeMACActive && !_nativeStopping && _wmiLive.active){
+            IOReturn wake=_nativeGate->commandSleep(&_nativeMACResult,deadline,THREAD_UNINT);
+            if(wake!=THREAD_AWAKENED)break;
+        }
+        if(_nativeMACActive){
+            endWMIRuntime("native-mac-transaction-interrupted");
+            _nativeMACResult=kIOReturnTimeout;_nativeMACActive=false;
+        }
+        _nativeMACWaiting=false;return _nativeMACResult;}
+
     case N::NativeReady:{
         if(!_nativeStarted || !_nativeInterface || !_networkInterface)return kIOReturnNotReady;
         if(_nativeReadyPublished)return kIOReturnSuccess;
@@ -310,7 +340,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     case N::CountrySet:{auto d=static_cast<apple80211_country_code_data *>(data);
         return _regulatory.country && !bcmp(d->cc,_regulatory.country->alpha2,2)?kIOReturnSuccess:kIOReturnUnsupported;}
     case N::getHW_ADDR:{AirportWCL::HardwareAddress address{};
-        if(!AirportWCL::copyHardwareAddress(_wmiInit.mac,address))return kIOReturnNotReady;bcopy(&address,data,sizeof(address));return kIOReturnSuccess;}
+        if(!AirportWCL::copyHardwareAddress(_nativeMACCurrent,address))return kIOReturnNotReady;bcopy(&address,data,sizeof(address));return kIOReturnSuccess;}
     case N::getCHANNEL:{auto d=static_cast<apple80211_channel_data *>(data);bzero(d,sizeof(*d));d->version=1;
         d->channel.version=1;d->channel.channel=s.operatingChannel;d->channel.flags=channelFlags(s.operatingChannel);return s.operatingChannel?kIOReturnSuccess:kIOReturnNotReady;}
     case N::getOP_MODE:{auto d=static_cast<apple80211_opmode_data *>(data);bzero(d,sizeof(*d));d->version=1;d->op_mode=APPLE80211_M_STA;return kIOReturnSuccess;}
@@ -393,7 +423,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
         if(_nativeJoinPending || _nativeScanPending || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
         s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal;s.ssidLength=join.ssidLength;
-        bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_wmiInit.mac,s.local,6);
+        bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;s.rfChains=1;
         _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
         const char *error=Ath10k::selectOpenBSS(s,_nativeSecurity->candidates.bss);
@@ -433,7 +463,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
 }
 
 void Ath10kPCIDevice::serviceNative(UInt64 now) {
-    if(!_nativeInterface || _nativeStopping || !_nativeStarted)return;
+    if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
     auto &s=_connection;auto sec=_nativeSecurity;
     if(sec && _wmiScan.completed && !_wmiScan.failed && !_wmiScan.cancelRequested &&
        sec->cachedGeneration!=_wmiScan.generation){
@@ -552,4 +582,47 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         _nativeBSSBytes=0;_nativeReportedBeacon=0;if(sec)sec->reset();
     }
     _nativeWasUp=up;
+}
+
+// Runs under the network workloop gate; no radio commands run concurrently.
+const char *Ath10kPCIDevice::serviceNativeMAC(UInt64 now) {
+    if(!_nativeMACActive)return nullptr;
+    if(now<_nativeMACSince || now-_nativeMACSince>=5000)return "native-mac-transaction-timeout";
+    if(!_nativeMACSubmitted){
+        if(_wmi.credits.outstanding)return nullptr;
+        const bool barrier=_nativeMACStep==2 || _nativeMACStep==4;
+        if(barrier){
+            Ath10k::resetInPlace(_nativeMACEcho);
+            _nativeMACEcho.cookie=0xa7c00000u|((_nativeMACGeneration&0xfffu)<<4)|_nativeMACStep;
+            _nativeMACEcho.submitted=true;
+        }
+        const UInt32 bytes=AthNative::macFrame(static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,
+            _htcWMIControl.endpoint,_nativeMACStep,_nativeMACRequested,_nativeMACEcho.cookie);
+        if(!bytes)return "native-mac-frame";
+        const char *error=submitNetworkCE(3,_connectionCommand,bytes,_nativeMACNext);
+        if(error)return error;
+        _nativeMACSubmitted=true;return nullptr;
+    }
+    Ath10k::CESnapshot snap{};
+    if(!Ath10k::readCESnapshot(_regs,3,snap) || !validateBMIPipeStructure(3,snap) || snap.srcWriteIndex!=_nativeMACNext)return "native-mac-ce-state";
+    if(snap.currentSrcRead!=_nativeMACNext || _wmi.credits.outstanding)return nullptr;
+    if(!_connectionCommand.syncFromDevice() || !_ceSrcRings[3].syncFromDevice())return "native-mac-ce-sync";
+    _connection.wmiOwned=false;
+    if((_nativeMACStep==2 || _nativeMACStep==4) && !_nativeMACEcho.replyReceived)return nullptr;
+    if(_nativeMACStep<4){++_nativeMACStep;_nativeMACSubmitted=false;return nullptr;}
+    // Firmware now has the requested address. Publish only after both barriers.
+    if(!_networkInterface || !_networkInterface->getIfnet() ||
+       ifnet_set_lladdr(_networkInterface->getIfnet(),_nativeMACRequested,6))return "native-mac-bsd-address";
+    bcopy(_nativeMACRequested,_nativeMACCurrent,6);
+    _networkInterface->setProperty(kIOMACAddress,_nativeMACCurrent,6);
+    setProperty("Ath10kNativeMACStatus","applied");
+    setProperty("Ath10kNativeMACGeneration",UInt64(_nativeMACGeneration),32);
+    _nativeMACResult=kIOReturnSuccess;_nativeMACActive=false;
+    _nativeGate->commandWakeup(&_nativeMACResult);return nullptr;
+}
+
+const char *Ath10kPCIDevice::nativeSelectBSS(UInt64 now) {
+    if(!_nativeSecurity || !_nativeJoinPending)return "native-candidate-not-ready";
+    _nativeSecurity->candidates.expire(now);
+    return Ath10k::selectOpenBSS(_connection,_nativeSecurity->candidates.bss);
 }

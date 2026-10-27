@@ -34,6 +34,15 @@ public:
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);
+    const char *serviceNativeMAC(UInt64);
+    const char *nativeSelectBSS(UInt64);
+    bool _nativeMACActive=false,_nativeMACWaiting=false,_nativeMACValid=false;
+    bool _nativeMACSubmitted=false;
+    UInt32 _nativeMACStep=0,_nativeMACNext=0,_nativeMACGeneration=0;
+    UInt64 _nativeMACSince=0;
+    UInt8 _nativeMACCurrent[6]{},_nativeMACRequested[6]{};
+    Ath10k::WMIEchoState _nativeMACEcho{};
+    IOReturn _nativeMACResult=kIOReturnNotReady;
 private:
     friend class Ath10kNativeInterface;
     friend class Ath10kBSDInterface;

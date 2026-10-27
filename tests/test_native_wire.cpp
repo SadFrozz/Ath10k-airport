@@ -5,7 +5,25 @@
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
+#include "../src/kext/native/Ath10kNativeMAC.hpp"
 int main(){
+ UInt8 privateMAC[]={2,0x11,0x22,0x33,0x44,0x55},invalidMAC[]={1,0,0,0,0,1},zeroMAC[6]{};
+ assert(AthNative::validMAC(privateMAC) && !AthNative::validMAC(invalidMAC) && !AthNative::validMAC(zeroMAC) && !AthNative::validMAC(nullptr));
+ UInt8 mf[48];memset(mf,0xa5,sizeof(mf));
+ assert(!AthNative::macFrame(mf,19,2,1,privateMAC,0x1234));assert(mf[0]==0xa5);
+ assert(AthNative::macFrame(mf,sizeof(mf),2,1,privateMAC,0x1234)==20);
+ assert(Ath10k::htcReadLE16(mf+2)==12 && Ath10k::wmiReadLE32(mf+8)==0x5002 && Ath10k::htcReadLE16(mf+14)==87 && Ath10k::wmiReadLE32(mf+16)==0);
+ assert(mf[20]==0xa5);
+ assert(AthNative::macFrame(mf,sizeof(mf),2,2,privateMAC,0x1234)==20 && Ath10k::wmiReadLE32(mf+8)==0x1d001 && Ath10k::wmiReadLE32(mf+16)==0x1234);
+ assert(!AthNative::macFrame(mf,35,2,3,privateMAC,0));
+ assert(AthNative::macFrame(mf,sizeof(mf),2,3,privateMAC,0)==36);
+ assert(Ath10k::wmiReadLE32(mf+8)==0x5001 && Ath10k::wmiReadLE32(mf+16)==0 && Ath10k::wmiReadLE32(mf+20)==2 && !memcmp(mf+28,privateMAC,6));
+ assert(mf[34]==0 && mf[35]==0 && mf[36]==0xa5);
+ assert(AthNative::macFrame(mf,sizeof(mf),2,4,privateMAC,0x5678)==20 && Ath10k::wmiReadLE32(mf+16)==0x5678);
+ assert(!AthNative::macFrame(mf,sizeof(mf),2,5,privateMAC,0));
+ assert(!AthNative::macFrame(mf,sizeof(mf),0,1,privateMAC,0));
+ assert(!AthNative::macFrame(mf,sizeof(mf),2,1,invalidMAC,0));
+
  assert(nativeScanDwellBudget(0)==120 && nativeScanDwellBudget(1)==1);
  assert(nativeScanDwellBudget(100)==100 && nativeScanDwellBudget(10000)==120);
 

@@ -40,7 +40,9 @@ def main():
         (include / 'IOKit/IOTypes.h').write_text(
             '#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;'
             'using UInt32=uint32_t;using UInt64=uint64_t;\n')
-        names=['rsn_policy', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
+        (include/'native_mac_method.inc').write_text(native[native.index('const char *Ath10kPCIDevice::serviceNativeMAC('):native.index('const char *Ath10kPCIDevice::nativeSelectBSS(')])
+        names=['native_mac', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         for name in names:
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))

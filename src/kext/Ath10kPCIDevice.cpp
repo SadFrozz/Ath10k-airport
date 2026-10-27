@@ -1072,7 +1072,13 @@ const char *Ath10kPCIDevice::serviceRuntime()
     const UInt64 started=Ath10k::uptimeNS();
     _rxDeliveryBatch=ATH10K_RX_BATCH;
     const char *error=drainWMIRuntime();
-    if (!error) {
+#ifdef ATH10K_NATIVE
+    const bool macTransaction=_nativeMACActive;
+    if(!error && macTransaction)error=serviceNativeMAC(tickMs);
+#else
+    const bool macTransaction=false;
+#endif
+    if (!error && !macTransaction) {
         uint64_t now=0,ns=0;clock_get_uptime(&now);absolutetime_to_nanoseconds(now,&ns);
         error=serviceWMIEcho(ns/1000000u);
         if (!error && _wmiEcho.completed) error=serviceRxSetup(ns/1000000u);
@@ -1082,7 +1088,7 @@ const char *Ath10kPCIDevice::serviceRuntime()
         if (!error && _wmiVdevCreate.completed && _wmiRadio[0].completed && _wmiRadio[1].completed && _wmiRadio[4].completed) error=serviceWMIScanChannels(ns/1000000u);
         if (!error && _wmiScanChannels.completed) error=serviceWMIScan(ns/1000000u);
     }
-    if (!error) {uint64_t t=0,n=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&n);error=serviceConnection(n/1000000u);}
+    if (!error && !macTransaction) {uint64_t t=0,n=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&n);error=serviceConnection(n/1000000u);}
     const UInt64 rxStarted=Ath10k::uptimeNS();
     if (!error && tickMs>=_nextRxDoneRetryMs) {
         error=serviceHTTRx();
@@ -1155,6 +1161,9 @@ void Ath10kPCIDevice::endWMIRuntime(const char *reason)
 {
     // Called only under the work-loop gate, including stop/PM/shutdown paths.
     if (!_wmiLive.active) return;
+#ifdef ATH10K_NATIVE
+    if(_nativeMACWaiting){_nativeMACResult=kIOReturnError;_nativeMACActive=false;setProperty("Ath10kNativeMACStatus",reason);_nativeGate->commandWakeup(&_nativeMACResult);}
+#endif
     IOLog("Ath10kMac: RUNTIME STOP context reason=%s stage=%u security=%u disconnect=%u peers=%u cmd=0x%x wmi-owned=%u credit-pending=%u tx-owned=%u first-error=%s\n",
         reason,static_cast<UInt32>(_connection.stage),_connection.securityPhase,static_cast<UInt32>(_connection.disconnect),
         _connection.peerCount,_connection.diagnostics.lastCommand,_connection.wmiOwned,_wmi.credits.outstanding,_connection.txOwned,_connection.error);
@@ -2793,6 +2802,9 @@ const char *Ath10kPCIDevice::drainWMIRuntime()
             const char *error=isHTT?
                 Ath10k::parseHTTSetup(raw,bytes,_htcHTTData.endpoint,_wmi.credits,_rxSetup,&_connection):
                 Ath10k::parseWMIInitResponse(raw,bytes,_htcWMIControl.endpoint,_wmi.credits,_wmiEvents,
+#ifdef ATH10K_NATIVE
+                    _nativeMACActive?&_nativeMACEcho:
+#endif
                     (_connection.stats.step==2 || _connection.maintenance.step==8 || _connection.radio.step==8 || _connection.csa.phase==Ath10k::ChannelSwitchPhase::Barrier || _connection.disconnect==Ath10k::DisconnectStage::Barrier || _connection.stage==Ath10k::LinkStage::Barrier || (_connection.secure && _connection.securityPhase==4))?&_connectionEcho:((_rxSetup.attempted && _rxSetup.stage==2)?&_filterEcho:&_wmiEcho),&_wmiScan,&_wmiBSS,
                     _rxSetup.attempted && (_rxSetup.stage>1 || (_rxSetup.stage==1 && _rxSetup.submitted)),&_connection);
             const bool httMessage=isHTT && bytes>=12 && payload>=trailer+4;

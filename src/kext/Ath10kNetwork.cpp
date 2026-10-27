@@ -35,7 +35,12 @@ IOOutputQueue *Ath10kPCIDevice::createOutputQueue()
 IOReturn Ath10kPCIDevice::getHardwareAddress(IOEthernetAddress *address)
 {
     if(!address || !_wmiInit.ready)return kIOReturnNotReady;
-    for(UInt32 i=0;i<6;++i)address->bytes[i]=_wmiInit.mac[i];
+#ifdef ATH10K_NATIVE
+    const UInt8 *mac=_nativeMACValid?_nativeMACCurrent:_wmiInit.mac;
+#else
+    const UInt8 *mac=_wmiInit.mac;
+#endif
+    for(UInt32 i=0;i<6;++i)address->bytes[i]=mac[i];
     return kIOReturnSuccess;
 }
 UInt32 Ath10kPCIDevice::getFeatures() const
@@ -776,7 +781,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
         s.rfChains=static_cast<UInt8>(_wmiInit.requestedChainMask==1?1:2);
         s.regulatory=_regulatory;
-        const char *error=Ath10k::selectOpenBSS(s,_wmiBSS);if(error)return error;
+#ifdef ATH10K_NATIVE
+        const char *error=nativeSelectBSS(nowMs);
+#else
+        const char *error=Ath10k::selectOpenBSS(s,_wmiBSS);
+#endif
+        if(error)return error;
         s.stage=LinkStage::Start;s.sinceMs=nowMs;
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return "connection-command-allocation";
     }
