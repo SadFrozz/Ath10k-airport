@@ -202,6 +202,12 @@ int main() {
     }
     UInt8 frame[293];memset(frame,0xaa,sizeof(frame));
     assert(Ath10k::buildWMIScan(frame,292,2) && frame[292]==0xaa);
+    assert(Ath10k::wmiReadLE32(frame+40)==500);
+    assert(Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,120));
+    assert(Ath10k::wmiReadLE32(frame+40)==120 && frame[292]==0xaa);
+    assert(Ath10k::wmiReadLE32(frame+80)==Ath10k::kWMIScanChannelCount);
+    assert(!Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,109));
+    assert(!Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,501));
     assert(!Ath10k::buildWMIScan(frame,291,2));assert(!Ath10k::buildWMIScan(frame,292,0));
     assert(!Ath10k::buildWMIScan(frame,292,255));assert(!Ath10k::buildWMIScan(nullptr,292,2));
 }

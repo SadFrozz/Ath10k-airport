@@ -1,3 +1,23 @@
+## Native Wi-Fi development (Sequoia)
+
+The experimental native adapter is built with `make NATIVE=1 kext` and loaded by
+OpenCore. It uses the installed IO80211Family/Skywalk components without OCLP or
+system-volume patches. Read [NATIVE-ABI.txt](NATIVE-ABI.txt) before testing.
+
+Hardware verified on Lunnen QCA9377 168c:0042 / 1a3b:2b51: firmware starts,
+macOS publishes a native Wi-Fi interface, and networks appear in the system UI.
+Association and data traffic are still being debugged; this is not a stable release.
+The station DFS profile is enabled; the corresponding hardware connection test
+is pending. No router reconfiguration is required by the intended design.
+
+This adapter supports Darwin 24.2–24.99 (Sequoia), x86_64 only. It deliberately
+rejects Darwin 25 (Tahoe). Tahoe requires its own tested OS adapter; sharing the
+radio core does not guarantee binary compatibility.
+
+Validation: native kext build/import checks and host regressions for scan,
+regulatory policy, station maintenance, and channel switching pass. Host tests
+and offline linking do not establish working association on hardware.
+
 # Ath10kMac
 
 [English](#english) | [Português (Brasil)](#português-brasil)

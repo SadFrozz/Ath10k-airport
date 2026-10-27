@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+policy_binary=$(mktemp)
+"${CXX:-c++}" -std=c++17 -O2 -UNDEBUG -Wall -Wextra -Werror \
+    tests/test_rsn_policy.cpp -o "$policy_binary"
+"$policy_binary"
+rm -f "$policy_binary"
 ASAN_OPTIONS=detect_leaks=0 python3 tests/test-user-access.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 test_tmp_dir=$(mktemp -d)

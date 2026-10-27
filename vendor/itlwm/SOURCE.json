@@ -1,0 +1,9 @@
+{
+  "url": "https://github.com/laobamac/itlwm",
+  "commit": "738d4c61b5a64433b27c1ab09dba94916ab77d8d",
+  "files": [
+    "include/Airport",
+    "AirportItlwm/WCL/WCL.hpp"
+  ],
+  "license": "GPL-2.0; individual headers retain their original notices"
+}

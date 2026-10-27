@@ -1,6 +1,15 @@
 #define ATH10K_PROFILE_FLOW_TEST
 #include "test_firmware_flow.cpp"
 int main(){
+    const auto &lunnen=Ath10kPayload::selectProfile(0x168c,0x0042,0x1a3b,0x2b51,1);
+    assert(lunnen.available && lunnen.kBoardSize==8124);
+    assert(!strcmp(lunnen.kBoardSelection,"board-api2-exact"));
+    assert(!strcmp(lunnen.kBoardSHA256,"ba14e9b4d189bf213e144ad1936f16cbb2b5286f152d394c9d3f1750a723d991"));
+    const auto &dell=Ath10kPayload::selectProfile(0x168c,0x0042,0x1028,0x1810,1);
+    assert(lunnen.kFirmware==dell.kFirmware && lunnen.kOTP==dell.kOTP);
+    assert(memcmp(lunnen.kBoard,dell.kBoard,8124));
+    assert(!Ath10kPayload::selectProfile(0x168c,0x0042,0x1a3b,0x2b52,1).available);
+    assert(!Ath10kPayload::selectProfile(0x168c,0x0042,0x1a3b,0x2b51,0).available);
     const auto &p=Ath10kPayload::selectProfile(0x168c,0x0042,0x1028,0x1810,1);
     assert(p.available && p.targetVersion==0x05020001 && p.kBoardSize==8124);
     assert(!strcmp(p.kBoardSelection,"board-api2-exact"));

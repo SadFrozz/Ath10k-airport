@@ -23,6 +23,11 @@ struct RegulatoryDriver:ScanDriver {
 };
 static void rules(){
     using namespace Ath10k;RegulatoryPolicy p;
+    {RegulatoryPolicy sta;assert(!regulatoryPower(sta,52,52,20));
+     sta.stationDFS=true;assert(regulatoryPower(sta,52,52,20)>0);
+     assert(!countryPower(sta.country,52,20,false,true,true,true));
+     sta.high5=5200;assert(!regulatoryPower(sta,52,52,20));}
+
     assert(regulatoryCountry("BR") && !regulatoryCountry("ZZ") && !regulatoryCountry("br") && !regulatoryCountry("BRA"));
     p.country=regulatoryCountry("BR");assert(!configureRegulatory(p,0x64,2412,2472,5180,5825));
     assert(p.firmwareCapsValid && p.domain!=0x64 && p.ctl2!=0xff);

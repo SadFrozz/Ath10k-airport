@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "Ath10kRSN.hpp"
 namespace AthSecurity {
 inline void wipe(void *p,size_t n){volatile uint8_t *b=(volatile uint8_t *)p;while(n--)*b++=0;}
 inline bool equal(const uint8_t *a,const uint8_t *b,size_t n){uint8_t d=0;for(size_t i=0;i<n;++i)d|=a[i]^b[i];return d==0;}
@@ -29,20 +30,9 @@ inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n){
 // Strict bounds on optional fields; require AES/CCMP pairwise and PSK.
 // TKIP is allowed only for the group cipher; TKIP pairwise remains unsupported.
 inline bool supportsWPA2(const uint8_t *ie,size_t n){
- if(n<20||n>257||!wpa2GroupCipher(ie,n))return false;
- size_t p=8;bool pair=false,psk=false;
- for(unsigned section=0;section<2;++section){
-  if(n-p<2)return false;
-  unsigned count=le16(ie+p);p+=2;
-  if(!count||count>(n-p)/4)return false;
-  for(unsigned i=0;i<count;++i,p+=4){if(suite(ie+p,section?2:4)){if(section)psk=true;else pair=true;}}
- }
- if(n>p){if(n-p<2)return false;uint16_t caps=le16(ie+p);p+=2;
-  if(caps&((1u<<6)|(1u<<9)|(1u<<13)))return false; // MFPR, PeerKey, extended key ID
- }
- if(n>p){if(n-p<2)return false;
-  unsigned count=le16(ie+p);p+=2;if(count>(n-p)/16)return false;p+=16*count;}
- if(n>p){if(n-p!=4)return false;p+=4;}
- return p==n&&pair&&psk;
+ RSNInfo ap{};
+ if(!parseRSN(ie,n,ap))return false;
+ // The existing user-client/supplicant path has no PMF support yet.
+ return !ap.mfpr() && bool(selectPersonal(ie,n,PersonalMode::WPA2));
 }
 }

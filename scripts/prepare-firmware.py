@@ -15,6 +15,7 @@ FW_MAGIC = b"QCA-ATH10K\0"
 BOARD_KEY = "bus=pci,vendor=168c,device=003e,subsystem-vendor=1028,subsystem-device=0310"
 BOARD_SIZE = 8124
 QCA9377_BOARD_KEY = "bus=pci,vendor=168c,device=0042,subsystem-vendor=1028,subsystem-device=1810"
+LUNNEN_QCA9377_BOARD_KEY = "bus=pci,vendor=168c,device=0042,subsystem-vendor=1a3b,subsystem-device=2b51"
 
 class BoardNotFound(ValueError):
     """Only a well-formed API2 container without a match allows API1 fallback."""
@@ -149,14 +150,15 @@ def parse_segments(image):
     raise ValueError("SGMT DONE marker missing")
 
 
-def prepare_profile(root, folder, namespace, board_key, profile, identity, allow_fallback=False):
+def prepare_profile(root, folder, namespace, board_key, profile, identity, allow_fallback=False,
+                    output_name=None, require_exact=False, reuse_namespace=None):
     board_container = (folder / "board-2.bin").read_bytes()
     fw_container = (folder / "firmware-6.bin").read_bytes()
     selection = "board-api2-exact"
     try:
         board = select_board(board_container, board_key)
     except BoardNotFound:
-        if not allow_fallback:
+        if not allow_fallback or require_exact:
             raise
         board = (folder / "board.bin").read_bytes()
         if len(board) != BOARD_SIZE:
@@ -215,7 +217,19 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
     header += ["};", f"static constexpr UInt32 kFirmwareSegmentCount = {len(segments)};",
                f"static constexpr UInt32 kFirmwareSegmentDataBytes = {sum(s['length'] for s in segments)};",
                f"static constexpr UInt32 kFirmwareEntryAddress = 0x{entry:08x}u;", "}", ""]
-    outdir = root / "firmware/prepared" / ("QCA9377" if allow_fallback else "")
+    if reuse_namespace:
+        # Board calibration differs by subsystem; the reviewed WLAN/OTP images do not.
+        # Keep one copy of these large firmware arrays in the kernel image.
+        board_end = header.index("};")
+        aliases = ("kFirmwareVersion", "kFirmwareSize", "kFirmwareSHA256", "kOTPSize",
+                   "kOTPSHA256", "kOTPIgnoreResult", "kSupportsSkipClockInit", "kOTP",
+                   "kFirmware", "kFirmwareSegments", "kFirmwareSegmentCount",
+                   "kFirmwareSegmentDataBytes", "kFirmwareEntryAddress")
+        header = [line for line in header[:board_end + 1]
+                  if not any(line.startswith(f"static constexpr {kind} {name}")
+                             for name in aliases for kind in ("char", "UInt32", "bool"))]
+        header += [f"using {reuse_namespace}::{name};" for name in aliases] + ["}", ""]
+    outdir = root / "firmware/prepared" / (output_name if output_name is not None else ("QCA9377" if allow_fallback else ""))
     outputs = {
         outdir / "board.bin": board,
         outdir / "otp.bin": parts[4],
@@ -245,6 +259,10 @@ def prepare(root):
          ('0x003e', '0x1028', '0x0310', '10', '0x05030000u'), False),
         (root / 'firmware/QCA9377/hw1.0', 'Ath10kPayload9377', QCA9377_BOARD_KEY, 'QCA9377/hw1.1',
          ('0x0042', '0x1028', '0x1810', '1', '0x05020001u'), True),
+        (root / 'firmware/QCA9377/hw1.0', 'Ath10kPayload9377Lunnen', LUNNEN_QCA9377_BOARD_KEY,
+         'QCA9377/hw1.1-Lunnen-1a3b-2b51',
+         ('0x0042', '0x1a3b', '0x2b51', '1', '0x05020001u'), True,
+         'QCA9377-Lunnen', True, 'Ath10kPayload9377'),
     ]
     for args in profiles:
         files, lines, entry = prepare_profile(root, *args)

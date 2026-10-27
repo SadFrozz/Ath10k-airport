@@ -158,6 +158,8 @@ bool readCESnapshot(Registers &r, UInt32 ce, CESnapshot &s) {
 }
 static constexpr UInt32 kIOPCIConfigCommand = 4;
 struct FakePCI {
+    // Recovery diagnostics publish properties on the PCI provider as well.
+    template<class... T> void setProperty(T...){}
     UInt16 command = 6;
     bool disableWorks = true;
     void setBusMasterEnable(bool enabled) {
