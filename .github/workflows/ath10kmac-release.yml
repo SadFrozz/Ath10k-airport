@@ -156,6 +156,39 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  native-sequoia:
+    name: Sequoia native stage 3
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+      - name: Portable native regressions
+        run: python3 tests/run-development-tests.py
+      - name: Build and sign diagnostic controller
+        run: |
+          set -euo pipefail
+          make NATIVE=1 DIAGNOSTIC_STAGE=3 -j2 kext
+          codesign --force --sign - build/native/out/Ath10kMac.kext
+          codesign --verify --strict --verbose=2 build/native/out/Ath10kMac.kext
+          python3 scripts/windows/validate.py build/native/out/Ath10kMac.kext
+      - name: Package stage-3 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p build/native/dist
+          ditto -c -k --norsrc build/native/out/Ath10kMac.kext build/native/dist/Ath10kMac-Sequoia-stage3.zip
+          cp build/native/out/validation.json build/native/dist/
+          shasum -a 256 build/native/dist/Ath10kMac-Sequoia-stage3.zip > build/native/dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Ath10kMac-Sequoia-stage3
+          path: build/native/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
     needs: build

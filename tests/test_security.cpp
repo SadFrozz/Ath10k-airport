@@ -1,7 +1,9 @@
 #include <cassert>
 #include <cstring>
 #include <vector>
-#ifdef __APPLE__
+#ifdef _WIN32
+#include "windows_security_backend.hpp"
+#elif defined(__APPLE__)
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonCryptor.h>
 #else
@@ -12,7 +14,9 @@
 #include "../src/shared/Ath10kControl.hpp"
 #include "security_vectors.inc"
 #include "rekey_vectors.inc"
-#ifdef __APPLE__
+#ifdef _WIN32
+// The BCrypt-backed adapter is defined above; the same vectors run on each OS.
+#elif defined(__APPLE__)
 struct OpenSSLCrypto {
  static bool random(uint8_t *p,size_t n){for(size_t i=0;i<n;++i)p[i]=uint8_t(i+51);return true;}
  static bool hmac(const uint8_t *k,size_t kl,const uint8_t *p,size_t n,uint8_t *o){CCHmac(kCCHmacAlgSHA1,k,kl,p,n,o);return true;}

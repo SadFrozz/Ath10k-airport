@@ -184,6 +184,8 @@ struct ConnectionState {
     bool secure=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
     bool cancelRequested=false,rekeySkipGroup=false,vdevStarted=false,vdevUp=false,eapolPause=false;
     UInt8 rekeyKind=0;UInt32 securityGeneration=0,beaconSerial=0;
+    // Actual associated beacon, including TSF, for native freshness queries.
+    UInt8 beaconFrame[0x800]{};UInt32 beaconFrameBytes=0,beaconFrameSerial=0;
     int32_t signalDbm=INT32_MIN;
     UInt8 installedPair[16]{},installedGroups[4][32]{};bool pairInstalled=false,groupInstalled[4]{};
     UInt32 securityPhase=0; // 0 EAPOL, 1 PTK, 2 GTK, 3 authorize, 4 barrier, 5 ready
@@ -1115,6 +1117,10 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
         if(!channelSwitchIEs(s,f+36,bytes-36,false,rxChannel,subtype==0x50))return;
         if(rxChannel==s.operatingChannel){++s.beaconSerial;
             if(subtype==0x80){
+                if(s.stage==LinkStage::Connected && bytes<=sizeof(s.beaconFrame)){
+                    for(UInt32 i=0;i<bytes;++i)s.beaconFrame[i]=f[i];
+                    s.beaconFrameBytes=bytes;++s.beaconFrameSerial;
+                }
                 if(htcReadLE16(f+32))s.ap.beaconInterval=htcReadLE16(f+32);
                 s.ap.capabilities=htcReadLE16(f+34);
                 if(!s.maintenance.valid || !sameAPConfig(desiredAPConfig(s),s.maintenance.applied))s.maintenance.blocked=true;}}

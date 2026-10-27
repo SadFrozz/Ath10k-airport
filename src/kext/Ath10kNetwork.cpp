@@ -16,7 +16,16 @@ bool Ath10kPCIDevice::configureInterface(IONetworkInterface *interface) {
 }
 bool Ath10kPCIDevice::createWorkLoop()
 {
-    _networkWorkLoop=IOWorkLoop::workLoop();return _networkWorkLoop!=nullptr;
+    // IONetworkController sets a policy on this loop's thread. The Sequoia
+    // IO80211WorkQueue::getThread() returns NULL and cannot fill that role.
+    if (!_networkWorkLoop) _networkWorkLoop=IOWorkLoop::workLoop();
+    if (!_networkWorkLoop) return false;
+#ifdef ATH10K_NATIVE
+    if (!_nativeWorkQueue) _nativeWorkQueue=IO80211WorkQueue::workQueue();
+    return _nativeWorkQueue!=nullptr;
+#else
+    return true;
+#endif
 }
 IOWorkLoop *Ath10kPCIDevice::getWorkLoop() const {return _networkWorkLoop;}
 IOOutputQueue *Ath10kPCIDevice::createOutputQueue()
@@ -120,7 +129,11 @@ bool Ath10kPCIDevice::prepareNetwork()
             }
         }
     }
+#ifdef ATH10K_NATIVE
+    return prepareNativeInterface();
+#else
     return attachInterface(&_networkInterface);
+#endif
 }
 void Ath10kPCIDevice::publishConnection()
 {

@@ -6,8 +6,13 @@
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSNumber.h>
 
+#ifdef ATH10K_NATIVE
+#define super IO80211Controller
+OSDefineMetaClassAndStructors(Ath10kPCIDevice, IO80211Controller)
+#else
 #define super IOEthernetController
 OSDefineMetaClassAndStructors(Ath10kPCIDevice, IOEthernetController)
+#endif
 
 // Standard PCI configuration-space offsets/capability IDs.
 static constexpr UInt8 kPCIConfigProgIf        = 0x09;
@@ -67,6 +72,21 @@ IOService *Ath10kPCIDevice::probe(IOService *provider, SInt32 *score)
     if (!Ath10k::isSupportedDevice(vendor, device))
         return nullptr;
 
+#ifdef ATH10K_NATIVE
+    // Reject foreign subsystem/OS before opening PCI or starting firmware DMA.
+    if(version_major!=24 || version_minor<2 || vendor!=0x168c || device!=0x42 ||
+       pci->configRead16(kIOPCIConfigSubSystemVendorID)!=0x1a3b ||
+       pci->configRead16(kIOPCIConfigSubSystemID)!=0x2b51)return nullptr;
+    // OpenCore diagnostic personality: verify matching without entering the
+    // controller, CoreCapture, PCI-open or firmware/DMA startup paths.
+    if (auto *probeOnly = OSDynamicCast(OSBoolean, getProperty("Ath10kProbeOnly"))) {
+        if (probeOnly->isTrue()) {
+            provider->setProperty("Ath10kNativeStartupPhase", "opencore-probe-only");
+            IOLog("Ath10kMac: OpenCore probe-only matched; controller startup skipped\n");
+            return nullptr;
+        }
+    }
+#endif
     if (score)
         *score += 1000;
 
@@ -90,11 +110,55 @@ bool Ath10kPCIDevice::start(IOService *provider)
     }
     IOLog("Ath10kMac: start v0.0.98 (deferred device initialization)\n");
 
+#ifdef ATH10K_NATIVE
+    if (version_major!=24 || version_minor<2) return false;
+    UInt32 diagnosticStage = 0;
+    if (auto *stage = OSDynamicCast(OSNumber, getProperty("Ath10kDiagnosticStage")))
+        diagnosticStage = stage->unsigned32BitValue();
+    if (diagnosticStage > 3) return false;
+    nativeStartupPhase("workqueue-create");
+    if (!_networkWorkLoop && !createWorkLoop()) return false;
+    if (diagnosticStage == 1) {
+        provider->setProperty("Ath10kNativeStartupPhase", "opencore-workqueue-passed");
+        IOLog("Ath10kMac: diagnostic workqueue passed; controller startup skipped\n");
+        return false;
+    }
+    nativeStartupPhase("corecapture-init");
+    if (!prepareNativeLogs()) {releaseNativeLogs();return false;}
+    if (diagnosticStage == 2) {
+        releaseNativeLogs();
+        provider->setProperty("Ath10kNativeStartupPhase", "opencore-corecapture-passed");
+        IOLog("Ath10kMac: diagnostic CoreCapture passed; controller startup skipped\n");
+        return false;
+    }
+    nativeStartupPhase("controller-legacy-thread-check");
+    const bool legacyThreadReady=getWorkLoop() && getWorkLoop()->getThread();
+    const bool queuesSeparated=getWorkLoop()!=getWorkQueue();
+    provider->setProperty("Ath10kLegacyWorkLoopHasThread",legacyThreadReady);
+    provider->setProperty("Ath10kWorkQueuesSeparated",queuesSeparated);
+    if (!legacyThreadReady || !queuesSeparated) {
+        IOLog("Ath10kMac: refusing controller start: legacy thread=%d separate queues=%d\n",
+              legacyThreadReady,queuesSeparated);
+        return false;
+    }
+    nativeStartupPhase("controller-start");
+#endif
     if (!super::start(provider)) {
         IOLog("Ath10kMac: super::start failed\n");
         return false;
     }
 
+#ifdef ATH10K_NATIVE
+    nativeStartupPhase("controller-started");
+    if (diagnosticStage == 3) {
+        provider->setProperty("Ath10kNativeStartupPhase", "opencore-controller-stopping");
+        super::stop(provider);
+        releaseNativeLogs();
+        provider->setProperty("Ath10kNativeStartupPhase", "opencore-controller-passed");
+        IOLog("Ath10kMac: diagnostic controller start/stop passed; PCI startup skipped\n");
+        return false;
+    }
+#endif
     _pci = OSDynamicCast(IOPCIDevice, provider);
     if (!_pci) {
         IOLog("Ath10kMac: provider is not IOPCIDevice\n");
@@ -135,13 +199,15 @@ bool Ath10kPCIDevice::start(IOService *provider)
     dumpHardwareCandidates();
 
     // Publish the service before the lengthy target/firmware probe. The probe
-    // runs on a normal-priority thread call so IOConfigThread can return and
+    // runs on a thread call so IOConfigThread can return and
     // macOS can finish booting while Wi-Fi initialization continues.
     ath10kSetRecoveryStatus(_pci, "probe-queued", "PCI setup complete; firmware probe is queued");
     registerService();
-    _deferredProbeCall = thread_call_allocate_with_priority(
-        deferredProbeCall, this, THREAD_CALL_PRIORITY_USER);
+    _deferredProbeLock = IOLockAlloc();
+    if (_deferredProbeLock)
+        _deferredProbeCall = thread_call_allocate(deferredProbeCall, this);
     if (_deferredProbeCall) {
+        _deferredProbePending = true;
         thread_call_enter(_deferredProbeCall);
         IOLog("Ath10kMac: deferred target probe queued; network becomes available after initialization\n");
         return true;
@@ -155,8 +221,13 @@ bool Ath10kPCIDevice::start(IOService *provider)
 void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_param_t)
 {
     auto *self = static_cast<Ath10kPCIDevice *>(param0);
-    if (self)
+    if (self) {
         self->runDeferredProbe();
+        IOLockLock(self->_deferredProbeLock);
+        self->_deferredProbePending = false;
+        IOLockWakeup(self->_deferredProbeLock, &self->_deferredProbePending, false);
+        IOLockUnlock(self->_deferredProbeLock);
+    }
 }
 
 void Ath10kPCIDevice::runDeferredProbe()
@@ -231,12 +302,23 @@ void Ath10kPCIDevice::runDeferredProbe()
 
 void Ath10kPCIDevice::cancelDeferredProbe()
 {
-    if (!_deferredProbeCall)
-        return;
-    thread_call_cancel_wait(_deferredProbeCall);
-    if (!thread_call_free(_deferredProbeCall))
-        IOLog("Ath10kMac: deferred probe worker could not be released\n");
-    _deferredProbeCall = nullptr;
+    if (_deferredProbeCall) {
+        // Only public kernel exports: cancel_wait/allocate_with_priority are
+        // declared in MacKernelSDK but unavailable to third-party kexts here.
+        IOLockLock(_deferredProbeLock);
+        if (thread_call_cancel(_deferredProbeCall))
+            _deferredProbePending = false;
+        while (_deferredProbePending)
+            IOLockSleep(_deferredProbeLock, &_deferredProbePending, THREAD_UNINT);
+        IOLockUnlock(_deferredProbeLock);
+        if (!thread_call_free(_deferredProbeCall))
+            IOLog("Ath10kMac: deferred probe worker could not be released\n");
+        _deferredProbeCall = nullptr;
+    }
+    if (_deferredProbeLock) {
+        IOLockFree(_deferredProbeLock);
+        _deferredProbeLock = nullptr;
+    }
 }
 
 bool Ath10kPCIDevice::stopDMAForRelease()
@@ -261,6 +343,10 @@ bool Ath10kPCIDevice::stopDMAForRelease()
 
 void Ath10kPCIDevice::stop(IOService *provider)
 {
+#ifdef ATH10K_NATIVE
+    // Drain accepted Wi-Fi requests before shutting down radio resources.
+    stopNativeRequests();
+#endif
     // Do not release BAR, DMA, or PCI state while the deferred probe uses it.
     cancelDeferredProbe();
     // Rematching is queued only after every old DMA mapping/IRQ has been
@@ -326,7 +412,10 @@ void Ath10kPCIDevice::stop(IOService *provider)
         _pci = nullptr;
     }
 
-    if(_networkInterface){detachInterface(_networkInterface,true);_networkInterface->release();_networkInterface=nullptr;}
+#ifdef ATH10K_NATIVE
+    releaseNativeInterface();
+#endif
+    if(_networkInterface){IONetworkController::detachInterface(_networkInterface,true);_networkInterface->release();_networkInterface=nullptr;}
     super::stop(provider);
     if(rematch){
         if(releaseDMA && !_dmaQuarantine) {
@@ -380,8 +469,23 @@ void Ath10kPCIDevice::free()
     }
     _regs.detach();
     unmapBAR0();
-    if(_networkWorkLoop){_networkWorkLoop->release();_networkWorkLoop=nullptr;}
+#ifdef ATH10K_NATIVE
+    releaseNativeInterface();
+    releaseNativeLogs();
+#endif
+    // Keep both queues alive through the base controller's timer/gate cleanup.
+    // super::free() can destroy this object: use only saved local pointers after it.
+    IOWorkLoop *networkLoop=_networkWorkLoop;
+    _networkWorkLoop=nullptr;
+#ifdef ATH10K_NATIVE
+    IO80211WorkQueue *nativeQueue=_nativeWorkQueue;
+    _nativeWorkQueue=nullptr;
+#endif
     super::free();
+#ifdef ATH10K_NATIVE
+    if(nativeQueue)nativeQueue->release();
+#endif
+    if(networkLoop)networkLoop->release();
 }
 
 bool Ath10kPCIDevice::prepareDeviceDMAMapper()
@@ -988,6 +1092,9 @@ const char *Ath10kPCIDevice::serviceRuntime()
     // RX and reorder delivery can unblock TCP ACK/data transmission. Check
     // completions again before returning rather than waiting for another poll.
     if (!error) error=serviceDataTX(Ath10k::uptimeNS()/1000000u);
+#ifdef ATH10K_NATIVE
+    if (!error) serviceNative(tickMs);
+#endif
     // The full diagnostic sweep synchronizes 1023 mappings. Keep it off
     // sustained traffic; completion/DONE/refill validation still runs per MPDU.
     if(maintenance){

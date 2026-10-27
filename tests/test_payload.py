@@ -22,6 +22,43 @@ def board_entry(key, value):
 
 
 class PayloadTests(unittest.TestCase):
+    def test_lunnen_board_is_exact_and_does_not_reuse_dell_calibration(self):
+        import json
+        folder = ROOT / 'firmware/QCA9377/hw1.0'
+        files, header, entry = p.prepare_profile(
+            ROOT, folder, 'Ath10kPayload9377Lunnen', p.LUNNEN_QCA9377_BOARD_KEY,
+            'QCA9377/hw1.1-Lunnen-1a3b-2b51',
+            ('0x0042', '0x1a3b', '0x2b51', '1', '0x05020001u'), True,
+            'QCA9377-Lunnen', True, 'Ath10kPayload9377')
+        manifest = json.loads(files[ROOT / 'firmware/prepared/QCA9377-Lunnen/manifest.json'])
+        self.assertEqual(manifest['board_selection'], 'board-api2-exact')
+        self.assertEqual(manifest['board_key'], p.LUNNEN_QCA9377_BOARD_KEY)
+        self.assertEqual(manifest['board_sha256'],
+                         'ba14e9b4d189bf213e144ad1936f16cbb2b5286f152d394c9d3f1750a723d991')
+        self.assertNotEqual(files[ROOT / 'firmware/prepared/QCA9377-Lunnen/board.bin'],
+                            p.select_board((folder / 'board-2.bin').read_bytes(), p.QCA9377_BOARD_KEY))
+        self.assertIn('0x1a3b, 0x2b51', entry)
+        generated = '\n'.join(header)
+        self.assertIn('using Ath10kPayload9377::kFirmware;', generated)
+        self.assertNotIn('static constexpr UInt8 kFirmware[]', generated)
+
+    def test_lunnen_missing_board_must_not_fall_back(self):
+        import tempfile
+        import shutil
+        folder = ROOT / 'firmware/QCA9377/hw1.0'
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            for name in ('firmware-6.bin', 'board.bin'):
+                shutil.copyfile(folder / name, tmp / name)
+            # A valid Dell board and a valid generic fallback are both present.
+            # Neither is a substitute for the selected Lunnen subsystem.
+            (tmp / 'board-2.bin').write_bytes(container(p.BOARD_MAGIC, board_entry(
+                p.QCA9377_BOARD_KEY, b'a' * 8124)))
+            with self.assertRaises(p.BoardNotFound):
+                p.prepare_profile(ROOT, tmp, 'Lunnen', p.LUNNEN_QCA9377_BOARD_KEY,
+                    'Lunnen', ('0x0042', '0x1a3b', '0x2b51', '1', '0x05020001u'),
+                    True, 'QCA9377-Lunnen', True)
+
     def test_real_inputs(self):
         board = p.select_board((ROOT / "firmware/board-2.bin").read_bytes())
         self.assertEqual(len(board), 8124)

@@ -1,5 +1,11 @@
+.DEFAULT_GOAL := all
 PROJ_ROOT := $(shell pwd)
 BUILD_DIR := $(PROJ_ROOT)/build
+NATIVE ?= 0
+DIAGNOSTIC_STAGE ?= 3
+ifeq ($(NATIVE),1)
+BUILD_DIR := $(PROJ_ROOT)/build/native
+endif
 OUT_DIR   := $(BUILD_DIR)/out
 OUT_KEXT  := $(OUT_DIR)/Ath10kMac.kext
 OUT_BIN   := $(OUT_KEXT)/Contents/MacOS/Ath10kMac
@@ -37,7 +43,18 @@ LDFLAGS = $(ARCH) -static -nostdlib -Xlinker -kext \
            $(MKSDK)/Library/universal/libkmodc++.a \
            -F$(SDK)/System/Library/Frameworks
 
-OBJS := $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+ifeq ($(NATIVE),1)
+CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/vendor/itlwm
+NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o
+endif
+
+OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+ifeq ($(NATIVE),1)
+$(OBJS): $(wildcard src/kext/native/*)
+endif
+
+$(BUILD_DIR)/Ath10kNative.o: src/kext/native/Ath10kNative.cpp $(wildcard src/kext/native/*) $(wildcard src/kext/*.hpp) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 .PHONY: all kext clean check-sdk prepare-firmware
 all: kext
@@ -89,10 +106,18 @@ $(BUILD_DIR)/experiment-config: FORCE | $(BUILD_DIR)
 $(OBJS): Makefile $(BUILD_DIR)/experiment-config
 $(OBJS): src/kext/Ath10kMulticast.hpp src/kext/Ath10kConnection.hpp src/shared/Ath10kControl.hpp
 $(OBJS): src/kext/Ath10kRuntimePower.hpp src/kext/Ath10kFirmwareStats.hpp
+$(OBJS): $(wildcard src/shared/*.hpp)
 
-$(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist
+.PHONY: test-development native-preflight
+test-development:
+	$(PYTHON) tests/run-development-tests.py
+
+native-preflight:
+	$(PYTHON) scripts/collect-native-preflight.py
+
+$(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist scripts/prepare-kext-info.py
 	@mkdir -p "$(OUT_KEXT)/Contents/MacOS"
-	@cp Ath10kMac.kext/Contents/Info.plist "$(OUT_KEXT)/Contents/Info.plist"
+	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 clean:
@@ -101,3 +126,7 @@ clean:
 .PHONY: app
 app:
 	./scripts/build-connectivity.sh
+
+ifeq ($(NATIVE),1)
+$(OBJS): $(wildcard src/kext/native/*)
+endif
