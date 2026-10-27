@@ -305,14 +305,20 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     case N::getPOWERSAVE:{auto d=static_cast<apple80211_powersave_data *>(data);bzero(d,sizeof(*d));d->version=1;d->powersave_level=s.radio.appliedPS?1:0;return kIOReturnSuccess;}
     case N::setPOWERSAVE:{auto d=static_cast<apple80211_powersave_data *>(data);if(d->powersave_level>1)return kIOReturnUnsupported;s.radio.requestedPS=d->powersave_level;return kIOReturnSuccess;}
     case N::getSUPPORTED_CHANNELS:case N::getHW_SUPPORTED_CHANNELS:{auto d=static_cast<apple80211_sup_channel_data *>(data);bzero(d,sizeof(*d));d->version=1;
-        for(unsigned ch=1;ch<=196 && d->num_channels<APPLE80211_MAX_CHANNELS;++ch){
-            if(ch>14 && (ch<36 || ch%4))continue;
+        for(const auto &physical:Ath10k::kWMIScanPlan){
+            const unsigned ch=physical.channel;
+            if(d->num_channels>=APPLE80211_MAX_CHANNELS)break;
             if(!Ath10k::regulatoryPower(_regulatory,ch,ch,20,false))continue;
             auto &c=d->supported_channels[d->num_channels++];c.version=1;c.channel=ch;c.flags=channelFlags(ch);
         }return kIOReturnSuccess;}
+    case N::getWCL_CHANNELS_INFO:{
+        auto &channels=*static_cast<AirportWCL::ChannelInfo *>(data);
+        bool ok=nativeWCLChannels(_regulatory,channels);
+        setProperty("Ath10kNativeWCLChannelCount",UInt64(channels.count),32);
+        return ok?kIOReturnSuccess:kIOReturnNotReady;}
     case N::getCHANNELS_INFO:case N::getCOUNTRY_CHANNELS_INFO:{auto d=static_cast<AirportWCL::NativeChannelInfo *>(data);bzero(d,sizeof(*d));
         if(_regulatory.country)bcopy(_regulatory.country->alpha2,d->country,2);
-        for(unsigned ch=1;ch<=196;++ch){if(ch>14 && (ch<36 || ch%4))continue;
+        for(const auto &physical:Ath10k::kWMIScanPlan){const unsigned ch=physical.channel;
             if(!Ath10k::regulatoryPower(_regulatory,ch,ch,20,false))continue;
             AirportWCL::appendChannel(*d,ch,ch>14,ch>=52 && ch<=144,true,false,false);
         }return kIOReturnSuccess;}

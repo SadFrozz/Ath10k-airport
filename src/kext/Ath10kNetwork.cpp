@@ -183,7 +183,7 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kStationBeaconMisses",_connection.beaconMisses,32);
     setProperty("Ath10kStationBeaconTimeoutMs",_connection.beaconTimeoutMs,32);
     setProperty("Ath10kStationMulticastDrops",_connection.multicast.dropped,32);
-    setProperty("Ath10kStationDFS",_connection.regulatory.stationDFS);
+    setProperty("Ath10kStationDFS",_regulatory.stationDFS);
     setProperty("Ath10kConnectionChannelDefinitionValid",Ath10k::channelDefinitionAllowed(
         _connection.operatingChannel,_connection.centerChannel,_connection.width,_connection.regulatory.stationDFS));
     setProperty("Ath10kChannelPolicy","regdb-board-firmware-infrastructure-sta-10dbm");

@@ -1,5 +1,6 @@
 #pragma once
 #include "../Ath10kBSS.hpp"
+#include "../Ath10kScanPlan.hpp"
 #include <WCL.hpp>
 #include <string.h>
 // Sequoia's BEACON_INFO is a length followed by the actual received 802.11
@@ -76,4 +77,18 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
     // Keep the original RSN advertisement intact. Unsupported WPA3/PMF joins
     // are explicitly rejected rather than rewriting the AP's security policy.
     m->ieLength=bytes;return sizeof(*m)+bytes;
+}
+
+// Both WCL channel queries use the same physical plan and regulatory limits.
+inline bool nativeWCLChannels(const Ath10k::RegulatoryPolicy &policy,AirportWCL::ChannelInfo &out) {
+    memset(&out,0,sizeof(out));
+    if(policy.country)memcpy(out.country,policy.country->alpha2,2);
+    for(const auto &physical:Ath10k::kWMIScanPlan){
+        const unsigned ch=physical.channel;
+        if(!Ath10k::regulatoryPower(policy,ch,ch,20,false))continue;
+        auto &entry=out.channels[out.count++];
+        entry.channel=ch;entry.channelSpec=uint16_t(ch|(ch>14?0xd000:0x1000));
+        entry.flags=4|((ch>=52 && ch<=144)?2:0); // All scans are passive.
+    }
+    return out.count!=0;
 }

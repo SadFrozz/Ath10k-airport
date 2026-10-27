@@ -3,7 +3,12 @@ public:
     IO80211WorkQueue *getWorkQueue() const override;
     bool createWorkQueue() override {return getWorkQueue()!=nullptr;}
     bool isCommandProhibited(int) override {return false;}
-    SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {return kIOReturnUnsupported;}
+    SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long command,void *,bool set) override {
+        // WCL performs the actual operation; this controller hook must not veto it.
+        setProperty("Ath10kNativeCardCommand",UInt64(command),64);
+        setProperty("Ath10kNativeCardCommandIsSet",set);
+        return kIOReturnSuccess;
+    }
     bool requiresExplicitMBufRelease() override {return false;}
     bool flowIdSupported() override {return false;}
     CCLogStream *getLogger() const override {return _nativeLogger;}

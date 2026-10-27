@@ -5,6 +5,19 @@
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 int main(){
+ Ath10k::RegulatoryPolicy policy;AirportWCL::ChannelInfo channels{};
+ assert(nativeWCLChannels(policy,channels));
+ assert(channels.count==Ath10k::kWMIScanChannelCount && !channels.supports6GHz);
+ bool seen52=false,seen149=false,seen165=false;
+ for(unsigned i=0;i<channels.count;++i){auto &c=channels.channels[i];
+  assert(Ath10k::wmiScanChannelAllowed(c.channel));assert(c.flags&4);
+  if(c.channel==52){seen52=true;assert(c.flags&2);}
+  if(c.channel==149)seen149=true;if(c.channel==165)seen165=true;
+ }
+ assert(seen52 && seen149 && seen165);
+ policy.high5=5200;assert(nativeWCLChannels(policy,channels));
+ for(unsigned i=0;i<channels.count;++i)assert(channels.channels[i].channel<=40);
+
  Ath10k::WMIBSS b{};b.ssidLength=4;memcpy(b.ssid,"test",4);b.rateCount=1;b.rates[0]=12;b.rxChannel=6;b.bssid[0]=2;b.snr=40;
  AirportWCL::ScanRequest scan{};
  assert(nativeScanMatches(scan,b));memset(scan.bssid,255,6);assert(nativeScanMatches(scan,b));
