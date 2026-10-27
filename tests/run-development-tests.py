@@ -40,7 +40,9 @@ def main():
         (include / 'IOKit/IOTypes.h').write_text(
             '#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;'
             'using UInt32=uint32_t;using UInt64=uint64_t;\n')
-        for name in ['rsn_policy', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']:
+        names=['rsn_policy', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        if sys.platform == 'darwin': names.append('sha256_supplicant')
+        for name in names:
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
@@ -50,7 +52,7 @@ def main():
     (out / 'summary.json').write_text(json.dumps({
         'passed': passed, 'assertions_enabled': True,
         'macos_kext_build': False, 'hardware_validation': False,
-        'native_menu_implemented': False, 'sae_pmf_implemented': False,
+        'native_adapter_present': True, 'sae_pmf_implemented': False,
     }, indent=2) + '\n')
 
 if __name__ == '__main__':

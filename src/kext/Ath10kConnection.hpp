@@ -181,6 +181,7 @@ struct ConnectionState {
     } diagnostics{};
     UInt32 disconnectCount=0;
     LinkStage stage=LinkStage::Disabled;
+    UInt8 securityAKM=2;
     bool secure=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
     bool cancelRequested=false,rekeySkipGroup=false,vdevStarted=false,vdevUp=false,eapolPause=false;
     UInt8 rekeyKind=0;UInt32 securityGeneration=0,beaconSerial=0;
@@ -534,7 +535,7 @@ inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
         if(!sameMAC(ap.bssid,s.bssid) || (!(s.hiddenSSID && ap.hidden) && ap.ssidLength!=s.ssidLength))continue;
         bool equal=true;for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
         if(!equal && !(s.hiddenSSID && ap.hidden))continue;
-        if(s.secure){if(!ap.privacy || !AthSecurity::supportsWPA2(ap.rsn,ap.rsnLength))return "wpa2-psk-ccmp-pairwise-required";}
+        if(s.secure){if(!ap.privacy || !AthSecurity::supportsPSKAKM(ap.rsn,ap.rsnLength,s.securityAKM))return "wpa2-psk-ccmp-pairwise-required";}
         else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
         if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
         if(!ap.beaconInterval || !ap.rateCount || !ap.ratesValid)return "bss-missing-valid-rates";
@@ -789,7 +790,7 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         }
         f[start+1]=static_cast<UInt8>(n-start-2);
     }
-    size_t stationRSNLength=0;const UInt8 *stationRSN=s.secure?AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength):nullptr;
+    size_t stationRSNLength=0;const UInt8 *stationRSN=s.secure?AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength,s.securityAKM):nullptr;
     if(s.secure&&!stationRSN)return 0;
     const UInt32 tail=2+s.ap.rateCount+(s.ap.rateCount>8?2:0)+(s.secure?stationRSNLength:0)+
         (s.ap.wmmPresent?(s.ap.wmmVendor?9:3):0)+(s.htEnabled?28:0)+(s.vhtEnabled?17:0);

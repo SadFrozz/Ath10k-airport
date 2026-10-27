@@ -87,7 +87,7 @@ def collect():
                 report['network_bundles'][name + '/' + plugin.name] = kext_record(plugin)
     report['implemented_in_this_branch'] = {
         'lunnen_board_profile': True, 'rsn_parser_and_no_downgrade_policy': True,
-        'native_skywalk_interface': False, 'sae_authentication': False,
+        'native_skywalk_interface': True, 'sae_authentication': False,
         'pmf_key_install_and_validation': False, 'awdl': False,
     }
     return report

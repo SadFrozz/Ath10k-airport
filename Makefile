@@ -48,6 +48,7 @@ NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o
 endif
 
 OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+$(OBJS): $(wildcard src/shared/*.hpp)
 ifeq ($(NATIVE),1)
 $(OBJS): $(wildcard src/kext/native/*)
 endif

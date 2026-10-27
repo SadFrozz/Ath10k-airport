@@ -384,14 +384,14 @@ inline bool buildWMIStopScan(UInt8 *f,UInt32 capacity,UInt8 endpoint,UInt32 id,U
 }
 inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs) {
     const UInt32 count=regulatoryScanCount(policy),frameBytes=140+4*count;
-    if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255 || passiveDwellMs<110 || passiveDwellMs>kWMIScanDwellMs) return false;
+    if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255 || passiveDwellMs<1 || passiveDwellMs>kWMIScanDwellMs) return false;
     htcZero(f,frameBytes);
     f[0]=endpoint;f[1]=1;f[5]=9;
     htcWriteLE16(f+2,frameBytes-8);htcWriteLE32(f+8,0x3001);
     htcWriteLE16(f+12,100);htcWriteLE16(f+14,77);
     // Fixed common: IDs, VDEV, priority, event mask, dwell/rest/probe times,
     // bounded firmware scan time, PASSIVE | CHAN_STAT_EVENT plus TLV filter inversion.
-    const UInt32 common[15]={id,kWMIScanRequestId,0,1,0x1ff,50,connected?100u:passiveDwellMs,connected?150u:50u,500,0,0,0,kWMIScanFirmwareMs,5,0x31};
+    const UInt32 common[15]={id,kWMIScanRequestId,0,1,0x1ff,50,connected?(passiveDwellMs<100?passiveDwellMs:100u):passiveDwellMs,connected?150u:50u,500,0,0,0,kWMIScanFirmwareMs,5,0x31};
     for(UInt32 i=0;i<15;++i)htcWriteLE32(f+16+4*i,common[i]);
     htcWriteLE32(f+80,count); // num_channels; burst_duration at 76 remains zero.
     htcWriteLE32(f+84,1); // num_bssids; num_ssids, IE length, probes and MAC/mask zero.

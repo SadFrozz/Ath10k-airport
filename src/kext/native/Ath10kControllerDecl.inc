@@ -60,3 +60,4 @@ private:
     AirportWCL::ScanRequest _nativeScan{};
     UInt8 _nativeBSSMessage[1600]{};
     UInt32 _nativeBSSBytes=0;
+    UInt32 _nativeScanDwellMs=120;

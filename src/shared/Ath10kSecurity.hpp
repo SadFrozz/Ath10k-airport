@@ -22,7 +22,10 @@ inline uint8_t wpa2GroupCipher(const uint8_t *ie,size_t n){
  if(suite(ie+4,cipherCCMP))return cipherCCMP;
  return 0;
 }
-inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n){
+static constexpr uint8_t stationRSNSHA256[]={48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,6,0,0};
+inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n,uint8_t akm=2){
+ if(akm==6){if(group==cipherCCMP){n=sizeof(stationRSNSHA256);return stationRSNSHA256;}n=0;return nullptr;}
+ if(akm!=2){n=0;return nullptr;}
  if(group==cipherCCMP){n=sizeof(stationRSN);return stationRSN;}
  if(group==cipherTKIP){n=sizeof(stationRSNTKIP);return stationRSNTKIP;}
  n=0;return nullptr;
@@ -34,5 +37,14 @@ inline bool supportsWPA2(const uint8_t *ie,size_t n){
  if(!parseRSN(ie,n,ap))return false;
  // The existing user-client/supplicant path has no PMF support yet.
  return !ap.mfpr() && bool(selectPersonal(ie,n,PersonalMode::WPA2));
+}
+}
+
+namespace AthSecurity {
+inline bool supportsPSKAKM(const uint8_t *ie,size_t n,uint8_t akm){
+ if(akm==2)return supportsWPA2(ie,n);
+ RSNInfo ap{};
+ return akm==6 && parseRSN(ie,n,ap) && !ap.mfpr() && ap.akmHas(6) &&
+  ap.pairwiseHas(4) && ap.group==4 && !(ap.capabilities&((1u<<9)|(1u<<13)));
 }
 }

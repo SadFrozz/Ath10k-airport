@@ -1,16 +1,19 @@
 #pragma once
 #include "Ath10kSecurity.hpp"
+#include "Ath10kSHA256.hpp"
 namespace AthSecurity {
-// Crypto supplies HMAC-SHA1 and AES-128-ECB decrypt (CommonCrypto on macOS).
-// Limited RSN/PSK, CCMP pairwise, CCMP or TKIP group, descriptor version 2.
+// Crypto supplies HMAC-SHA1 and AES-128-ECB decrypt; SHA256 mode additionally
+// requires HMAC-SHA256 and AES-128-ECB encrypt.
+// RSN/PSK with descriptor 2, or opt-in PSK-SHA256 with descriptor 3.
+// SHA256 mode requires CCMP group/pairwise and an AP not requiring PMF.
 // No EAP, TKIP pairwise or PMF. Group and pairwise rekey retain replay protection.
 // Retransmitted M3 returns cached M4; never asks the driver to reinstall a key.
-template<class Crypto> class Supplicant {
+template<class Crypto,bool AllowSHA256=false> class Supplicant {
  uint8_t pmk[32]{},ptk[48]{},snonce[32]{},anonce[32]{},local[6]{},ap[6]{};
  uint8_t apRSN[257]{},savedM3[512]{},m2[160]{},m4[128]{};
  size_t rsnLength=0,savedLength=0,m2Length=0,m4Length=0;
  uint64_t replay1=0,replay3=0;
- unsigned state=0;
+ unsigned state=0;uint8_t selectedAKM=2;bool sha256=false;
  uint8_t establishedPTK[48]{},establishedANonce[32]{},establishedSNonce[32]{},currentGTK[32]{};
  uint8_t savedGroup[512]{},groupAck[128]{};size_t savedGroupLength=0,groupAckLength=0;
  uint64_t groupReplay=0;uint8_t currentGTKIndex=0,groupCipher=0;bool pairRekey=false;
@@ -21,19 +24,25 @@ template<class Crypto> class Supplicant {
   auto less=[](const uint8_t *a,const uint8_t *b,size_t n){for(size_t i=0;i<n;++i){if(a[i]!=b[i])return a[i]<b[i];}return false;};
   bool swap=less(local,ap,6);copy(input+at,swap?local:ap,6);copy(input+at+6,swap?ap:local,6);at+=12;
   swap=less(snonce,anonce,32);copy(input+at,swap?snonce:anonce,32);copy(input+at+32,swap?anonce:snonce,32);
+  if constexpr(AllowSHA256){if(sha256){
+   bool ok=SHA256Personal<Crypto>::derive(pmk,input+sizeof(label),ptk);
+   wipe(input,sizeof(input));wipe(digest,sizeof(digest));return ok;
+  }}
   for(unsigned block=0;block<3;++block){input[sizeof(input)-1]=uint8_t(block);
    if(!Crypto::hmac(pmk,32,input,sizeof(input),digest)){wipe(input,sizeof(input));wipe(digest,sizeof(digest));return false;}
    copy(ptk+20*block,digest,block==2?8:20);
   }
   wipe(input,sizeof(input));wipe(digest,sizeof(digest));return true;
  }
- bool mic(uint8_t *p,size_t n){uint8_t digest[20]{};bool ok=Crypto::hmac(ptk,16,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,20);return ok;}
+ bool mic(uint8_t *p,size_t n){
+  if constexpr(AllowSHA256){if(sha256){uint8_t digest[16]{};bool ok=SHA256Personal<Crypto>::mic(ptk,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,16);return ok;}}
+  uint8_t digest[20]{};bool ok=Crypto::hmac(ptk,16,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,20);return ok;}
  size_t response(uint8_t *frame,const uint8_t *request,bool second,bool group=false){
-  size_t rsnBytes=0;const uint8_t *rsn=stationRSNForGroup(groupCipher,rsnBytes);
+  size_t rsnBytes=0;const uint8_t *rsn=stationRSNForGroup(groupCipher,rsnBytes,selectedAKM);
   if(second&&!rsn)return 0;
   size_t n=99+(second?rsnBytes:0);wipe(frame,n+14);copy(frame,ap,6);copy(frame+6,local,6);frame[12]=0x88;frame[13]=0x8e;
   uint8_t *p=frame+14;p[0]=request[0];p[1]=3;put16(p+2,uint16_t(n-4));p[4]=2;
-  put16(p+5,second?0x010a:(group?0x0302:0x030a));copy(p+9,request+9,8);
+  put16(p+5,uint16_t((second?0x0108:(group?0x0300:0x0308))|(sha256?3:2)));copy(p+9,request+9,8);
   if(second){copy(p+17,snonce,32);put16(p+97,uint16_t(rsnBytes));copy(p+99,rsn,rsnBytes);}
   return mic(p,n)?n+14:0;
  }
@@ -63,8 +72,10 @@ public:
  }
  ~Supplicant(){reset();}
  void reset(){wipe(this,sizeof(*this));error="none";}
- bool begin(const uint8_t *master,const uint8_t *nonce,const uint8_t *station,const uint8_t *bssid,const uint8_t *rsn,size_t n){
-  reset();if(!supportsWPA2(rsn,n))return false;
+ bool begin(const uint8_t *master,const uint8_t *nonce,const uint8_t *station,const uint8_t *bssid,const uint8_t *rsn,size_t n,uint8_t akm=2){
+  reset();if(!master || !nonce || !station || !bssid)return false;
+  if((akm==6 && !AllowSHA256) || !supportsPSKAKM(rsn,n,akm))return false;
+  selectedAKM=akm;sha256=akm==6;
   groupCipher=wpa2GroupCipher(rsn,n);
   copy(pmk,master,32);copy(snonce,nonce,32);copy(local,station,6);copy(ap,bssid,6);copy(apRSN,rsn,n);rsnLength=n;state=1;return true;
  }
@@ -74,7 +85,7 @@ public:
   if(!state||length<113||length>512||!equal(frame,local,6)||!equal(frame+6,ap,6)||frame[12]!=0x88||frame[13]!=0x8e)return Ignore;
   const uint8_t *p=frame+14;size_t n=size_t(be16(p+2))+4;
   if((p[0]!=1 && p[0]!=2)||p[1]!=3||p[4]!=2||n<99||n>length-14||size_t(be16(p+97))+99!=n)return Ignore;
-  uint16_t info=be16(p+5);uint64_t replay=be64(p+9);
+  uint16_t info=be16(p+5);if((info&7)!=(sha256?3:2))return Ignore;info=uint16_t((info&~7u)|2u);uint64_t replay=be64(p+9);
   if(info==0x008a){
    if(be16(p+7)!=16)return Ignore;
    uint8_t nz=0;for(unsigned i=0;i<32;++i)nz|=p[17+i];if(!nz)return Ignore;

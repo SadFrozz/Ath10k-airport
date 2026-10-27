@@ -6,6 +6,19 @@
 #include "../src/kext/Ath10kConnection.hpp"
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 int main(){
+    {auto station=new Ath10k::ConnectionState;
+     station->stage=Ath10k::LinkStage::Assoc;station->secure=true;station->securityAKM=6;
+     station->groupCipher=4;station->nss=1;station->ssidLength=1;station->ssid[0]='x';
+     station->ap.rateCount=1;station->ap.rates[0]=12;UInt8 association[256]{};
+     auto length=Ath10k::buildStationManagement(association,sizeof(association),*station);assert(length>28);
+     bool found=false;for(unsigned at=28;at+2<=length;){unsigned n=association[at+1]+2;assert(at+n<=length);
+      if(association[at]==48){AthSecurity::RSNInfo info{};assert(AthSecurity::parseRSN(association+at,n,info));
+       assert(info.akmHas(6) && !info.akmHas(2) && !info.mfpc() && !info.mfpr());found=true;}
+      at+=n;
+     }assert(found);
+     station->securityAKM=8;assert(!Ath10k::buildStationManagement(association,sizeof(association),*station));
+     delete station;}
+
     auto s=new Ath10k::ConnectionState;
     s->stage=Ath10k::LinkStage::Connected;s->operatingChannel=6;
     const UInt8 peer[6]={2,1,2,3,4,5};memcpy(s->bssid,peer,6);

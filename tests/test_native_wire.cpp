@@ -4,7 +4,18 @@
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
+#include "../src/kext/native/Ath10kNativeCandidates.hpp"
 int main(){
+ assert(nativeScanDwellBudget(0)==120 && nativeScanDwellBudget(1)==1);
+ assert(nativeScanDwellBudget(100)==100 && nativeScanDwellBudget(10000)==120);
+
+ auto candidates=new AthNative::CandidateCache;Ath10k::WMIBSS candidate{};
+ candidate.bssid[0]=2;candidate.bssid[5]=1;candidates->add(candidate,1000);
+ candidate.snr=42;candidates->add(candidate,2000);assert(candidates->bss.count==1 && candidates->bss.entries[0].snr==42);
+ for(unsigned i=2;i<70;++i){candidate.bssid[5]=i;candidates->add(candidate,2000+i);}
+ assert(candidates->bss.count==64);candidates->expire(40000);assert(!candidates->bss.count);
+ candidates->add(candidate,5000);candidates->expire(4000);assert(!candidates->bss.count);delete candidates;
+
  UInt8 latency[8];memset(latency,0xa5,sizeof(latency));
  assert(!nativeLowLatencySessions(nullptr,4));assert(!nativeLowLatencySessions(latency,3));
  assert(nativeLowLatencySessions(latency,4));

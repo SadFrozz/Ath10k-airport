@@ -140,7 +140,7 @@ public:
     IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates* data) override { return perform(AthNativeOp::setWCL_ASSOCIATE,data); }
     IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LINK_UP_DONE(void* data) override { return perform(AthNativeOp::setWCL_LINK_UP_DONE,data); }
-    IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime* data) override { return perform(AthNativeOp::setWCL_SCAN_TIMING,data); }
     IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state* data) override { return perform(AthNativeOp::setWCL_LINK_STATE_UPDATE,data); }
     IOReturn setRSN_XE(apple80211_rsn_xe_data* data) override { return kIOReturnUnsupported; }
@@ -169,7 +169,7 @@ public:
     IOReturn setEAP_FILTER_CONFIG(apple80211_eap_filter_config* data) override { return kIOReturnUnsupported; }
     IOReturn setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params* data) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane* data) override { return perform(AthNativeOp::setWCL_FAST_LANE,data); }
     IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config* data) override { return kIOReturnUnsupported; }
     IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication* data) override { return kIOReturnUnsupported; }
     IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state* data) override { return kIOReturnUnsupported; }

@@ -99,3 +99,7 @@ inline bool nativeLowLatencySessions(void *out,size_t capacity) {
     if(!out || capacity<4)return false;
     memset(out,0,4);return true;
 }
+
+inline UInt32 nativeScanDwellBudget(UInt32 maximumAwayMs){
+    return maximumAwayMs && maximumAwayMs<120?maximumAwayMs:120;
+}

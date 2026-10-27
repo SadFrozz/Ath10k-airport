@@ -4,6 +4,7 @@
 #include "../../shared/Ath10kSupplicant.hpp"
 #include "Ath10kNativeWire.hpp"
 #include "Ath10kNativeCapture.hpp"
+#include "Ath10kNativeCandidates.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
@@ -11,6 +12,7 @@
 extern "C" {
 #include <corecrypto/cchmac.h>
 #include <corecrypto/ccsha1.h>
+#include <corecrypto/ccsha2.h>
 #include <corecrypto/ccaes.h>
 #include <corecrypto/ccmode.h>
 }
@@ -64,6 +66,16 @@ public:
 OSDefineMetaClassAndStructors(Ath10kBSDInterface,IOEthernetInterface)
 
 struct Ath10kKernelCrypto {
+    static bool hmac256(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
+        const auto di=ccsha256_di();if(!di)return false;
+        cchmac(di,keyLength,key,length,data,out);return true;
+    }
+    static bool encrypt(const UInt8 *key,const UInt8 *data,UInt8 *out) {
+        auto mode=ccaes_ecb_encrypt_mode();if(!mode || mode->size>1024)return false;
+        alignas(16) UInt8 context[1024]{};auto ctx=reinterpret_cast<ccecb_ctx *>(context);
+        bool ok=mode->init(mode,ctx,16,key)==0 && mode->ecb(ctx,1,data,out)==0;
+        AthSecurity::wipe(context,sizeof(context));return ok;
+    }
     static bool hmac(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
         const auto di=ccsha1_di();if(!di)return false;
         cchmac(di,keyLength,key,length,data,out);return true;
@@ -80,7 +92,9 @@ struct Ath10kKernelCrypto {
 };
 class Ath10kPCIDevice::NativeSecurity {
 public:
-    AthSecurity::Supplicant<Ath10kKernelCrypto> supplicant;
+    AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
+    AthNative::CandidateCache candidates;
+    UInt32 cachedGeneration=~0u;
     bool ready=false,replyPending=false,keysPending=false,authorizePending=false;
     unsigned keyOperation=0;
     UInt8 reply[160]{},keys[56]{};
@@ -178,7 +192,9 @@ IOReturn Ath10kNativeInterface::setMacAddress(ether_addr &address) {
     if(!controller || controller->getHardwareAddress(&current)!=kIOReturnSuccess)return kIOReturnNotReady;
     // A firmware restart with a changed vdev address is not implemented yet.
     // Never claim a new address while transmitting with the permanent address.
-    return bcmp(&current,&address,6)==0?kIOReturnSuccess:kIOReturnUnsupported;
+    const bool same=bcmp(&current,&address,6)==0;
+    controller->setProperty("Ath10kNativeMACChangeRequested",!same);
+    return same?kIOReturnSuccess:kIOReturnUnsupported;
 }
 IONetworkInterface *Ath10kPCIDevice::createInterface() {
     auto interface=new Ath10kBSDInterface;
@@ -339,6 +355,15 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         input.vhtMap=s.vhtEnabled?s.vhtTxMap:0xffff;
         if(s.secure){input.rsn=s.ap.rsn;input.rsnLength=s.ap.rsnLength;}
         return nativeExtendedBSS(input,data,0x1e0)?kIOReturnSuccess:kIOReturnBadArgument;}
+    case N::setWCL_SCAN_TIMING:{
+        UInt32 milliseconds=AirportWCL::read32(static_cast<const UInt8 *>(data));
+        _nativeScanDwellMs=nativeScanDwellBudget(milliseconds);
+        setProperty("Ath10kNativeScanTimingRequested",UInt64(milliseconds),32);
+        setProperty("Ath10kNativeScanDwellMs",UInt64(_nativeScanDwellMs),32);
+        return kIOReturnSuccess;}
+    case N::setWCL_FAST_LANE:{
+        const auto bytes=static_cast<const UInt8 *>(data);
+        return (bytes[0] || bytes[1])?kIOReturnUnsupported:kIOReturnSuccess;}
     case N::setWCL_SCAN_REQ:{AirportWCL::ScanRequest scan{};
         // The native ABI owns a fixed request containing at most 400 channels.
         if(!AirportWCL::decodeScan(data,0x1318,scan))return kIOReturnBadArgument;
@@ -359,20 +384,22 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(!AirportWCL::decodeJoin(data,0x2cc,join))return kIOReturnBadArgument;
         setProperty("Ath10kNativeJoinAuth",UInt64(join.upperAuth),32);
         setProperty("Ath10kNativeJoinChannel",UInt64(join.channelSpec&0xff),32);
-        bool personal=join.upperAuth==APPLE80211_AUTHTYPE_WPA2_PSK;
+        const UInt8 selectedAKM=join.upperAuth==APPLE80211_AUTHTYPE_SHA256_PSK?6:2;
+        bool personal=join.upperAuth==APPLE80211_AUTHTYPE_WPA2_PSK || join.upperAuth==APPLE80211_AUTHTYPE_SHA256_PSK;
         bool open=join.upperAuth==0 && join.keyLength==0 && join.lowerAuth==1;
         if((!personal && !open) || (personal && (join.lowerAuth!=1 || join.keyLength!=32 || (join.keyCipher!=6 && join.keyCipher!=7)))){
             setProperty("Ath10kNativeJoinReason","unsupported-authentication");
             AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;}
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
         if(_nativeJoinPending || _nativeScanPending || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
-        s.regulatory=_regulatory;s.hiddenSSID=true;s.secure=personal;s.ssidLength=join.ssidLength;
+        s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_wmiInit.mac,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;s.rfChains=1;
-        const char *error=Ath10k::selectOpenBSS(s,_wmiBSS);
+        _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
+        const char *error=Ath10k::selectOpenBSS(s,_nativeSecurity->candidates.bss);
         if(error){setProperty("Ath10kNativeJoinReason",error);AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
         if(personal){UInt8 nonce[32]{};Ath10kKernelCrypto::random(nonce,sizeof(nonce));
-            bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength);
+            bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,selectedAKM);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
         _nativeJoin=join;AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));AthSecurity::wipe(&join,sizeof(join));
@@ -408,6 +435,11 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
 void Ath10kPCIDevice::serviceNative(UInt64 now) {
     if(!_nativeInterface || _nativeStopping || !_nativeStarted)return;
     auto &s=_connection;auto sec=_nativeSecurity;
+    if(sec && _wmiScan.completed && !_wmiScan.failed && !_wmiScan.cancelRequested &&
+       sec->cachedGeneration!=_wmiScan.generation){
+        for(UInt32 i=0;i<_wmiBSS.count;++i)sec->candidates.add(_wmiBSS.entries[i],now);
+        sec->cachedGeneration=_wmiScan.generation;
+    }
     auto post=[&](UInt32 id,void *payload,size_t bytes){postMessage(_nativeInterface,id,payload,bytes,true);};
     if(_nativeScanPending && _wmiScan.completed){
         UInt32 emitted=0;
@@ -450,8 +482,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         if(sec->keysPending && !s.wmiOwned && !s.submitted && !s.txOwned && !s.dataPending &&
            !s.stats.step && !s.maintenance.step && !s.radio.step && _wmiScan.completed && !_wmi.credits.outstanding){
-            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto>::Keys;
-            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto>::PairKeys;
+            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true>::Keys;
+            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true>::PairKeys;
             if((initial && !s.securityPhase) || (!initial && s.securityPhase==5 && s.portAuthorized)){
                 const unsigned keyBytes=s.groupCipher==AthSecurity::cipherTKIP?32:16;
                 bool sameGroup=s.groupInstalled[sec->keys[49]] && AthSecurity::equal(sec->keys+16,s.installedGroups[sec->keys[49]],keyBytes);
@@ -474,7 +506,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
-            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto>;
+            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true>;
             if(result==Supplicant::Fatal){s.error="native-wpa2-handshake-failed";s.cancelRequested=true;}
             else if(result!=Supplicant::Ignore){
                 if(sec->supplicant.outputLength && sec->supplicant.outputLength<=sizeof(sec->reply)){

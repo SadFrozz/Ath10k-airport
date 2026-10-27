@@ -27,3 +27,23 @@ claim certification based only on host tests or successful compilation.
 
 Do not install OCLP root patches, replace system networking families, remove
 version guards or spoof dependency versions to claim compatibility.
+
+## WPA3 requirement
+
+WPA3-Personal is an explicit support target, not implemented by the current
+PSK-SHA256 work. Implement and test SAE, required PMF/BIP, IGTK/IPN replay
+protection, protected deauthentication/disassociation and SA Query together.
+Test SAE-only and transition networks, anti-clogging/retransmission paths,
+wrong-password and downgrade resistance with independent fixtures and hardware.
+Until complete, reject SAE/required PMF explicitly; do not advertise WPA3 support
+or silently convert an explicitly requested WPA3 connection to WPA2.
+
+## AWDL and AirDrop requirement
+
+AWDL and AirDrop are explicit planned features, not provided by the current
+infrastructure adapter. After stable AP association/data and security, implement
+AWDL peer discovery/action frames, synchronization and channel scheduling,
+AP/AWDL coexistence, a versioned native virtual interface and IPv6 data path.
+Validate regulatory limits and sleep/wake behavior. AirDrop then requires working
+Bluetooth discovery plus AWDL, bidirectional transfer, peer interoperability and
+continued AP traffic. Do not infer AirDrop support from a working Wi-Fi menu.
