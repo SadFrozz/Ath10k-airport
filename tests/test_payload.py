@@ -40,6 +40,9 @@ class PayloadTests(unittest.TestCase):
         self.assertIn('0x1a3b, 0x2b51', entry)
         generated = '\n'.join(header)
         self.assertIn('using Ath10kPayload9377::kFirmware;', generated)
+        self.assertFalse(manifest['mfp_support_feature'])
+        self.assertIn('using Ath10kPayload9377::kSupportsMFP;', generated)
+        self.assertIn('Ath10kPayload9377Lunnen::kSupportsMFP', entry)
         self.assertNotIn('static constexpr UInt8 kFirmware[]', generated)
 
     def test_lunnen_missing_board_must_not_fall_back(self):
@@ -142,6 +145,15 @@ class PayloadTests(unittest.TestCase):
         self.assertFalse(p.ignore_otp_result({2: b""}))
         self.assertFalse(p.ignore_otp_result({2: b"\x40\x80"}))
         self.assertTrue(p.ignore_otp_result({2: b"\x80"}))
+
+    def test_mfp_feature_is_exact_firmware_ie_bit_12(self):
+        self.assertFalse(p.supports_mfp({}))
+        for bit in range(24):
+            features = (1 << bit).to_bytes(3, 'little')
+            self.assertEqual(p.supports_mfp({2: features}), bit == 12)
+        for value in (b"", b"\x10", b"\xc0", b"\xc0\x02"):
+            self.assertFalse(p.supports_mfp({2: value}))
+        self.assertTrue(p.supports_mfp({2: b"\xc0\x10"}))
 
     def test_skip_clock_feature_bit(self):
         for value in (b"", b"\x02", b"\xc0\x10"):

@@ -63,7 +63,7 @@ int main() {
     ChannelsDriver stop;stop.channelCredit=false;stop.tick(1000);stop.tick(1010);stop.tick(1020);stop.setPowerState(0,&stop);
     assert(!stop._wmiScanChannels.completed && !stop._wmiScanChannels.txOwned && stop.resets==1);stop.releaseWMIRuntime();
     ChannelsDriver wrap;wrap._wmiScanChannels.completed=true;wrap.tick(1000);wrap.tick(1010);wrap.tick(1020);
-    wrap._wmiScanChannels={};wrap._regs.tx3Written=wrap._regs.tx3Read=wrap._wmiRadio[4].txNext=31;
+    wrap._wmiScanChannels={};wrap._regs.tx3Written=wrap._regs.tx3Read=wrap._wmiRadio[Ath10k::kWMIPMFQoSIndex].txNext=31;
     assert(!wrap.serviceWMIScanChannels(1030));assert(wrap._wmiScanChannels.txNext==0);
     wrap.tick(1040);assert(wrap._wmiScanChannels.completed);wrap.releaseWMIRuntime();
     UInt8 frame[1089];memset(frame,0xaa,sizeof(frame));

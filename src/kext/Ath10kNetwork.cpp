@@ -172,6 +172,12 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kConnectionChannelPowerLimitHalfDbm",Ath10k::stationPowerLimit(_connection),32);
     setProperty("Ath10kStationPowerSaveRequested",_connection.radio.requestedPS);
     setProperty("Ath10kStationPowerSaveApplied",_connection.radio.appliedPS);
+    setProperty("Ath10kTXPowerSaveWakeRequested",_connection.radio.txWakeRequested);
+    setProperty("Ath10kTXPowerSaveWakeRequests",UInt64(_connection.radio.txWakeRequests),32);
+    setProperty("Ath10kDataTxWatchdogReason",_connection.dataWatchdogReason);
+    setProperty("Ath10kDataTxWatchdogSlot",UInt64(_connection.dataWatchdogSlot),32);
+    setProperty("Ath10kDataTxWatchdogID",UInt64(_connection.dataWatchdogID),32);
+    setProperty("Ath10kDataTxWatchdogAgeMs",_connection.dataWatchdogAgeMs);
     setProperty("Ath10kStationDTIMPeriod",_connection.radio.appliedDTIM,32);
     setProperty("Ath10kAPDTIMPeriod",_connection.ap.timPresent?_connection.ap.dtimPeriod:0,32);
     setProperty("Ath10kStationTXPowerBlocked",_connection.radio.powerBlocked);
@@ -800,6 +806,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!_wmiScan.completed || !_networkEnabled)return nullptr;
         if(_rxSetup.major!=3 || (_wmi.serviceBitmap[76/4]&(1u<<(76%4))))return "management-tx-abi-not-supported";
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
+        s.firmwareMFPSupport=payload().kSupportsMFP;s.pmfQoSTransported=_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;
         s.rfChains=static_cast<UInt8>(_wmiInit.requestedChainMask==1?1:2);
         s.regulatory=_regulatory;
 #ifdef ATH10K_NATIVE
@@ -982,7 +989,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
         if(s.submitted || s.stats.step || s.maintenance.step || s.csa.submitted || s.csa.phase>Ath10k::ChannelSwitchPhase::Drain ||
            s.disconnect>Ath10k::DisconnectStage::Drain){r.blocked=false;return nullptr;}
         bool desired=r.requestedPS && s.disconnect==Ath10k::DisconnectStage::None && s.ap.timPresent && s.portAuthorized && !s.cancelRequested && !s.rekeyKind && !s.eapolPause &&
-            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
+            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && !r.txWakeRequested && nowMs>=r.txWakeHoldUntilMs && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
         UInt8 power=Ath10k::stationOperationalPowerLimit(s);
         if(!power){s.error="ap-power-constraint-forbids-tx";s.cancelRequested=true;r.powerBlocked=true;desired=false;
             if(!r.appliedPS){r.blocked=false;return nullptr;}
@@ -994,9 +1001,15 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
             if(!s.cancelRequested){r.powerBlocked=false;}return nullptr;}
         if(!r.blocked){r.blocked=true;r.sinceMs=nowMs;}
         if(nowMs-r.sinceMs>=5000)return "radio-maintenance-drain-timeout";
-        if(s.wmiOwned || s.txOwned || s.dataPending || _wmi.credits.outstanding || _wmiScan.txOwned)return nullptr;
+        // A wake-only PS disable on CE3 must not wait for firmware-owned
+        // CE4 payloads: those payloads may be waiting for this very wake.
+        // Power reduction/timing updates still require the normal drain.
+        const bool wakeOnly=s.dataPending && r.appliedPS && !desired && !r.powerBlocked && power>=r.appliedPower;
+        if(s.wmiOwned || s.txOwned || (s.dataPending && !wakeOnly) || _wmi.credits.outstanding || _wmiScan.txOwned)return nullptr;
+        r.wakeOnly=wakeOnly;
         r.targetPS=desired;r.targetPower=power;r.targetDTIM=s.ap.dtimPeriod;r.targetBeacon=s.ap.beaconInterval;
-        r.submitted=false;r.step=timing?(r.appliedPS?10:9):(desired&&!r.configuredPS?1:6);
+        r.submitted=false;r.step=wakeOnly?6:(timing?(r.appliedPS?10:9):(desired&&!r.configuredPS?1:6));
+        if(wakeOnly){r.targetPower=r.appliedPower;r.targetDTIM=r.appliedDTIM;r.targetBeacon=r.appliedBeacon;}
         ++r.generation;r.sinceMs=nowMs;
     }
     if(nowMs-r.sinceMs>=5000)return "radio-maintenance-timeout";
@@ -1020,7 +1033,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
         if(!_connectionEcho.replyReceived || _connectionEcho.cookie!=Ath10k::radioCookie(s))return nullptr;
         r.appliedPS=r.targetPS;r.configuredPS=r.configuredPS||r.targetPS;r.appliedPower=r.targetPower;
         r.appliedDTIM=r.targetDTIM;r.appliedBeacon=r.targetBeacon;s.txPowerHalfDbm=r.targetPower;
-        r.step=0;r.submitted=false;++r.completed;s.lastBeaconMs=nowMs;
+        r.step=0;r.submitted=false;r.wakeOnly=false;++r.completed;s.lastBeaconMs=nowMs;
         r.powerBlocked=!Ath10k::stationOperationalPowerLimit(s) || Ath10k::stationOperationalPowerLimit(s)<r.appliedPower;
         const bool stale=Ath10k::stationOperationalPowerLimit(s)!=r.targetPower ||
             (s.ap.timPresent && (s.ap.dtimPeriod!=r.targetDTIM || s.ap.beaconInterval!=r.targetBeacon));
@@ -1031,7 +1044,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
     if(r.step==10){r.appliedPS=false;r.step=9;}
     else if(r.step==9)r.step=11;
     else if(r.step==11){r.configuredPS=false;r.step=r.targetPS?1:6;}
-    else if(r.step==6 && !Ath10k::stationOperationalPowerLimit(s))r.step=8;
+    else if(r.step==6 && (r.wakeOnly || !Ath10k::stationOperationalPowerLimit(s)))r.step=8;
     else ++r.step;
     r.submitted=false;r.sinceMs=nowMs;return nullptr;
 }
@@ -1236,7 +1249,10 @@ const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UIn
 const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
 {
     serviceRXReorder(nowMs);
-    auto &s=_connection;if(!s.dataPending){s.dataStallArmed=s.dataPauseArmed=false;return nullptr;}
+    auto &s=_connection;if(!s.dataPending){
+        if(s.radio.txWakeRequested){s.radio.txWakeRequested=false;s.radio.txWakeHoldUntilMs=nowMs>~UInt64(0)-1000?~UInt64(0):nowMs+1000;}
+        s.dataStallArmed=s.dataPauseArmed=false;return nullptr;
+    }
     const UInt32 entries=Ath10k::kCEHostConfig[4].srcEntries,mask=entries-1;
     Ath10k::CESnapshot snap{};
     if(!Ath10k::readCESnapshot(_regs,4,snap) || !validateBMIPipeStructure(4,snap) ||
@@ -1249,6 +1265,7 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
     UInt32 oldest=Ath10k::kDataTxSlots;UInt64 oldestAge=0;
     auto report=[&](const char *reason,UInt32 index,UInt64 age){
         const auto &slot=s.dataTX[index];
+        s.dataWatchdogReason=reason;s.dataWatchdogSlot=index;s.dataWatchdogID=slot.id;s.dataWatchdogAgeMs=age;
         IOLog("Ath10kMac: DATA TX watchdog reason=%s slot=%u id=%u age-ms=%llu bytes=%u pending=%u ce-consumed=%u htt-complete=%u ce-read=%u ce-write=%u pause=0x%x scan-active=%u stage=%u disconnect=%u channel=%u\n",
             reason,index,slot.id,age,slot.bytes,s.dataPending,slot.ceConsumed,slot.complete,
             snap.currentSrcRead,snap.srcWriteIndex,s.txPauseMask,!_wmiScan.completed,
@@ -1298,7 +1315,10 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
     }
     s.dataRead=snap.currentSrcRead;
     if(s.dataPending && oldest==Ath10k::kDataTxSlots)return "data-tx-slot-accounting";
-    if(!s.dataPending){s.dataStallArmed=s.dataPauseArmed=false;}
+    if(!s.dataPending){
+        if(s.radio.txWakeRequested){s.radio.txWakeRequested=false;s.radio.txWakeHoldUntilMs=nowMs>~UInt64(0)-1000?~UInt64(0):nowMs+1000;}
+        s.dataStallArmed=s.dataPauseArmed=false;
+    }
     else if(blocked){
         // STOP/Wake and scan can legitimately defer HTT replies. Do not charge
         // that interval to a full-queue stall; a stuck pause remains bounded.
@@ -1316,6 +1336,11 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
         if(s.dataPending<Ath10k::kDataTxSlots)s.dataStallArmed=false;
         else{
             if(progress || !s.dataStallArmed){s.dataStallArmed=true;s.dataStallSinceMs=nowMs;}
+            if(s.radio.appliedPS && !s.radio.txWakeRequested && s.stage==Ath10k::LinkStage::Connected &&
+               s.portAuthorized && s.disconnect==Ath10k::DisconnectStage::None &&
+               nowMs>=s.dataStallSinceMs && nowMs-s.dataStallSinceMs>=1000){
+                s.radio.txWakeRequested=true;++s.radio.txWakeRequests;
+            }
             if(nowMs>=s.dataStallSinceMs && nowMs-s.dataStallSinceMs>=5000){
                 ++s.dataTimeouts;report("queue-stalled",oldest,oldestAge);
                 return "data-tx-completion-timeout";

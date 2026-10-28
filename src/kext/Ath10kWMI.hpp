@@ -308,11 +308,15 @@ struct WMIScanChannelsState {
     UInt64 startedMs=0, elapsedMs=0;
     const char *status="not-run";
 };
-// TLV PDEV_SET_PARAM: pdev_id reserved zero, param 1=TX / 2=RX.
+// Linux v6.12 TLV pdev map: PMF_QOS=34. This is independent of the
+// firmware-file MFP_SUPPORT feature, which gates the peer association flag.
+static constexpr UInt32 kWMIPMFQoSParam=34,kWMIPMFQoSIndex=5,kWMIRadioStepCount=6;
+static_assert(kWMIPMFQoSIndex+1==kWMIRadioStepCount,"PMF QoS precedes scan-channel setup");
+// TLV PDEV_SET_PARAM: pdev_id reserved zero, 1=TX / 2=RX / 3,4=power.
 static constexpr UInt32 kWMIRadioFrameBytes=28;
 inline bool buildWMIRadio(UInt8 *f, UInt32 capacity, UInt8 endpoint, UInt32 param, UInt32 mask) {
     if (!f || capacity<kWMIRadioFrameBytes || !endpoint || endpoint==255 ||
-        (param<1 || param>4) || ((param<=2)?(mask!=1 && mask!=3 && mask!=7):(!mask || mask>20))) return false;
+        (param==kWMIPMFQoSParam?mask!=1:((param<1 || param>4) || ((param<=2)?(mask!=1 && mask!=3 && mask!=7):(!mask || mask>20))))) return false;
     htcZero(f,kWMIRadioFrameBytes);
     f[0]=endpoint;f[1]=1;f[5]=static_cast<UInt8>(param+5);
     htcWriteLE16(f+2,20);htcWriteLE32(f+8,0x4003);

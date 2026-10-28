@@ -525,9 +525,14 @@ bool Ath10kPCIDevice::nativePMFManagement(void *context,const UInt8 *frame,UInt3
     if(!sec->pmfInbox.push(frame,bytes,status,channel,snr,sec->pmfRXLayout))++sec->pmfRXDropped;
     return true;
 }
+bool Ath10kPCIDevice::nativePMFFirmwareReady(){
+    const auto &qos=_wmiRadio[Ath10k::kWMIPMFQoSIndex];
+    return _runtimeActive && _wmiLive.active && !_dmaQuarantine && !powerIOBlocked() &&
+        _connection.pmfQoSTransported && qos.completed && qos.txConsumed && qos.creditReturned;
+}
 bool Ath10kPCIDevice::nativePMFTransportReady(){
     const auto &s=_connection;
-    return !powerIOBlocked() && !_dmaQuarantine && _wmiLive.active && s.pmfRequired &&
+    return nativePMFFirmwareReady() && s.pmfRequired &&
         s.stage==Ath10k::LinkStage::Connected && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
         !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None && !s.eapolPause &&
         !s.txOwned && !s.dataPending && !s.wmiOwned && !s.submitted && !s.txPauseMask &&
@@ -692,6 +697,7 @@ bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
     return _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
 }
 bool Ath10kPCIDevice::nativePMFPortReady(){
+    if(_connection.pmfRequired && !nativePMFFirmwareReady())return false;
     if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
     return _nativeSecurity->pmfSession->authorize();
 }
@@ -1053,7 +1059,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(_nativeJoinPending || _nativeScanPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
         s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
-        s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;s.rfChains=1;
+        s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
+        s.firmwareMFPSupport=payload().kSupportsMFP;s.pmfQoSTransported=_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;s.rfChains=1;
         _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
         const char *error=Ath10k::selectOpenBSS(s,_nativeSecurity->candidates.bss);
         if(error){setProperty("Ath10kNativeJoinReason",error);AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}

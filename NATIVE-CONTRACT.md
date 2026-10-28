@@ -733,3 +733,47 @@ workspace allocation, reinforcing outside-gate crypto-worker requirements.
 This establishes symbol availability for this image, not callable context ABI,
 P-256 correctness, actual SAE/PMF or macOS 11–26 support. Those original goal
 requirements remain incomplete. No Apple binary/header/assembly is redistributed.
+
+
+## Runtime link-loss incident and PS wake/drain fix (2026-10-28)
+
+The live 0.0.98 / UUID 808674DF-53D8-3742-A2ED-689680AAC259 driver stopped with
+ConnectionError=data-tx-completion-timeout. The saved registry shows 64 pending
+payloads, 424355 CE observations versus 424291 HTT completions, one watchdog
+failure, applied station PS, no explicit TX-pause mask, no active scan and no
+recorded AP deauth/disassoc. Runtime and controlled port were stopped; en1 was
+inactive. macOS's 20:31 diagnostic capture records WCL deauth handling. Local
+registry, kernel/airport logs and the pre-fix regression are saved separately;
+no credentials or packet payloads are included in this public contract.
+
+This establishes a retained full queue and a host watchdog stop, not the physical
+reason firmware stopped completing payloads. A source regression independently
+reproduced a real cycle: PS disable waited for dataPending to reach zero, although
+firmware-retained data could require that PS disable to complete. Its unchanged
+public-API assertion failed before the fix and passes after it.
+
+The fix permits a wake-only PS-disable transaction on CE3 while CE4 payloads remain
+owned. It sends PS disable followed by the existing ECHO/credit barrier, skipping
+power/timing writes until their ordinary data drain is possible. A lower/forbidden
+power limit is not bypassed by this exception. Source payload IDs, DMA buffers
+and completion ownership are unchanged; only actual HTT plus CE completion can
+release them.
+
+For a full queue with no progress while station PS is applied, the driver requests
+this bounded wake after one second without progress. It does not trigger for one
+old retained frame or an explicit firmware/scan pause. The original five-second
+full-queue/CE timeout and pause/teardown deadlines remain unchanged. If firmware
+still never completes, normal failure/reset safety still applies. After the queue
+drains, PS is held off for one second before the user's requested idle PS can
+resume; power saving is not globally disabled. Persistent registry watchdog
+reason/slot/ID/age and wake-request counters make the next incident diagnosable
+even when IOLog is absent from the unified log store.
+
+Tests drive the real radio-command/credit/ECHO path while all 64 payloads remain
+owned, then deliver their real HTT completions and check queue release, the idle
+hold and PS re-entry. They also preserve the original timeout on failed recovery
+and verify pause/resume and safe DMA ownership. The new test build is 0.0.99,
+with matching kmod/bundle versions and the existing compatible-version floor.
+This fix has software-model evidence; installation/boot and physical stability
+validation must be recorded separately. It does not revive the already stopped
+0.0.98 runtime or implement complete automatic firmware restart after every fault.

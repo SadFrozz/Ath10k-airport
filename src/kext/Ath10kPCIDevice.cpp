@@ -358,7 +358,7 @@ void Ath10kPCIDevice::cancelDeferredProbe()
 bool Ath10kPCIDevice::stopDMAForRelease()
 {
     if (!_connection.wmiOwned && !_connection.txOwned && !_ceDiagTransferUncertain && !_bmiTransferUncertain &&
-        !_rxSetup.txOwned && !_rxSetup.ringOwned && !_htcControlExchangeUncertain && !_wmi.rxOwned && !_wmiInit.txOwned && !_wmiInit.hostMemoryOwned && !_wmiEcho.txOwned && !_wmiVdevCreate.txOwned && !_wmiRadio[0].txOwned && !_wmiRadio[1].txOwned && !_wmiRadio[2].txOwned && !_wmiRadio[3].txOwned && !_wmiRadio[4].txOwned && !_wmiScanChannels.txOwned && !_wmiScan.txOwned && !_boot.rxOwned && !_dmaQuarantine)
+        !_rxSetup.txOwned && !_rxSetup.ringOwned && !_htcControlExchangeUncertain && !_wmi.rxOwned && !_wmiInit.txOwned && !_wmiInit.hostMemoryOwned && !_wmiEcho.txOwned && !_wmiVdevCreate.txOwned && !_wmiRadio[0].txOwned && !_wmiRadio[1].txOwned && !_wmiRadio[2].txOwned && !_wmiRadio[3].txOwned && !_wmiRadio[4].txOwned && !_wmiRadio[Ath10k::kWMIPMFQoSIndex].txOwned && !_wmiScanChannels.txOwned && !_wmiScan.txOwned && !_boot.rxOwned && !_dmaQuarantine)
         return true;
     // A failed boot/reset must not restore the original bus-master bit later.
     _dmaQuarantine = true;
@@ -1151,9 +1151,9 @@ const char *Ath10kPCIDevice::serviceRuntime()
         error=serviceWMIEcho(ns/1000000u);
         if (!error && _wmiEcho.completed) error=serviceRxSetup(ns/1000000u);
         if (!error && _wmiEcho.completed && _rxSetup.completed) error=serviceWMIVdevCreate(ns/1000000u);
-        for(UInt32 i=0;i<5 && !error;++i)
+        for(UInt32 i=0;i<Ath10k::kWMIRadioStepCount && !error;++i)
             if(i?_wmiRadio[i-1].completed:_wmiVdevCreate.completed)error=serviceWMIRadio(ns/1000000u,i);
-        if (!error && _wmiVdevCreate.completed && _wmiRadio[0].completed && _wmiRadio[1].completed && _wmiRadio[4].completed) error=serviceWMIScanChannels(ns/1000000u);
+        if (!error && _wmiVdevCreate.completed && _wmiRadio[0].completed && _wmiRadio[1].completed && _wmiRadio[Ath10k::kWMIPMFQoSIndex].completed) error=serviceWMIScanChannels(ns/1000000u);
         if (!error && _wmiScanChannels.completed) error=serviceWMIScan(ns/1000000u);
     }
     if (!error && !macTransaction) {uint64_t t=0,n=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&n);error=serviceConnection(n/1000000u);}
@@ -1368,6 +1368,8 @@ void Ath10kPCIDevice::publishWMIRuntimeProperties()
     setProperty("Ath10kRegulatoryCommandComplete",_wmiRadio[2].completed);
     setProperty("Ath10kPower2GCommandComplete",_wmiRadio[3].completed);
     setProperty("Ath10kPower5GCommandComplete",_wmiRadio[4].completed);
+    setProperty("Ath10kPMFQoSTransportComplete",_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed);
+    setProperty("Ath10kPMFQoSStatus",_wmiRadio[Ath10k::kWMIPMFQoSIndex].status);
     setProperty("Ath10kRegulatoryScanCount",(UInt64)Ath10k::regulatoryScanCount(&_regulatory),32);
     setProperty("Ath10kWMIRadioTXStatus",_wmiRadio[0].status);
     setProperty("Ath10kWMIRadioRXStatus",_wmiRadio[1].status);
@@ -2609,7 +2611,7 @@ const char *Ath10kPCIDevice::serviceWMIVdevCreate(UInt64 nowMs)
 
 const char *Ath10kPCIDevice::serviceWMIRadio(UInt64 nowMs, UInt32 index)
 {
-    if (index>4) return "radio-index";
+    if (index>=Ath10k::kWMIRadioStepCount) return "radio-index";
     auto &state=_wmiRadio[index];
     const bool previousDone=index?_wmiRadio[index-1].completed:_wmiVdevCreate.completed;
     const bool previousConsumed=index?_wmiRadio[index-1].txConsumed:_wmiVdevCreate.txConsumed;
@@ -2637,8 +2639,8 @@ const char *Ath10kPCIDevice::serviceWMIRadio(UInt64 nowMs, UInt32 index)
             snap.srcWriteIndex!=previousNext || !_ceSrcRings[3].syncFromDevice()) return state.status;
         state.status="radio-build";
         UInt8 *frame=static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress());
-        const UInt32 param=index<2?index+1:index;
-        const UInt32 value=index<2?_wmiInit.requestedChainMask:_regulatory.ceilingHalfDbm;
+        const UInt32 param=index==Ath10k::kWMIPMFQoSIndex?Ath10k::kWMIPMFQoSParam:(index<2?index+1:index);
+        const UInt32 value=index==Ath10k::kWMIPMFQoSIndex?1:(index<2?_wmiInit.requestedChainMask:_regulatory.ceilingHalfDbm);
         const bool built=index==2?Ath10k::buildWMIRegdomain(frame,static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,_regulatory):
             Ath10k::buildWMIRadio(frame,static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,param,value);
         if(!built)return state.status;
@@ -2689,7 +2691,7 @@ const char *Ath10kPCIDevice::serviceWMIScanChannels(UInt64 nowMs)
     if (state.completed) return nullptr;
     if (!state.attempted) {
         state.attempted=true;state.startedMs=nowMs;state.status="scan-channels-prerequisite";
-        if (!_wmiLive.active || !_runtimeActive || !_wmiRadio[0].completed || !_wmiRadio[1].completed || !_wmiRadio[4].completed || !_wmiRadio[4].txConsumed ||
+        if (!_wmiLive.active || !_runtimeActive || !_wmiRadio[0].completed || !_wmiRadio[1].completed || !_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed || !_wmiRadio[Ath10k::kWMIPMFQoSIndex].txConsumed ||
             !_wmiInit.ready || !_wmi.rxOwned || !_runtimeCE1Armed || _dmaQuarantine ||
             !_htcWMIControl.connected || _htcWMIControl.uplinkPipe!=3 ||
             _htcWMIControl.maxMessageSize<Ath10k::kWMIScanChannelsFrameBytes-8 || _wmi.credits.outstanding ||
@@ -2699,7 +2701,7 @@ const char *Ath10kPCIDevice::serviceWMIScanChannels(UInt64 nowMs)
         state.status="scan-channels-ce3-state";
         if (!Ath10k::readCESnapshot(_regs,3,snap) || !validateBMIPipeStructure(3,snap) ||
             snap.srcWriteIndex>=entries || snap.currentSrcRead!=snap.srcWriteIndex ||
-            snap.srcWriteIndex!=_wmiRadio[4].txNext || !_ceSrcRings[3].syncFromDevice()) return state.status;
+            snap.srcWriteIndex!=_wmiRadio[Ath10k::kWMIPMFQoSIndex].txNext || !_ceSrcRings[3].syncFromDevice()) return state.status;
         state.status="scan-channels-build";
         if (!Ath10k::buildWMIScanChannels(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress()),
             static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,&_regulatory)) return state.status;
@@ -7300,6 +7302,7 @@ void Ath10kPCIDevice::publishDiagnosticProperties()
     setProperty("Ath10kBootLastHIObserved", (UInt64)_boot.lastHIObserved, 32);
     setProperty("Ath10kBootUARTDisabled", _boot.uartDisabled);
     setProperty("Ath10kBootSkipClockInitFeature", payload().kSupportsSkipClockInit);
+    setProperty("Ath10kFirmwareMFPFeatureDeclared", payload().kSupportsMFP);
     setProperty("Ath10kBootDownloadConfigSucceeded", _boot.downloadConfigSucceeded);
     setProperty("Ath10kBMIDoneAttempted", _boot.doneAttempted);
     setProperty("Ath10kBMIClosed", _boot.bmiClosed);

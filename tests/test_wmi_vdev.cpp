@@ -12,6 +12,7 @@ public:
             if(Ath10k::wmiReadLE32(p+8)==0x1d001){echo();return;}
             if (_wmiRadio[1].completed) _wmiRadio[1].txNext=_wmiVdevCreate.txNext;
             if (_wmiRadio[4].completed) _wmiRadio[4].txNext=_wmiVdevCreate.txNext;
+            if (_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed) _wmiRadio[Ath10k::kWMIPMFQoSIndex].txNext=_wmiVdevCreate.txNext;
             ++creates;
             assert(_wmiEcho.completed && _wmiEcho.creditReturned && _wmiVdevCreate.txOwned);
             assert(_wmi.credits.outstanding==1 && _wmi.credits.available==1);

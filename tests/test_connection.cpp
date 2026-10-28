@@ -944,7 +944,19 @@ static void protectedManagementTransport(){
     d.tick(2060);assert(!s.txOwned && !s.spectrum.inFlight && s.spectrum.completed==1);
     d.releaseWMIRuntime();
 }
+static void pmfFirmwarePolicy(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;UInt8 f[256]{};
+    s.pmfRequired=true;s.firmwareMFPSupport=true;s.pmfQoSTransported=false;
+    assert(!Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc));
+    s.pmfQoSTransported=true;s.firmwareMFPSupport=false;
+    assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && !(Ath10k::wmiReadLE32(f+36)&0x08000000));
+    s.firmwareMFPSupport=true;assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && (Ath10k::wmiReadLE32(f+36)&0x08000000));
+    assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::Start) && !Ath10k::wmiReadLE32(f+32)); // Linux STA keeps VDEV_START PMF flag clear.
+    s.pmfRequired=false;assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && !(Ath10k::wmiReadLE32(f+36)&0x08000000));
+    Ath10k::resetDisconnected(s);assert(s.firmwareMFPSupport && s.pmfQoSTransported && !s.pmfRequired);d.releaseWMIRuntime();
+}
 int main(){
+    pmfFirmwarePolicy();
     protectedManagementTransport();
     deferredDataWakeTests();
     partialCancelTests();

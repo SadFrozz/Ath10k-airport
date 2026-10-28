@@ -96,6 +96,7 @@ struct ConnectionState {
     // Small maintenance state: no ConnectionState/cache temporaries on the kernel stack.
     struct RadioState {
         bool requestedPS=false,appliedPS=false,configuredPS=false,submitted=false,blocked=false,powerBlocked=false;
+        bool wakeOnly=false,txWakeRequested=false;UInt32 txWakeRequests=0;UInt64 txWakeHoldUntilMs=0;
         UInt8 step=0,desiredPower=0,appliedPower=0,targetPower=0;bool targetPS=false;
         UInt8 vdevPower=0,targetDTIM=0,appliedDTIM=0;UInt16 targetBeacon=0,appliedBeacon=0;
         UInt32 generation=0,completed=0;UInt64 sinceMs=0;
@@ -135,6 +136,7 @@ struct ConnectionState {
     bool htEnabled=false,vhtEnabled=false,wmmConfigured=false;
     // SERVICE_READY capabilities, then intersected with AP and build limits.
     UInt32 firmwareHT=1,firmwareVHT=0;
+    bool firmwareMFPSupport=false,pmfQoSTransported=false;
     UInt8 rfChains=1,nss=1,width=20,centerChannel=0;
     bool shortGI=false,firmwareReorder=false;
     UInt16 localHT=0,peerHT=0,vhtRxMap=0xffff,vhtTxMap=0xffff;
@@ -153,6 +155,7 @@ struct ConnectionState {
     // Firmware retains payload ownership until HTT completion. An old frame
     // alone is not evidence that a still-progressing transmit queue is wedged.
     UInt32 dataDelayed=0,dataTimeouts=0;
+    const char *dataWatchdogReason="none";UInt32 dataWatchdogSlot=kDataTxSlots;UInt16 dataWatchdogID=0;UInt64 dataWatchdogAgeMs=0;
     UInt64 dataStallSinceMs=0,dataPauseSinceMs=0;
     bool dataStallArmed=false,dataPauseArmed=false;
     DataTxSlot dataTX[kDataTxSlots]{};
@@ -291,6 +294,7 @@ inline void resetDisconnected(ConnectionState &s) {
     const UInt16 tx=s.txId,seq=s.sequence;
     const UInt64 txb=s.txBytes,rxb=s.rxBytes;
     const UInt32 count=s.disconnectCount+1,txp=s.txPackets,txe=s.txErrors,rxp=s.rxPackets,rxd=s.rxDropped;
+    const bool mfp=s.firmwareMFPSupport,pmfQoS=s.pmfQoSTransported;
     const UInt32 fwHT=s.firmwareHT,fwVHT=s.firmwareVHT;const UInt8 chains=s.rfChains;
     UInt32 rxReasons[ConnectionState::DropCount];
     for(UInt32 i=0;i<ConnectionState::DropCount;++i)rxReasons[i]=s.rxReasons[i];
@@ -307,7 +311,7 @@ inline void resetDisconnected(ConnectionState &s) {
     s.wmiSequence=wmi;s.httSequence=htt;s.txId=tx;s.sequence=seq;s.txPowerHalfDbm=power;
     s.txBytes=txb;s.rxBytes=rxb;
     s.disconnectCount=count;s.txPackets=txp;s.txErrors=txe;s.rxPackets=rxp;s.rxDropped=rxd;
-    s.firmwareHT=fwHT;s.firmwareVHT=fwVHT;s.rfChains=chains;
+    s.firmwareHT=fwHT;s.firmwareVHT=fwVHT;s.rfChains=chains;s.firmwareMFPSupport=mfp;s.pmfQoSTransported=pmfQoS;
     for(UInt32 i=0;i<ConnectionState::DropCount;++i)s.rxReasons[i]=rxReasons[i];
     s.rxLastReason=lastReason;
     s.rxSecurity=securityDiagnostics;
@@ -715,6 +719,7 @@ inline UInt32 buildConnectionWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const C
         for(UInt32 i=0;i<6;++i)p[4+i]=s.bssid[i]; // generic peer, same as Linux station path
         break;
     case LinkStage::PeerAssoc: {
+        if(s.pmfRequired && !s.pmfQoSTransported)return 0;
         if(s.ap.wmmPresent && !s.wmmConfigured){
             cmd=0x4006;bytes=136;writeWMMCommand(f,s.ap.wmm);
             break;
@@ -724,6 +729,9 @@ inline UInt32 buildConnectionWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const C
         bytes=120+rates+htRates;connTLV(f+12,101,76);
         for(UInt32 i=0;i<6;++i)p[i]=s.bssid[i];
         UInt32 flags=(s.secure?(5|(s.ap.wpaPresent?16:0)):1)|(s.ap.wmmPresent?2u:0)|(s.htEnabled?0x1000u:0)|(s.vhtEnabled?0x02000000u:0);
+        // Match Linux ath10k_peer_assoc_h_crypto: the TLV peer PMF bit is
+        // conditional on the reviewed firmware-file feature, not SERVICE_READY.
+        if(s.pmfRequired && s.firmwareMFPSupport)flags|=0x08000000u;
         if(r.width>=40)flags|=0x2000;
         if(r.width==80)flags|=0x04000000;
         // SMPS flags have the same meaning as Linux ath10k_peer_assoc_h_ht.

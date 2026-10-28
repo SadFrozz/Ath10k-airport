@@ -167,6 +167,7 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   if(self->_nativeMACValid)bcopy(self->_nativeMACCurrent,s.local,6);
 #endif
   s.firmwareHT=self->_wmi.htCapability;s.firmwareVHT=self->_wmi.vhtCapability;
+        s.firmwareMFPSupport=self->payload().kSupportsMFP;s.pmfQoSTransported=self->_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;
   s.rfChains=static_cast<UInt8>(self->_wmiInit.requestedChainMask==1?1:2);
   const char *error=Ath10k::selectOpenBSS(s,self->_wmiBSS);
   if(error){s.error=error;return kIOReturnUnsupported;}

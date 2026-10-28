@@ -1,6 +1,7 @@
 #include <array>
 #include <vector>
 #include "mock_sae_worker.hpp"
+#include "../src/kext/Ath10kWMI.hpp"
 #include "../src/shared/Ath10kPMFTransport.hpp"
 #include "../src/shared/Ath10kSHA256.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
@@ -22,9 +23,12 @@ public:
  struct {bool completed=true,txOwned=false,cancelRequested=false;} _wmiScan;
  struct {struct {unsigned outstanding=0;} credits;} _wmi;
  struct {bool active=true;} _wmiLive;
+ Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
+ bool _runtimeActive=true;
  bool _dmaQuarantine=false,blocked=false,failSubmit=false;
  std::vector<std::vector<uint8_t>> transmitted;
  bool powerIOBlocked(){return blocked;}
+ bool nativePMFFirmwareReady();
  bool nativePMFTransportReady();
  const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode){
   assert(ownerGate && mgmt && mode==AthSecurity::ManagementTX::HardwareCCMP && nativePMFTransportReady());
@@ -38,7 +42,7 @@ public:
 #include "native_pmf_receive.inc"
 static Ath10kPCIDevice *create(){
  auto d=new Ath10kPCIDevice;auto &s=d->_connection;s.stage=Ath10k::LinkStage::Connected;
- s.secure=s.pmfRequired=s.pairInstalled=s.portAuthorized=true;s.securityPhase=5;randomCalls=0;memcpy(s.local,c_sta,6);memcpy(s.bssid,c_ap,6);
+ s.secure=s.pmfRequired=s.pairInstalled=s.portAuthorized=true;s.securityPhase=5;s.pmfQoSTransported=true;for(auto &qos:d->_wmiRadio)qos.completed=qos.txConsumed=qos.creditReturned=true;randomCalls=0;memcpy(s.local,c_sta,6);memcpy(s.bssid,c_ap,6);
  auto sec=d->_nativeSecurity=new Ath10kPCIDevice::NativeSecurity;assert(sec->prepareSAEWorker());
  sec->pmfSession=new Ath10kPMFSession;assert(sec->pmfSession->initConnection(c_sta,c_ap,9));assert(sec->pmfSession->acknowledgePairwise(c_key,c_sta,c_ap));
  AthSecurity::IGTKCMAC128 key{};key.keyID=4;key.ipn=6;memcpy(key.key,c_key,16);
@@ -49,9 +53,9 @@ static bool deliver(Ath10kPCIDevice *d,const uint8_t *frame,size_t bytes,uint32_
 static void service(Ath10kPCIDevice *d,UInt64 now=0){ownerGate=true;d->serviceNativePMF(now);ownerGate=false;}
 static void roundtrip(Ath10kPCIDevice *d){service(d);assert(d->_nativeSecurity->pmfRXInFlight);run(latest);service(d);}
 class ForeignJob final : public Ath10kSAEWorkItem {public:void execute() override {}void discard() override {}};
-void queryTests();void spectrumTests();
+void queryTests();void spectrumTests();void firmwareTests();
 int main(){
- queryTests();spectrumTests();
+ firmwareTests();queryTests();spectrumTests();
  { auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
    assert(sec->saeWorker->submit(job));run(latest);service(d);
    assert(sec->saeWorker->takeCompleted()==job);job->release();job->release();stop(d);
@@ -198,4 +202,16 @@ void spectrumTests(){
   assert(deliver(d,c_tpc_request_wire,sizeof(c_tpc_request_wire)));service(d,1);run(latest);service(d,1);
   assert(sec->pmfTXInFlight);run(latest);service(d,1);
   assert(d->transmitted.size()==2 && d->transmitted[1][24]==2 && d->transmitted[1][32]==0);stop(d);}
+}
+
+void firmwareTests(){
+ auto d=create();auto &qos=d->_wmiRadio[Ath10k::kWMIPMFQoSIndex];assert(d->nativePMFFirmwareReady());
+ for(unsigned failure=0;failure<7;++failure){
+  if(failure==0)d->_runtimeActive=false;if(failure==1)d->_wmiLive.active=false;
+  if(failure==2)d->_connection.pmfQoSTransported=false;if(failure==3)qos.completed=false;
+  if(failure==4)qos.txConsumed=false;if(failure==5)qos.creditReturned=false;if(failure==6)d->_dmaQuarantine=true;
+  assert(!d->nativePMFFirmwareReady() && !d->nativePMFTransportReady());
+  d->_runtimeActive=d->_wmiLive.active=d->_connection.pmfQoSTransported=qos.completed=qos.txConsumed=qos.creditReturned=true;d->_dmaQuarantine=false;
+ }
+ d->blocked=true;assert(!d->nativePMFFirmwareReady());d->blocked=false;stop(d);
 }

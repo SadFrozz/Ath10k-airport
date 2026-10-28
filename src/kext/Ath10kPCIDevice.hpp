@@ -183,7 +183,7 @@ private:
     const char *serviceWMIScanChannels(UInt64 nowMs);
     Ath10k::WMIScanChannelsState _wmiScanChannels{};
     Ath10k::RegulatoryPolicy _regulatory{};
-    Ath10k::WMIScanChannelsState _wmiRadio[5]{};
+    Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
     const char *serviceWMIRadio(UInt64 nowMs, UInt32 index);
     const char *serviceRxSetup(UInt64 nowMs);
     const char *sampleHTTRxPool();

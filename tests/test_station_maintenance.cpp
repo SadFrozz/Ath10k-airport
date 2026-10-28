@@ -134,9 +134,9 @@ int main(){
      Ath10k::receiveStationManagement(s,response,sizeof(response),0,6);assert(s.beaconSerial==1 && s.powerConstraintDb==25);d.releaseWMIRuntime();}
     {MaintenanceDriver d;auto &s=d._connection;s.radio.appliedPS=s.radio.requestedPS=true;
      s.probe.active=true;s.probe.deadlineMs=2000;s.dataPending=1;
-     assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked && !s.radio.step);
+     assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked && s.radio.step==6 && !s.radio.targetPS);
      assert(!Ath10k::stationWatchdog(s,2010,false) && s.probe.active);
-     s.dataPending=0;assert(!d.serviceRadioMaintenance(2020) && s.radio.step==6 && !s.radio.targetPS);d.releaseWMIRuntime();}
+     assert(s.dataPending==1);s.dataPending=0;d.releaseWMIRuntime();}
     {MaintenanceDriver d;auto &s=d._connection;s.radio.requestedPS=true;s.dataPending=1;
      assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked);s.radio.requestedPS=false;
      assert(!d.serviceRadioMaintenance(2010) && !s.radio.blocked && !s.radio.step && s.txWakePending);s.dataPending=0;d.releaseWMIRuntime();}

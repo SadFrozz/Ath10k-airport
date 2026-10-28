@@ -45,6 +45,7 @@ before the security dependency path is functional.
 | PMF TX | Explicit hardware formatting, shared PN leases and DMA model | Firmware encryption/MIC and autonomous management PN ownership |
 | SA Query | Native requests/responses, retry/deadline, cancellation and priority | AP interoperability and scan/power timing under load |
 | Spectrum/TPC | Verified request to protected report, epoch binding and TX completion | Protected wire capture and physical radio power reporting |
+| Firmware PMF setup | TLV PMF_QOS startup, firmware-file feature and peer flag gates | Physical firmware/wire behavior and RX format |
 | Native WPA3 capability | Disabled; native joins create no PMF session | Complete and validate the rows above before enabling |
 
 ### Current exchange composition (2026-10-28, local)
@@ -1132,3 +1133,42 @@ power accuracy or real WPA3 association. Those hardware requirements, native SAE
 credential/exchange wiring and authenticated IGTK/EAPOL staging remain open.
 No SAE/PMF capability is advertised, installed EFI is unchanged and no live kext
 load/unload or reboot is performed by this source work.
+
+
+### Firmware PMF startup and feature provenance (source-integrated)
+
+Firmware preparation now reads MFP_SUPPORT from bit 12 of the firmware container
+feature IE. The prepared manifest, generated payload constants and selected Profile
+carry that exact declaration; a missing/short IE means false. Board-only Lunnen
+profiles alias the same reviewed firmware capability rather than inventing it from
+a subsystem ID or SERVICE_READY service bitmap. Single-bit fixtures distinguish
+bit 12 from neighboring OTP/clock features. The selected QCA9377 image still does
+not declare this feature; this is not proof that software PMF is impossible.
+
+The TLV radio startup sequence adds PDEV_SET_PARAM PMF_QOS=34, value=1, after the
+existing TX/RX/domain/power steps and before scan-channel setup. It uses the same
+CE3 ownership and HTC credit barrier, deadline and verified-reset release policy.
+The additional sixth owner is included in DMA release admission. Scan-channel
+setup consumes its final CE position, never the prior power command's position.
+Tests execute the complete six-command sequence, hold the PMF QoS credit to prove
+scan cannot overtake it, and test failed PCI bus-master disable for every owner.
+A literal 28-byte fixture verifies the exact TLV command and rejected parameters.
+
+Join state records the selected firmware MFP declaration and QoS transport state.
+Peer association sets TLV PEER_PMF (0x08000000) only when PMF is required and the
+firmware file declares MFP_SUPPORT, matching ath10k_peer_assoc_h_crypto. No guessed
+VDEV_START_PMF flag is enabled for STA: the reference station path zero-initializes
+that field. Required-profile peer construction rejects absent QoS transport state.
+Native protected TX and controlled-port authorization also check the live runtime,
+QoS command completion/CE/credit ownership, power fence and DMA quarantine. A stale
+connection snapshot cannot authorize PMF after its firmware owner has stopped.
+
+These are command-transport and source-policy checks. No readback/semantic RF
+acknowledgement, actual firmware PMF encryption, AP interoperability or RX layout
+is inferred from HTC credits. Native SAE admission/capabilities remain disabled.
+
+References (Linux v6.12):
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/core.h
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/mac.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/wmi-tlv.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/wmi-tlv.h

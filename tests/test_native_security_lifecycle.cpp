@@ -45,6 +45,7 @@ public:
     void discardNativeSecurity();
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
+    bool firmwareReady=true;bool nativePMFFirmwareReady(){return firmwareReady;}
     const char *beforeFirmwareAuthorization(unsigned);
 };
 #include "native_security_class.inc"
@@ -65,6 +66,11 @@ int main(){
       d._connection.spectrum.inFlight=true;d._connection.spectrum.length=31;d._connection.pmfTXPending=true;
       d.discardNativeSecurity();assert(!d._connection.spectrum.inFlight && !d._connection.spectrum.length && d._connection.spectrum.dropped==1 && !d._connection.pmfTXPending);
       delete d._nativeSecurity; }
+
+    { Ath10kPCIDevice d;d._connection.pmfRequired=true;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      d._nativeSecurity->pmfSession=new Ath10kPMFSession;d.firmwareReady=false;
+      assert(!d.nativePMFPortReady() && !d._nativeSecurity->pmfSession->portCalls);
+      d.firmwareReady=true;assert(d.nativePMFPortReady());delete d._nativeSecurity;cleanup.clear(); }
 
     { Ath10kPCIDevice d;UInt8 key[16]{};d._connection.pmfRequired=true;
       assert(!d.nativePMFPairwiseAcknowledged(key) && !d.nativePMFPortReady() && d.beforeFirmwareAuthorization(3));
