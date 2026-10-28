@@ -833,7 +833,11 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         _nativeJoinPending=true;_nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=_nativeJoinFailed=false;_nativeJoinDeadline=Ath10k::uptimeNS()/1000000u+30000;
         s.error="none";s.stage=Ath10k::LinkStage::Scan;return kIOReturnSuccess;}
     case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:{
-        s.cancelRequested=true;s.portAuthorized=false;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;networkLink(false);
+        // airportd leaves even an idle interface before a new association.
+        // Disabled has no worker teardown to consume a cancellation latch.
+        // Keep cancellation for live joins and in-progress teardown only.
+        s.cancelRequested=s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None;
+        s.portAuthorized=false;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;networkLink(false);
         if(_nativeSecurity)_nativeSecurity->reset();
         if(op==N::setWCL_JOIN_ABORT){
             _nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));

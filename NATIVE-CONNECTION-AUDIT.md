@@ -661,3 +661,25 @@ apply only before teardown begins. DELETE/STOP/barrier keep their own command
 ownership and completion rules. The regression also requires successful
 reassociation through the same live runtime. This addresses the recovery failure;
 the original AP disconnect remains a separate unresolved issue.
+
+## Idle leave before association (2026-10-28)
+
+Current-boot airportd logs show pre-association disassociation followed by two
+10-second association timeouts. The native handler accepted the join, while
+runtime remained active with Disabled and cancelRequested=true, without a key
+generation. LEAVE_NETWORK unconditionally latched cancellation even when idle;
+serviceConnection returns immediately in Disabled, leaving that latch to cancel
+the next accepted join. Cancellation now applies only to a live connection stage
+or pending teardown. Abort completion and security reset remain unchanged.
+
+The regression executes the extracted production LEAVE/JOIN_ABORT cases: idle
+and repeated idle requests, active scan/connected cancellation, teardown, scan
+abort and JOIN_ABORT completion scheduling. It failed on the old idle latch and
+passes with the fix. Focused native_leave, connection, security_disconnect,
+native_notifications and native_scan tests pass under ASan/UBSan; native kext
+build and symbol checks pass. Hardware reconnect remains unverified.
+
+Open: approximately 30 seconds until first networks, reported on the same boot.
+Measure startup readiness, requested channel masks/dwell, first-result delivery
+and scan completion separately before attributing this to dwell alone. A later
+two-channel scan with zero results does not prove the startup scan was empty.
