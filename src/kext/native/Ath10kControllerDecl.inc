@@ -82,6 +82,7 @@ private:
     bool _nativeJoinBSSSent=false,_nativeLinkUpSent=false,_nativeDeauthSent=false,_nativeJoinFailed=false;
     UInt8 _nativeLastBSSID[6]{};
     UInt32 _nativeScanResultIndex=0,_nativeScanResultsEmitted=0;
+    bool _nativeScanStreamed=false;
     bool _nativeAttached=false,_nativeControllerAttached=false,_nativeStarted=false,_nativeStopping=false;
     UInt32 _nativeReportedBeacon=0;
     int _nativeReportedQuality=-2;

@@ -438,7 +438,7 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=_nativeReadyResetSent=false;
     _nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=false;
     _nativeWasUp=_nativeDeauthSent=_nativeJoinFailed=false;
-    _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativePostError=kIOReturnSuccess;
+    _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativeScanStreamed=false;_nativePostError=kIOReturnSuccess;
     bzero(_nativeLastBSSID,sizeof(_nativeLastBSSID));
     _nativeServiceLock=IOLockAlloc();
     if(!_nativeServiceLock)return false;
@@ -800,7 +800,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         // DFS remains passive and every channel still intersects the domain.
         UInt32 generation=_wmiScan.generation+1;Ath10k::resetInPlace(_wmiScan);_wmiScan.generation=generation;
         _wmiScan.id=0xa000|((0x36+generation)&0xfff);Ath10k::resetInPlace(_wmiBSS);_nativeScan=scan;_nativeScanPending=true;
-        _nativeScanResultIndex=_nativeScanResultsEmitted=0;
+        _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativeScanStreamed=false;
         return kIOReturnSuccess;}
     case N::setWCL_SCAN_ABORT:{if(_nativeScanPending)_wmiScan.cancelRequested=true;return kIOReturnSuccess;}
     case N::setWCL_ASSOCIATE:{AirportWCL::JoinRequest join{};
@@ -1013,7 +1013,14 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
     }
     if(_nativeAbortRequested && post(AirportWCL::JoinAbortComplete,nullptr,0))_nativeAbortRequested=false;
 
-    if(_nativeScanPending && _wmiScan.completed){
+    if(_nativeScanPending){
+        // Publish discoveries while firmware visits the remaining channels.
+        // Refresh the full final snapshot: an existing entry can gain a visible
+        // SSID or newer beacon information after its initial notification.
+        if(_wmiScan.completed && _nativeScanStreamed){
+            _nativeScanResultIndex=0;_nativeScanStreamed=false;
+        }
+        if(!_wmiScan.completed)_nativeScanStreamed=true;
         if(!_wmiScan.failed && !_wmiScan.cancelRequested){
             while(_nativeScanResultIndex<_wmiBSS.count){
                 const auto &b=_wmiBSS.entries[_nativeScanResultIndex];
@@ -1027,7 +1034,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
                 ++_nativeScanResultIndex;
             }
         }
-        if(_wmiScan.failed || _wmiScan.cancelRequested || _nativeScanResultIndex>=_wmiBSS.count){
+        if(_wmiScan.completed && (_wmiScan.failed || _wmiScan.cancelRequested || _nativeScanResultIndex>=_wmiBSS.count)){
             UInt32 status=_wmiScan.cancelRequested?kIOReturnAborted:(_wmiScan.failed?kIOReturnError:kIOReturnSuccess);
             if(post(AirportWCL::ScanDone,&status,sizeof(status))){
                 setProperty("Ath10kNativeScanResultsEmitted",UInt64(_nativeScanResultsEmitted),32);

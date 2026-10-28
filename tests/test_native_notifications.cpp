@@ -30,6 +30,7 @@ public:
     bool _nativeAssocSent=false,_nativeBeaconSent=false,_nativeJoinBSSSent=false;
     bool _nativeLinkUpSent=false,_nativeWasUp=false,_nativeDeauthSent=false,_nativeJoinFailed=false;
     bool _networkLinkUp=true;
+    bool _nativeScanStreamed=false;
     UInt32 _nativeScanResultIndex=0,_nativeScanResultsEmitted=0,_nativeReportedBeacon=0;
     UInt64 _nativeJoinDeadline=10000,_nativePostFailures=0;
     IOReturn _nativePostError=kIOReturnSuccess;
@@ -91,6 +92,51 @@ int main(){
         assert(d->events[4].data.size()==4 && Ath10k::wmiReadLE32(d->events[4].data.data())==0);
         for(auto key:d->_nativeJoin.key)assert(key==0);
         d->serviceNativeNotifications(130);assert(ids(*d)==expected);
+    }
+    { // Deliver discovered BSS records before the full channel sweep finishes.
+        auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);
+        d->_nativeReadyRequested=false;d->_nativeJoinPending=false;
+        d->_connection={};d->_networkLinkUp=false;
+        d->_wmiScan.completed=false;d->_wmiBSS.count=1;
+        d->serviceNativeNotifications(100);
+        assert((ids(*d)==std::vector<UInt32>{201}) && d->_nativeScanPending);
+        d->serviceNativeNotifications(110);assert(d->events.size()==1);
+        d->_wmiBSS.count=2;d->failAt=d->attempts+1;
+        d->serviceNativeNotifications(120);assert(d->_nativeScanResultIndex==1);
+        d->serviceNativeNotifications(130);
+        assert((ids(*d)==std::vector<UInt32>{201,201}) && d->_nativeScanPending);
+        d->_wmiScan.completed=true;d->serviceNativeNotifications(140);
+        assert((ids(*d)==std::vector<UInt32>{201,201,201,201,237}) && !d->_nativeScanPending);
+        d->serviceNativeNotifications(150);assert(d->events.size()==5);
+    }
+    for(bool cancelled:{false,true}){
+        auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);
+        d->_nativeReadyRequested=false;d->_nativeJoinPending=false;
+        d->_connection={};d->_networkLinkUp=false;
+        d->_wmiScan.completed=false;d->_wmiBSS.count=1;
+        d->serviceNativeNotifications(100);assert(d->events.size()==1);
+        d->_wmiScan.cancelRequested=cancelled;d->_wmiScan.failed=!cancelled;
+        d->_wmiBSS.count=2;d->serviceNativeNotifications(110);
+        assert(d->events.size()==1 && d->_nativeScanPending);
+        d->_wmiScan.completed=true;d->failAt=d->attempts+1;
+        d->serviceNativeNotifications(120);assert(d->events.size()==1 && d->_nativeScanPending);
+        d->serviceNativeNotifications(130);
+        assert((ids(*d)==std::vector<UInt32>{201,237}) && !d->_nativeScanPending);
+        assert(Ath10k::wmiReadLE32(d->events.back().data.data())==
+               (cancelled?kIOReturnAborted:kIOReturnError));
+        d->serviceNativeNotifications(140);assert(d->events.size()==2);
+    }
+    { // A failed final refresh enqueue must resume, never restart the pass.
+        auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);
+        d->_nativeReadyRequested=false;d->_nativeJoinPending=false;
+        d->_connection={};d->_networkLinkUp=false;d->_wmiScan.completed=false;
+        d->serviceNativeNotifications(100);assert(d->events.size()==2);
+        d->_wmiBSS.entries[0].ssid[0]='X';
+        d->_wmiScan.completed=true;d->failAt=d->attempts+2;
+        d->serviceNativeNotifications(110);assert(d->events.size()==3 && d->_nativeScanResultIndex==1);
+        assert(d->events[0].data!=d->events[2].data);
+        d->serviceNativeNotifications(120);
+        assert((ids(*d)==std::vector<UInt32>{201,201,201,201,237}) && !d->_nativeScanPending);
     }
     { // Cancellation supersedes only the unsubmitted remainder of scan results.
         auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);

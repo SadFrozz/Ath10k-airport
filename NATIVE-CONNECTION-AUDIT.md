@@ -683,3 +683,23 @@ Open: approximately 30 seconds until first networks, reported on the same boot.
 Measure startup readiness, requested channel masks/dwell, first-result delivery
 and scan completion separately before attributing this to dwell alone. A later
 two-channel scan with zero results does not prove the startup scan was empty.
+
+## Incremental native scan results (2026-10-28)
+
+Captured airportd settings requests took 9.213 seconds initially and about 4.44
+seconds on later sweeps. This does not explain the entire user-reported 30-second
+wait. The driver previously held every ScanResult until firmware scan completion.
+It now submits discoveries as the cache grows, retaining firmware ownership and
+withholding ScanDone until actual completion. A final full snapshot refreshes
+entries whose SSID or beacon data changed after initial delivery. Failed queue
+submissions retain their index; cancellation/failure suppresses further results
+and reports its terminal status only after firmware completion.
+
+The actual production notification method is extracted for host regressions.
+Tests cover early discovery, newly appended BSS, retry on queue failure, updated
+final records, final-pass retry without duplication, cancellation, firmware
+failure and terminal-event retry. The early-discovery test fails on the old code.
+Focused native_notifications, native_scan and native_leave pass with ASan/UBSan.
+Native kext build/symbol checks pass. No hardware latency improvement is claimed
+until reboot testing; initial unsolicited sweep and system scan scheduling remain
+under investigation.
