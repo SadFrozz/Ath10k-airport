@@ -707,6 +707,21 @@ void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
     // neither SA Query nor its priority flag acquires firmware ownership itself.
     if(pending && !_wmiScan.completed)_wmiScan.cancelRequested=true;
 }
+UInt32 Ath10kPCIDevice::buildNativeSAEAssociation(UInt8 *frame,UInt32 capacity){
+    auto sec=_nativeSecurity;const auto &s=_connection;
+    if(!sec || !sec->ready || !sec->saeRadio || !sec->saeSession || !sec->pmfSession || !_nativeJoinPending || !_nativeRadioOn || !_networkEnabled ||
+       s.stage!=Ath10k::LinkStage::Assoc || s.securityAKM!=8 || !s.secure || !s.pmfRequired ||
+       !s.authReply || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None || !nativePMFFirmwareReady())return 0;
+    const UInt64 generation=sec->pmfSession->activeGeneration();
+    if(!generation || generation>0xffffffffu || !sec->saeRadio->boundTo(sec->saeSession,static_cast<UInt32>(generation)))return 0;
+    UInt8 rsn[44]{};size_t bytes=0;
+    if(!sec->supplicant.copyAssociationRSN(rsn,sizeof(rsn),bytes) || bytes!=sizeof(rsn))return 0;
+    const UInt32 length=Ath10k::buildStationManagement(frame,capacity,s,rsn,bytes);
+    UInt8 rsnxe[3]{};size_t extra=0;
+    if(!length || !sec->supplicant.copyAssociationRSNXE(rsnxe,sizeof(rsnxe),extra) || extra>capacity-length)return 0;
+    if(extra)bcopy(rsnxe,frame+length,extra);return length+static_cast<UInt32>(extra);
+}
+
 // Called by the common radio state machine in Auth. Admission remains disabled
 // until native credentials/backend/firmware PMF are validated together.
 const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
@@ -717,6 +732,7 @@ const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
     const UInt64 generation=sec->pmfSession->activeGeneration();
     if(!generation || generation>0xffffffffu || !sec->saeRadio->boundTo(sec->saeSession,static_cast<UInt32>(generation)))return "native-sae-owner-mismatch";
     if(s.stage!=Ath10k::LinkStage::Auth || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None || powerIOBlocked())return "native-sae-cancelled";
+    if(sec->saeSession->usingH2E() && !AthSecurity::rsnxeHasH2E(s.ap.rsnxe,s.ap.rsnxeLength))return "native-sae-h2e-not-advertised";
     const auto state=sec->saeRadio->service(now);
     if(state==Ath10kSAERadio::State::Failed || state==Ath10kSAERadio::State::Idle)return "native-sae-exchange-failed";
     if(state==Ath10kSAERadio::State::Accepted){
@@ -725,7 +741,8 @@ const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
         if(!s.txComplete || s.txStatus)return "native-sae-confirm-tx-failed";
         if(!sec->ready){UInt8 nonce[32]{};
             const bool ok=Ath10kKernelCrypto::random(nonce,sizeof(nonce)) &&
-                sec->saeRadio->beginEAPOL(sec->supplicant,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,now);
+                sec->saeRadio->beginEAPOL(sec->supplicant,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,now) &&
+                sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,sec->saeSession->usingH2E());
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok)return "native-sae-pmk-handoff-failed";
             sec->ready=true;
         }
@@ -1168,8 +1185,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(error){setProperty("Ath10kNativeJoinReason",error);AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
         s.hiddenSSID=s.ap.hidden;
         if(personal){UInt8 nonce[32]{};Ath10kKernelCrypto::random(nonce,sizeof(nonce));
-            bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,selectedAKM);
-            AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
+            bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,selectedAKM) &&
+                _nativeSecurity->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false);
+            AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){_nativeSecurity->supplicant.reset();setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
         _nativeJoin=join;AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));AthSecurity::wipe(&join,sizeof(join));
         setProperty("Ath10kNativeJoinReason","accepted");

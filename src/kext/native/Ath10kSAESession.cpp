@@ -18,12 +18,12 @@ bool Ath10kSAESession::initPrepared(const AthSecurity::P256CoreCryptoAPI &api,co
     if(initialized || !OSObject::init() || !api.complete() || !generation || !random || randomBytes!=32 || !pwe || pweBytes!=64)return false;
     if(!exchange.begin(request,local,ap,now,token))return false;
     context.api=api;AthSecurity::copy(context.random,random,32);AthSecurity::copy(context.pwe,pwe,64);
-    connectionGeneration=generation;handoffDeadline=now+AthSecurity::SAEGroup19ClientExchange::DeadlineMs;
+    hashToElement=request.h2e;connectionGeneration=generation;handoffDeadline=now+AthSecurity::SAEGroup19ClientExchange::DeadlineMs;
     AthSecurity::copy(stationIdentity,local,6);AthSecurity::copy(apIdentity,ap,6);
     closed=false;initialized=true;return true;
 }
 void Ath10kSAESession::cancel(){
-    closed=true;handoffDeadline=0;exchange.cancel();AthSecurity::wipe(&context,sizeof(context));
+    closed=true;hashToElement=false;handoffDeadline=0;exchange.cancel();AthSecurity::wipe(&context,sizeof(context));
     AthSecurity::wipe(stationIdentity,sizeof(stationIdentity));AthSecurity::wipe(apIdentity,sizeof(apIdentity));
 }
 void Ath10kSAESession::free(){

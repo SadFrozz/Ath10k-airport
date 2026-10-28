@@ -79,6 +79,23 @@ inline bool buildSAEStationRSN(const uint8_t *pmkid,size_t idBytes,uint8_t *out,
  const size_t at=24+idBytes;out[at]=0;out[at+1]=15;out[at+2]=172;out[at+3]=6;
  bytes=n;return true;
 }
+// Standard RSN Extension element: 1..16 capability octets, with the encoded
+// (length - 1) in bits 0..3 of the first octet. Preserve unknown capability bits.
+inline bool validRSNXE(const uint8_t *ie,size_t bytes){
+ return ie && bytes>=3 && bytes<=18 && ie[0]==244 && size_t(ie[1])+2==bytes &&
+     size_t((ie[2]&15u)+1)==ie[1];
+}
+inline bool rsnxeHasH2E(const uint8_t *ie,size_t bytes){
+ return validRSNXE(ie,bytes) && (ie[2]&0x20u);
+}
+// Exact station profile produced above, not an arbitrary AP RSNE. This keeps
+// association and EAPOL M2 on the same AKM/cipher/PMF/PMKID encoding.
+inline bool validSAEStationRSN(const uint8_t *ie,size_t n){
+ if(!ie || (n!=28 && n!=44))return false;
+ uint8_t expected[44]{};size_t bytes=0;
+ return buildSAEStationRSN(n==44?ie+24:nullptr,n==44?16:0,expected,sizeof(expected),bytes) &&
+     bytes==n && equal(ie,expected,n);
+}
 inline bool validSAEPersonalRSN(const uint8_t *ie,size_t n){
  // This is opt-in software admission, not native backend capability publication.
  return bool(selectPersonal(ie,n,PersonalMode::WPA3,{true,true,true}));

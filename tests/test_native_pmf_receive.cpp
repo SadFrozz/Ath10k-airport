@@ -24,7 +24,7 @@ static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *d
 }
 #include "sae_session.inc"
 #else
-struct Ath10kSAESession {void cancel(){}void release(){delete this;}};
+struct Ath10kSAESession {bool usingH2E() const{return false;}void cancel(){}void release(){delete this;}};
 #include "mock_native_sae_radio.hpp"
 #endif
 static uint64_t nativeSAEClockMS=0;
@@ -47,6 +47,7 @@ public:
  void discardNativeSecurity();
  bool advanceSAEAuth(UInt64);
  const char *serviceNativeSAE(UInt64);
+ UInt32 buildNativeSAEAssociation(UInt8 *,UInt32);
  bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
  bool nativeAcceptSecurityResult(UInt32);
  bool nativePMFPairwiseAcknowledged(const UInt8 *);

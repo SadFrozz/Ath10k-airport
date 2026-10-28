@@ -842,7 +842,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(s.txOwned || s.wmiOwned)return nullptr;
         if(management){
             if(s.txPauseMask)return nullptr;
-            UInt8 frame[256];UInt32 length=Ath10k::buildStationManagement(frame,sizeof(frame),s);
+            UInt8 frame[256];UInt32 length=0;
+#ifdef ATH10K_NATIVE
+            if(s.stage==LinkStage::Assoc && s.securityAKM==8)length=buildNativeSAEAssociation(frame,sizeof(frame));
+            else
+#endif
+            length=Ath10k::buildStationManagement(frame,sizeof(frame),s);
             if(!length)return "management-build";
             s.submitted=true;
             const char *error=submitNetworkPacket(frame,length,true,nowMs);if(error)return error;

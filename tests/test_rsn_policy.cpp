@@ -15,6 +15,25 @@ static std::vector<uint8_t> rsn(bool psk, bool sae, uint16_t caps = 0x80) {
     return v;
 }
 int main() {
+    {uint8_t ie[18]={244,1,0x20};assert(validRSNXE(ie,3) && rsnxeHasH2E(ie,3));
+     for(size_t n=0;n<19;++n)if(n!=3)assert(!validRSNXE(ie,n));
+     assert(!validRSNXE(nullptr,3));ie[0]=48;assert(!validRSNXE(ie,3));ie[0]=244;
+     ie[2]=0;assert(validRSNXE(ie,3) && !rsnxeHasH2E(ie,3));
+     for(unsigned body=1;body<=16;++body){ie[1]=uint8_t(body);ie[2]=uint8_t(0x20|(body-1));
+       for(unsigned j=3;j<body+2;++j)ie[j]=uint8_t(0x80+j);
+       assert(validRSNXE(ie,body+2) && rsnxeHasH2E(ie,body+2));
+       ie[2]^=1;assert(!validRSNXE(ie,body+2));ie[2]^=1;
+     }}
+
+    {uint8_t ie[44]{},id[16]{};size_t bytes=0;
+     for(bool withID : {false,true}){
+       assert(buildSAEStationRSN(withID?id:nullptr,withID?16:0,ie,sizeof(ie),bytes));
+       assert(validSAEStationRSN(ie,bytes));
+       for(size_t n=0;n<bytes;++n)assert(!validSAEStationRSN(ie,n));
+       for(unsigned at : {0u,1u,7u,13u,19u,20u,22u,23u}){auto saved=ie[at];ie[at]^=1;assert(!validSAEStationRSN(ie,bytes));ie[at]=saved;}
+     }
+     assert(!validSAEStationRSN(nullptr,44));}
+
     { uint8_t ie[30]={221,28,0,15,172,9,4,0,1,2,3,4,5,6};
       for(unsigned i=0;i<16;++i)ie[14+i]=uint8_t(i+1);
       IGTKCMAC128 result{};assert(parseIGTKCMAC128(ie,sizeof(ie),result));

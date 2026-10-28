@@ -17,7 +17,7 @@ class Ath10kSAESession : public OSObject {
     uint64_t token=0;
     uint32_t connectionGeneration=0;
     uint8_t stationIdentity[6]{},apIdentity[6]{};
-    bool eapolStarted=false;
+    bool eapolStarted=false,hashToElement=false;
     uint64_t handoffDeadline=0;
     bool closed=true,initialized=false;
     void free() override;
@@ -33,6 +33,7 @@ public:
     bool initPrepared(const AthSecurity::P256CoreCryptoAPI &,const uint8_t *random,size_t randomBytes,
         const uint8_t *pwe,size_t pweBytes,const AthSecurity::SAEGroup19AuthMessage &,
         const uint8_t *local,const uint8_t *ap,uint32_t generation,uint64_t now);
+    bool usingH2E() const {return initialized && !closed && hashToElement;}
     uint32_t activeGeneration() const {return initialized && !closed?connectionGeneration:0;}
     void cancel(); // Worker snapshots are independent; owner secrets retire now.
     Action poll(uint32_t generation,uint64_t now);

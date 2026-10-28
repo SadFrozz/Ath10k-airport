@@ -81,8 +81,9 @@ inline bool nativeScanMatches(const AirportWCL::ScanRequest &scan,const Ath10k::
 }
 inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capacity) {
     if(!buffer || b.ssidLength>sizeof(b.ssid) || b.rateCount>sizeof(b.rates) ||
-       b.rsnLength>sizeof(b.rsn) || b.countryLength>sizeof(b.country))return 0;
+       b.rsnLength>sizeof(b.rsn) || b.rsnxeLength>sizeof(b.rsnxe) || b.countryLength>sizeof(b.country))return 0;
     if(b.rsnLength && !AirportWCL::validIEs(b.rsn,b.rsnLength))return 0;
+    if(b.rsnxeLength && !AthSecurity::validRSNXE(b.rsnxe,b.rsnxeLength))return 0;
     if(capacity<sizeof(AirportWCL::BeaconMetadata)+800)return 0;
     // The byte buffer may be unaligned inside Connection/Native objects.
     AirportWCL::BeaconMetadata metadata{};auto m=&metadata;
@@ -99,6 +100,7 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
     if(b.rateCount>8)ie(50,b.rates+8,b.rateCount-8);
     UInt8 channel=ch;ie(3,&channel,1);
     if(b.rsnLength){bcopy(b.rsn,out+bytes,b.rsnLength);bytes+=b.rsnLength;}
+    if(b.rsnxeLength){bcopy(b.rsnxe,out+bytes,b.rsnxeLength);bytes+=b.rsnxeLength;}
     if(b.htPresent)ie(45,b.ht,26);if(b.htOperation)ie(61,b.htOp,22);
     if(b.vhtPresent)ie(191,b.vht,12);if(b.vhtOperation)ie(192,b.vhtOp,5);
     if(b.countryPresent)ie(7,b.country,b.countryLength);

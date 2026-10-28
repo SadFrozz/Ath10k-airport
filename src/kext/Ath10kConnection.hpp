@@ -581,6 +581,10 @@ inline UInt32 buildRadioMaintenance(UInt8 *f,UInt32 capacity,UInt8 endpoint,cons
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,n-8);htcWriteLE32(f+8,cmd);return n;
 }
 // Prepared AP/PHY configuration only: no keys, queues or firmware ownership.
+inline bool connectionRSNAccepted(const ConnectionState &s,const UInt8 *ie,size_t bytes){
+    if(s.securityAKM==8)return s.pmfRequired && AthSecurity::validSAEPersonalRSN(ie,bytes);
+    return AthSecurity::supportsPSKAKM(ie,bytes,s.securityAKM);
+}
 struct CandidateConfiguration {
     WMIBSS ap{};RegulatoryPolicy regulatory{};
     UInt32 operatingChannel=0,firmwareHT=0,firmwareVHT=0,localVHT=0,peerVHT=0;
@@ -601,7 +605,7 @@ inline const char *prepareBSSCandidate(const ConnectionState &s,const WMIBSS &ap
         if(ap.ssidLength!=s.ssidLength)return "candidate-ssid-mismatch";
         for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])return "candidate-ssid-mismatch";
     }
-    if(s.secure){if(!ap.privacy || !AthSecurity::supportsPSKAKM(ap.rsn,ap.rsnLength,s.securityAKM))return "wpa2-psk-ccmp-pairwise-required";}
+    if(s.secure){if(!ap.privacy || !connectionRSNAccepted(s,ap.rsn,ap.rsnLength))return s.securityAKM==8?"sae-ccmp-pmf-required":"wpa2-psk-ccmp-pairwise-required";}
     else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
     if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
     if(!ap.beaconInterval || !ap.rateCount || ap.rateCount>sizeof(ap.rates) || !ap.ratesValid)return "bss-missing-valid-rates";
@@ -893,8 +897,10 @@ inline UInt32 buildSecurityWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const Con
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,static_cast<UInt16>(bytes-8));htcWriteLE32(f+8,cmd);
     return bytes;
 }
-inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionState &s) {
+inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionState &s,
+    const UInt8 *saeRSN=nullptr,size_t saeRSNBytes=0) {
     const bool spectrum=(s.ap.capabilities&0x100)!=0;
+    if(s.securityAKM==8 && s.stage==LinkStage::Auth)return 0; // Never encode open auth for SAE.
     if(!f || capacity<(s.htEnabled || spectrum?256u:128u) || s.ssidLength>32 || s.ap.rateCount>32 || !s.nss || s.nss>2 || (s.stage!=LinkStage::Auth && s.stage!=LinkStage::Assoc))return 0;
     htcZero(f,s.htEnabled || spectrum?256:128);f[0]=s.stage==LinkStage::Auth?0xb0:0;
     for(UInt32 i=0;i<6;++i){f[4+i]=s.bssid[i];f[10+i]=s.local[i];f[16+i]=s.bssid[i];}
@@ -913,7 +919,15 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         }
         f[start+1]=static_cast<UInt8>(n-start-2);
     }
-    size_t stationRSNLength=0;const UInt8 *stationRSN=s.secure?AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength,s.securityAKM):nullptr;
+    size_t stationRSNLength=0;const UInt8 *stationRSN=nullptr;
+    if(s.securityAKM==8){
+        if(!s.secure || !s.pmfRequired || s.groupCipher!=AthSecurity::cipherCCMP ||
+           !AthSecurity::validSAEStationRSN(saeRSN,saeRSNBytes))return 0;
+        stationRSN=saeRSN;stationRSNLength=saeRSNBytes;
+    }else {
+        if(saeRSN || saeRSNBytes)return 0;
+        if(s.secure)stationRSN=AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength,s.securityAKM);
+    }
     if(s.secure&&!stationRSN)return 0;
     const UInt32 tail=2+s.ap.rateCount+(s.ap.rateCount>8?2:0)+(s.secure?stationRSNLength:0)+
         (s.ap.wmmPresent?(s.ap.wmmVendor?9:3):0)+(s.htEnabled?28:0)+(s.vhtEnabled?17:0);
@@ -1310,7 +1324,7 @@ inline void receiveStationManagementAuthenticated(ConnectionState &s,const UInt8
                         if(v[i]&128){s.error="association-unsupported-basic-rate";s.stage=LinkStage::Failed;return;}continue;}
                     responseRates[rateCount++]=v[i];}
             }
-            if(id==48){if(rsnSeen || (s.secure && !AthSecurity::supportsWPA2(f+p,len+2)))return;rsnSeen=true;}
+            if(id==48){if(rsnSeen || (s.secure && (!connectionRSNAccepted(s,f+p,len+2) || AthSecurity::wpa2GroupCipher(f+p,len+2)!=s.groupCipher)))return;rsnSeen=true;}
             if(id==199){if(responseOM || len!=1)return;responseOM=true;operatingMode=v[0];}
             if(id==12){UInt8 ac[16]{},counter=0;
                 if(responseEDCA || !parseAPEDCA(v,len,ac,counter))return;

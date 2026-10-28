@@ -4,6 +4,7 @@
 #include "../src/shared/Ath10kSupplicant.hpp"
 #include "common_crypto_personal.hpp"
 #include "sae_eapol_vectors.inc"
+#include "rsnxe_eapol_vectors.inc"
 using S=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;
 struct FailedEncrypt : PersonalTestCrypto {
  static inline unsigned calls=0,failAt=0;
@@ -13,6 +14,34 @@ template<class T> static void begin(T &s){assert(s.begin(w_pmk,w_snonce,w_sta,w_
 static void connected(S &s){begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);assert(s.receive(w_m3,sizeof(w_m3))==S::Keys);}
 static void rotated(S &s){connected(s);assert(s.receive(w_mgmt_only,sizeof(w_mgmt_only))==S::ManagementKeys);assert(s.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys);assert(s.receive(w_group_gtk_only,sizeof(w_group_gtk_only))==S::GroupKeys);}
 int main(){
+ { S bound;begin(bound);uint8_t snapshot[3];memcpy(snapshot,x_rsnxe,3);
+   assert(bound.bindRSNXE(snapshot,3,true));snapshot[2]=0;
+   uint8_t own[3]{};size_t bytes=99;assert(bound.copyAssociationRSNXE(own,sizeof(own),bytes) && bytes==3 && !memcmp(own,x_rsnxe,3));
+   assert(!bound.bindRSNXE(x_rsnxe,3,true));
+   assert(bound.receive(w_m1,sizeof(w_m1))==S::Reply && bound.outputLength==160 && !memcmp(bound.output,x_m2,sizeof(x_m2)));
+   for(auto key:bound.keys)assert(!key);assert(!bound.keyChanges);
+   assert(!bound.bindRSNXE(nullptr,0,false));
+   assert(bound.receive(x_m3,sizeof(x_m3))==S::Keys && bound.keyChanges==7);
+   assert(bound.receive(x_retry_m3,sizeof(x_retry_m3))==S::Reply);
+   assert(bound.receive(w_rekey1,sizeof(w_rekey1))==S::Reply && !memcmp(bound.output,x_rekey2,sizeof(x_rekey2)));
+   assert(bound.receive(x_rekey3,sizeof(x_rekey3))==S::PairKeys);
+ }
+ for(unsigned kind=0;kind<3;++kind){S bad;begin(bad);assert(bad.bindRSNXE(x_rsnxe,3,true));assert(bad.receive(w_m1,sizeof(w_m1))==S::Reply);
+   const auto packet=kind==0?w_m3:(kind==1?x_changed_m3:x_duplicate_m3);
+   const auto bytes=kind==0?sizeof(w_m3):(kind==1?sizeof(x_changed_m3):sizeof(x_duplicate_m3));
+   assert(bad.receive(packet,bytes)==S::Fatal && !bad.keyChanges && !bad.managementKey.keyID);
+ }
+ for(bool changed : {false,true}){S bound;begin(bound);assert(bound.bindRSNXE(x_rsnxe,3,true));assert(bound.receive(w_m1,sizeof(w_m1))==S::Reply);
+   assert(bound.receive(x_m3,sizeof(x_m3))==S::Keys);
+   assert(bound.receive(changed?x_changed_group:x_group,changed?sizeof(x_changed_group):sizeof(x_group))==(changed?S::Fatal:S::GroupKeys));
+ }
+ {S bad;begin(bad);assert(!bad.bindRSNXE(nullptr,0,true));uint8_t wrong[]={244,1,0};assert(!bad.bindRSNXE(wrong,3,true));
+   wrong[2]=0x21;assert(!bad.bindRSNXE(wrong,3,false));assert(bad.bindRSNXE(nullptr,0,false));
+   uint8_t out[3]={1,2,3};size_t bytes=99;assert(bad.copyAssociationRSNXE(out,3,bytes) && !bytes && out[0]==1);
+   assert(bad.receive(w_m1,sizeof(w_m1))==S::Reply && bad.outputLength==sizeof(w_m2));
+   assert(bad.receive(x_m3,sizeof(x_m3))==S::Fatal); // Unexpected authenticated AP extension.
+ }
+
  AthSecurity::Supplicant<PersonalTestCrypto,true> disabled;
  assert(!disabled.begin(w_pmk,w_snonce,w_sta,w_ap,w_rsn,sizeof(w_rsn),8));
  S s;begin(s);

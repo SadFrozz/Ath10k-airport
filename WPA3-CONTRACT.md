@@ -39,7 +39,7 @@ before the security dependency path is functional.
 | Path | Current source/model evidence | Still required for hardware support |
 | --- | --- | --- |
 | Native credentials | Sequoia 64-byte envelope decoded; explicit SAE rejection | Real SAE request binding and complete native admission |
-| SAE group 19/H2E | Independent crypto fixtures, retained preparation and native Auth RX/TX source hooks | Credential/admission, association RSN, kernel/timing and physical radio validation |
+| SAE group 19/H2E | Independent crypto fixtures, retained preparation and native Auth RX/TX source hooks | Credential/PWE admission, kernel/timing and physical radio validation |
 | AKM8 / IGTK | Native export staging, deferred IGTK/key barriers and rekey fixtures | SAE-to-PMK native join wiring and physical port validation |
 | PMF RX | WMI consumer, bounded inbox, retained verification and authenticated dispatch | Exact QCA9377 RX layout and firmware negotiation |
 | PMF TX | Explicit hardware formatting, shared PN leases and DMA model | Firmware encryption/MIC and autonomous management PN ownership |
@@ -1462,3 +1462,143 @@ introduced. The offline AuxKC uses only a diagnostic copy without OSBundleRequir
 for eligibility; the actual bundle metadata and OS kernel collections are not
 changed. serviceNativeSAE uses 88 bytes optimized static stack. Hardware packet
 completion remains simulated in the host test; this is not an on-device result.
+
+
+### SAE BSS selection and association RSNE (local follow-up to 8b65f75)
+
+prepareBSSCandidate now validates the selected AKM instead of always requiring
+PSK. AKM8 requires the connection's mandatory PMF profile and a valid software
+SAE/CCMP/BIP AP RSNE; a transition BSS does not change the selected AKM or fall
+back to PSK. Other infrastructure/rates/channel/regulatory/power checks remain.
+
+The supplicant exposes copyAssociationRSN, returning only public RSNE/PMKID
+metadata. Its existing M2 encoder now calls the same method. The native
+association builder requires a live authenticated SAE/PMF owner generation,
+ready supplicant, enabled native radio/network/join, accepted auth and firmware
+PMF readiness, then obtains the verified 44-byte station RSNE. The common
+management TX path calls this builder in Assoc/AKM8. The generic builder refuses
+open-auth for AKM8 and refuses SAE association without the exact canonical
+CCMP/AKM8/mandatory-PMF/BIP station profile; it never substitutes a PSK RSNE.
+No PMK/PTK is copied into connection request storage.
+
+Association response RSNE validation now follows the selected AKM and negotiated
+group cipher too. The former hard-coded supportsWPA2 check rejected SAE and
+AKM6-only responses. Optional response-RSNE presence policy is unchanged; when
+present it must validate for this association. The controller test composes real
+retained SAE -> native authenticated handoff -> BSS candidate validation ->
+association RSNE with verified PMKID -> response acceptance -> M1/M3 PTK/IGTK.
+Association and M2 key-data RSNE bytes are compared directly. It also checks
+transition BSS selection, PSK-only rejection for SAE, mandatory PMF, disabled
+radio/network, malformed station RSNE and AKM6 response acceptance without PSK2
+fallback. Public station-profile tests cover truncated/modified encodings.
+
+Focused halt-on-error ASan/UBSan passes for connection, rsn_policy, security,
+sha256_supplicant, sae_eapol and native_sae_radio; retained-session/native-radio
+ThreadSanitizer checks pass. Native/kernel builds pass without new external
+imports. buildNativeSAEAssociation uses 104 bytes optimized static stack.
+The previous full 55-test result belongs to published 8b65f75, not this local
+follow-up. No new signature/offline-collection or hardware result is claimed.
+
+Native request admission/capabilities still reject SAE. RSNXE/H2E mode binding
+remains required: WMIBSS currently retains RSNE but no RSNXE, and association/M2
+must carry the mode/capabilities consistently before native SAE can be enabled.
+The primary SME reference appends RSNXE separately to the association request:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/master/wpa_supplicant/sme.c
+Credential/PWE admission, accepted-confirm retransmission, kernel backend timing
+and actual firmware PMF/RX/PN validation remain open. This local source package
+is saved for a later combined publication; no install or reboot is performed.
+
+
+### RSNXE scan/cache/native beacon transport (local follow-up)
+
+WMIBSS now retains the standard RSN Extension element (ID 244), including its
+full 1..16 capability octets. A bounded shared validator checks the outer IE
+length and first-octet length encoding; a separate query reports the H2E bit
+without inferring native capability support. Unknown capability bits remain
+unchanged. Duplicate or malformed RSNXE rejects the candidate before cache
+mutation, and a later valid advertisement omitting RSNXE clears the old value.
+
+Whole-BSS/candidate copies preserve the new field. nativeBSSMessage carries the
+exact original RSNXE in the complete beacon IE message delivered to WCL. No new
+field/offset is invented in Sequoia's fixed extended-BSS RSNE slot, which has
+insufficient space for an appended extension. The complete beacon message's
+existing 800-byte IE allowance also fits the maximum bounded RSNXE plus all
+other currently serialized fields; canary tests cover the combined maximum.
+
+Primary bit/length definitions:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/common/ieee802_11_defs.h
+The reference supplicant also checks authenticated M3 RSNXE against its AP
+advertisement snapshot; this is a required next integration step, not implemented
+by merely preserving scan data:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/0be32f16ad21da5b5f30ab56b2b49a10260c41fc/src/rsn_supp/wpa.c
+
+Focused ASan/UBSan halt-on-error passes for connection, native_scan, rsn_policy,
+native_wire and native_sae_radio. Tests cover all 16 standard lengths, unknown
+bits, truncation, encoded-length mismatch, duplicates, unchanged old observations
+on rejection, removal on a valid update, exact native beacon bytes and maximum
+buffer bounds. Native/kernel compilation passes with no new external imports;
+nativeBSSMessage uses 152 bytes optimized static stack on this build. No new
+ThreadSanitizer, full-suite, signature or hardware result is claimed for these
+synchronous parser/serialization changes. Published 8b65f75 remains the last
+full 55-test batch.
+
+H2E mode must still bind the retained SAE session, the station association/M2
+RSNXE and the authenticated AP M3 advertisement snapshot. Password/PWE/native
+admission and physical backend/firmware PMF checks remain open; SAE/H2E native
+capabilities stay disabled. This is local source for the next publication batch;
+no install or reboot is performed.
+
+
+### Bound H2E association/EAPOL advertisement snapshots (development 0.0.102)
+
+Native personal joins now bind the AP's copied RSNXE snapshot immediately after
+supplicant initialization, before M1; failed binding erases the just-initialized
+supplicant. A retained SAE session preserves its accepted H2E mode separately
+from erased worker secrets. Native SAE Auth rejects H2E when the selected AP
+never advertised it, and successful authenticated PMK handoff binds that mode
+and the AP snapshot before readiness/authReply publication.
+
+The supplicant's one-shot bindRSNXE API accepts only a valid bounded AP element
+(or an explicitly absent snapshot), only in initial state 1. H2E requires SAE
+and an advertised H2E bit. Copies are independent of the caller's storage and
+cannot be replaced after binding or M1. Station H2E capability is the minimal
+three-byte standard RSNXE; unsupported AP capabilities are not echoed as station
+capabilities. Legacy SAE/PSK does not claim H2E. Generic software callers that
+explicitly leave the new API unbound retain their prior behavior; every native
+personal initialization path binds, including the absent-snapshot case.
+
+Native association and M2 use the same RSNE/PMKID encoder plus the same station
+RSNXE encoder. H2E M2 is exactly 160 Ethernet bytes, within the existing M2,
+reply and output buffers; tests compare the full independent CMAC fixture and
+the native reply boundary. Initial/pairwise M3 must contain exactly the captured
+AP RSNXE (or omit it if absent), with duplicate/presence/content mismatches
+rejected only after MIC and key-data authentication. An optional RSNXE in group
+rekey must also match; group rekey does not require the AP to repeat it. Retry
+M3 remains an acknowledgement without key reinstallation.
+
+New fixtures reuse only public synthetic SAE keys and use independent Python
+cryptography AES-wrap/CMAC. Cases include correct/missing/changed/duplicate
+RSNXE in authenticated M3, retry, pairwise and group rekey. Native retained SAE
+and association tests cover a proper H2E AP, absent H2E advertisement, matching
+association/M2 bytes and authenticated PTK/IGTK staging; the no-RSNXE native
+baseline now explicitly models legacy SAE. These are pre-derived synthetic-PWE
+sessions, not evidence of native password admission or real hardware exchange.
+The fixture generator is reproducible; no user passwords or captured packets
+are read. Primary reference for AP advertisement/M3 comparison:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/0be32f16ad21da5b5f30ab56b2b49a10260c41fc/src/rsn_supp/wpa.c
+
+Native SAE capability and request admission remain disabled. Native password/PWE
+and kernel backend validation, accepted-state confirm retransmission and actual
+firmware PMF/RX/PN behavior remain required before enabling or claiming support.
+No driver installation or reboot is performed; immutable 0.0.99 is retained.
+
+The combined 0.0.102 batch passes the full 55-test ASan/UBSan suite with
+halt-on-error, and ThreadSanitizer for sae_worker, sae_session, pmf_session,
+native_pmf_receive and native_sae_radio. Native and legacy kernel builds pass;
+the new fixture regenerates byte-for-byte. Strict ad-hoc signature and exact
+offline AuxKC inclusion pass for native Mach-O UUID
+D2294BE8-5187-3C3A-9041-D4E40561A96F, with unchanged external imports. The offline
+link uses a diagnostic copy without OSBundleRequired only for AuxKC eligibility;
+no system kernel collection is installed or patched. Static stack frames are
+104 bytes for native SAE service and association construction. No hardware
+WPA3/H2E success is inferred from these source/model checks.

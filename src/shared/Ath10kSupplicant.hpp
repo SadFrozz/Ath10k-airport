@@ -17,6 +17,7 @@ template<class Crypto,bool AllowSHA256=false,bool AllowSAE=false> class Supplica
  uint64_t replay1=0,replay3=0;
  unsigned state=0;uint8_t selectedAKM=2;bool sha256=false,sae=false,havePMKID=false;
  uint8_t saePMKID[16]{};
+ uint8_t apRSNXE[18]{},apRSNXELength=0;bool rsnxeBound=false,saeH2E=false;
  IGTKCMAC128 rememberedIGTK[2]{};bool rememberedIGTKValid[2]{};
  struct ManagementCandidate {
   IGTKCMAC128 key{};bool present=false,changed=false;
@@ -63,14 +64,15 @@ template<class Crypto,bool AllowSHA256=false,bool AllowSAE=false> class Supplica
   if constexpr(AllowSHA256 || AllowSAE){if(sha256){uint8_t digest[16]{};bool ok=SHA256Personal<Crypto>::mic(ptk,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,16);return ok;}}
   uint8_t digest[20]{};bool ok=Crypto::hmac(ptk,16,p,n,digest);if(ok)copy(p+81,digest,16);wipe(digest,20);return ok;}
  size_t response(uint8_t *frame,const uint8_t *request,bool second,bool group=false){
-  uint8_t saeRSN[44]{};size_t rsnBytes=0;const uint8_t *rsn=nullptr;
-  if constexpr(AllowSAE){if(sae && second){if(!buildSAEStationRSN(saePMKID,havePMKID?16:0,saeRSN,sizeof(saeRSN),rsnBytes))return 0;rsn=saeRSN;}}
-  if(!sae)rsn=stationRSNForGroup(groupCipher,rsnBytes,selectedAKM);
-  if(second&&!rsn)return 0;
+  uint8_t station[47]{};size_t rsnBytes=0;
+  if(second){
+   if(!copyAssociationRSN(station,sizeof(station),rsnBytes))return 0;
+   if(rsnxeBound){size_t extra=0;if(!copyAssociationRSNXE(station+rsnBytes,sizeof(station)-rsnBytes,extra))return 0;rsnBytes+=extra;}
+  }
   size_t n=99+(second?rsnBytes:0);wipe(frame,n+14);copy(frame,ap,6);copy(frame+6,local,6);frame[12]=0x88;frame[13]=0x8e;
   uint8_t *p=frame+14;p[0]=request[0];p[1]=3;put16(p+2,uint16_t(n-4));p[4]=2;
   put16(p+5,uint16_t((second?0x0108:(group?0x0300:0x0308))|descriptor()));copy(p+9,request+9,8);
-  if(second){copy(p+17,snonce,32);put16(p+97,uint16_t(rsnBytes));copy(p+99,rsn,rsnBytes);}
+  if(second){copy(p+17,snonce,32);put16(p+97,uint16_t(rsnBytes));copy(p+99,station,rsnBytes);}
   return mic(p,n)?n+14:0;
  }
  bool unwrap(const uint8_t *in,size_t n,uint8_t *out){
@@ -113,6 +115,26 @@ public:
   groupCipher=wpa2GroupCipher(rsn,n);
   copy(pmk,master,32);copy(snonce,nonce,32);copy(local,station,6);copy(ap,bssid,6);copy(apRSN,rsn,n);rsnLength=n;state=1;return true;
  }
+ // Bind a native caller's AP snapshot once, before M1. Generic software
+ // users that do not model RSNXE keep their existing explicit unbound behavior.
+ bool bindRSNXE(const uint8_t *ie,size_t bytes,bool h2e){
+  if(state!=1 || rsnxeBound || (h2e && !sae) || bytes>sizeof(apRSNXE) ||
+     (bytes && !validRSNXE(ie,bytes)) || (h2e && !rsnxeHasH2E(ie,bytes)))return false;
+  if(bytes)copy(apRSNXE,ie,bytes);apRSNXELength=uint8_t(bytes);saeH2E=h2e;rsnxeBound=true;return true;
+ }
+ bool copyAssociationRSNXE(uint8_t *out,size_t capacity,size_t &bytes) const {
+  bytes=0;if(!state || !rsnxeBound || !out)return false;
+  if(!saeH2E)return true;
+  if(capacity<3)return false;out[0]=244;out[1]=1;out[2]=0x20;bytes=3;return true;
+ }
+ // Public RSNE/PMKID only; no PMK/PTK is exported. The same encoder serves
+ // association and EAPOL M2 so profile changes cannot silently diverge them.
+ bool copyAssociationRSN(uint8_t *out,size_t capacity,size_t &bytes) const {
+  bytes=0;if(!state || !out)return false;
+  if constexpr(AllowSAE){if(sae)return buildSAEStationRSN(saePMKID,havePMKID?16:0,out,capacity,bytes);}
+  size_t n=0;const auto rsn=stationRSNForGroup(groupCipher,n,selectedAKM);
+  if(!rsn || capacity<n)return false;copy(out,rsn,n);bytes=n;return true;
+ }
  Result fail(const char *reason){error=reason;return Fatal;}
  Result receive(const uint8_t *frame,size_t length){
   outputLength=0;
@@ -148,7 +170,7 @@ public:
    if(!verified)return Ignore;
    size_t encrypted=be16(p+97);
    if(!unwrap(p+99,encrypted,plain)){wipe(plain,sizeof(plain));return fail("GTK de renovação inválida.");}
-   size_t bytes=encrypted-8,at=0;bool haveGTK=false,valid=true;
+   size_t bytes=encrypted-8,at=0;bool haveGTK=false,haveRSNXE=false,valid=true;
    copy(candidate+50,p+65,6);candidate[48]=groupCipher;
    while(at<bytes){
     if(plain[at]==221 && (at+1==bytes || plain[at+1]==0)){
@@ -158,6 +180,10 @@ public:
     if(bytes-at<2 || size_t(plain[at+1])+2>bytes-at){valid=false;break;}
     size_t len=size_t(plain[at+1])+2;
     if(plain[at]==48 && (len!=rsnLength || !equal(plain+at,apRSN,len)))valid=false;
+    if(plain[at]==244){
+     if(rsnxeBound && (haveRSNXE || len!=apRSNXELength || !equal(plain+at,apRSNXE,len)))valid=false;
+     haveRSNXE=true;
+    }
     if(plain[at]==221 && len>=6 && suite(plain+at+2,1)){
      const size_t gtkBytes=groupCipher==cipherTKIP?32:16;
      if(haveGTK || len!=8+gtkBytes || (plain[at+6]&0xf8) || plain[at+7])valid=false;
@@ -208,7 +234,7 @@ public:
   if(!verified)return pairRekey?Ignore:fail("MIC inválido: confira a senha da rede.");
   size_t encrypted=be16(p+97);
   if(!unwrap(p+99,encrypted,plain)){wipe(plain,sizeof(plain));return fail("Dados de chave inválidos.");}
-  size_t bytes=encrypted-8,at=0;bool haveRSN=false,haveGTK=false,valid=true;
+  size_t bytes=encrypted-8,at=0;bool haveRSN=false,haveGTK=false,haveRSNXE=false,valid=true;
   uint8_t candidate[keyPayloadLength]{};ManagementCandidate management;
   copy(candidate,ptk+32,16);copy(candidate+50,p+65,6);candidate[48]=groupCipher;
   while(at<bytes){
@@ -219,6 +245,10 @@ public:
    if(bytes-at<2||size_t(plain[at+1])+2>bytes-at){valid=false;break;}
    size_t len=plain[at+1]+2;
    if(plain[at]==48){if(haveRSN||len!=rsnLength||!equal(plain+at,apRSN,len))valid=false;haveRSN=true;}
+   if(plain[at]==244){
+    if(rsnxeBound && (haveRSNXE || len!=apRSNXELength || !equal(plain+at,apRSNXE,len)))valid=false;
+    haveRSNXE=true;
+   }
    if(plain[at]==221 && len>=6 && suite(plain+at+2,1)){
     const size_t gtkBytes=groupCipher==cipherTKIP?32:16;
     if(haveGTK||len!=8+gtkBytes||(plain[at+6]&0xf8)||plain[at+7])valid=false;
@@ -229,6 +259,7 @@ public:
    }
    at+=len;
   }
+  if(rsnxeBound && bool(apRSNXELength)!=haveRSNXE)valid=false;
   if(sae && pairRekey && !haveGTK){copy(candidate+16,currentGTK,16);candidate[49]=currentGTKIndex;}
   if(!valid || !haveRSN || (!haveGTK && !(sae && pairRekey)) || (sae && !pairRekey && !management.present)){
    wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("RSN ou GTK/IGTK inválida na mensagem 3.");

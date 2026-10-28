@@ -175,6 +175,26 @@ int main(){
  b.hidden=true;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==(AirportWCL::RSSIValid|AirportWCL::SSIDPresent));
  b.hidden=false;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==AirportWCL::RSSIValid);
  assert(AirportWCL::validIEs(bytes+sizeof(*m),m->ieLength));assert(n==sizeof(*m)+m->ieLength);assert(bytes[1600]==0x5a);
+ // Preserve every standard RSNXE capability byte in the complete beacon IE
+ // message; the fixed extended-BSS RSNE slot has no invented RSNXE offset.
+ for(unsigned body=1;body<=16;++body){auto extended=b;
+  extended.rsnxeLength=UInt8(body+2);extended.rsnxe[0]=244;extended.rsnxe[1]=UInt8(body);extended.rsnxe[2]=UInt8(0x20|(body-1));
+  for(unsigned j=3;j<body+2;++j)extended.rsnxe[j]=UInt8(0x80+j);
+  auto length=nativeBSSMessage(extended,bytes,1600);assert(length==n+body+2);
+  bool found=false;for(size_t at=sizeof(*m);at<length;at+=size_t(bytes[at+1])+2)if(bytes[at]==244){
+   assert(!found && !memcmp(bytes+at,extended.rsnxe,body+2));found=true;
+  }assert(found && bytes[1600]==0x5a);
+  extended.rsnxeLength=19;assert(!nativeBSSMessage(extended,bytes,1600));
+  extended.rsnxeLength=UInt8(body+2);extended.rsnxe[2]^=1;assert(!nativeBSSMessage(extended,bytes,1600));
+ }
+ {auto maximum=b;maximum.ssidLength=32;maximum.rateCount=32;maximum.countryPresent=true;maximum.countryLength=254;
+  maximum.rsnLength=257;maximum.rsn[0]=48;maximum.rsn[1]=255;
+  maximum.htPresent=maximum.htOperation=maximum.vhtPresent=maximum.vhtOperation=true;
+  maximum.rsnxeLength=18;maximum.rsnxe[0]=244;maximum.rsnxe[1]=16;maximum.rsnxe[2]=0x2f;
+  const auto cap=sizeof(*m)+800;memset(bytes,0x5a,sizeof(bytes));auto length=nativeBSSMessage(maximum,bytes,cap);
+  assert(length && length<=cap && bytes[cap]==0x5a);
+ }
+ assert(nativeBSSMessage(b,bytes,1600)==n);
  assert(!nativeBSSMessage(b,bytes,30));b.rateCount=33;assert(!nativeBSSMessage(b,bytes,1600));b.rateCount=32;
  b.rsnLength=258;assert(!nativeBSSMessage(b,bytes,1600));b.rsnLength=3;b.rsn[0]=48;b.rsn[1]=100;assert(!nativeBSSMessage(b,bytes,1600));
  b.rsnLength=0;b.ssidLength=33;assert(!nativeBSSMessage(b,bytes,1600));

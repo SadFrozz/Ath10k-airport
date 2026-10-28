@@ -842,6 +842,32 @@ static void htTests(){
     auto before=cache.accepted;beacon.insert(beacon.end(),{45,0});
     Ath10k::recordWMIBSS(cache,beacon.data(),beacon.size(),36,30,0);assert(cache.accepted==before && cache.malformed==1);
 }
+static void rsnxeBSSScanTests(){
+    Ath10k::WMIBSSCache cache{};std::vector<UInt8> base(36);base[0]=0x80;base[16]=2;base[32]=100;base[34]=0x11;
+    base.insert(base.end(),{0,1,'T',1,1,12});uint8_t rsn[44]{};size_t rsnBytes=0;
+    assert(AthSecurity::buildSAEStationRSN(nullptr,0,rsn,sizeof(rsn),rsnBytes));base.insert(base.end(),rsn,rsn+rsnBytes);
+    for(unsigned body=1;body<=16;++body){
+        auto frame=base;frame.push_back(244);frame.push_back(UInt8(body));frame.push_back(UInt8(0xa0|(body-1)));
+        for(unsigned i=1;i<body;++i)frame.push_back(UInt8(0x80+i));
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.count==1 && cache.entries[0].rsnxeLength==body+2);
+        assert(!memcmp(cache.entries[0].rsnxe,frame.data()+base.size(),body+2));
+        assert(AthSecurity::rsnxeHasH2E(cache.entries[0].rsnxe,cache.entries[0].rsnxeLength));
+        const auto saved=cache.entries[0];const auto accepted=cache.accepted;
+        frame.insert(frame.end(),{244,1,0x20}); // Duplicate cannot replace a valid observation.
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.accepted==accepted && !memcmp(&cache.entries[0],&saved,sizeof(saved)));
+    }
+    const auto saved=cache.entries[0];const auto accepted=cache.accepted;
+    for(const std::vector<UInt8> &bad : {std::vector<UInt8>{244,0}, {244,1,0x21}, {244,2,0x20,0}, {244,2,0x21}}){
+        auto frame=base;frame.insert(frame.end(),bad.begin(),bad.end());
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.accepted==accepted && !memcmp(&cache.entries[0],&saved,sizeof(saved)));
+    }
+    Ath10k::recordWMIBSS(cache,base.data(),base.size(),36,30,0);
+    assert(cache.accepted==accepted+1 && !cache.entries[0].rsnxeLength);
+    for(auto v:cache.entries[0].rsnxe)assert(!v); // A later omission cannot inherit old H2E support.
+}
 static void blockAckTests(){
     Ath10k::ConnectionState s{};s.stage=LinkStage::Connected;s.peerIDs[0]=1u<<7;s.peerCount=1;
     UInt8 f[16]{};f[0]=1;f[2]=4;f[8]=5;f[9]=64;Ath10k::htcWriteLE16(f+10,(7<<4)|3);
@@ -956,6 +982,7 @@ static void pmfFirmwarePolicy(){
     Ath10k::resetDisconnected(s);assert(s.firmwareMFPSupport && s.pmfQoSTransported && !s.pmfRequired);d.releaseWMIRuntime();
 }
 int main(){
+    rsnxeBSSScanTests();
     pmfFirmwarePolicy();
     protectedManagementTransport();
     deferredDataWakeTests();
