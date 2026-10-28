@@ -41,10 +41,10 @@ public:
     IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data* data) override { return kIOReturnUnsupported; }
     IOReturn getMCS(apple80211_mcs_data* data) override { return kIOReturnUnsupported; }
     IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info* data) override { return kIOReturnUnsupported; }
-    IOReturn getHT_CAPABILITY(apple80211_ht_capability* data) override { return kIOReturnUnsupported; }
+    IOReturn getHT_CAPABILITY(apple80211_ht_capability* data) override { return perform(AthNativeOp::getHT_CAPABILITY,data); }
     IOReturn getMCS_VHT(apple80211_mcs_vht_data* data) override { return kIOReturnUnsupported; }
     IOReturn getCHANNELS_INFO(apple80211_channels_info* data) override { return perform(AthNativeOp::getCHANNELS_INFO,data); }
-    IOReturn getVHT_CAPABILITY(apple80211_vht_capability* data) override { return kIOReturnUnsupported; }
+    IOReturn getVHT_CAPABILITY(apple80211_vht_capability* data) override { return perform(AthNativeOp::getVHT_CAPABILITY,data); }
     IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands* data) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats* data) override { return kIOReturnUnsupported; }
     IOReturn getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params* data) override { return kIOReturnUnsupported; }

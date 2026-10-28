@@ -655,6 +655,28 @@ IOReturn Ath10kPCIDevice::nativeLinkMetrics(AthNativeOp op,void *data) {
     default:return kIOReturnUnsupported;
     }
 }
+static_assert(sizeof(apple80211_ht_capability)==32 && offsetof(apple80211_ht_capability,hc_id)==4,
+    "Sequoia HT query contains version and the complete HT IE");
+static_assert(sizeof(apple80211_vht_capability)==20 && offsetof(apple80211_vht_capability,cap)==4,
+    "Sequoia VHT query contains version, VHT IE and two reserved bytes");
+IOReturn Ath10kPCIDevice::nativePHYCapabilities(AthNativeOp op,void *data) {
+    if(!data)return kIOReturnBadArgument;
+    if(!_wmi.serviceReady)return kIOReturnNotReady;
+    if(!ATH10K_HT_VHT || !(_wmi.htCapability&1))return kIOReturnUnsupported;
+    // This native personality is pinned to the verified single-chain QCA9377.
+    // Capabilities are local and available before joining any AP.
+    constexpr UInt8 streams=1;
+    UInt8 reply[32]{};Ath10k::htcWriteLE32(reply,1);UInt32 length=0;
+    if(op==AthNativeOp::getHT_CAPABILITY){
+        if(!Ath10k::writeLocalHTCapabilityIE(reply+4,28,Ath10k::localHTCapability(_wmi.htCapability),streams))return kIOReturnError;
+        length=32;
+    }else if(op==AthNativeOp::getVHT_CAPABILITY){
+        const UInt16 map=Ath10k::localVHTMCSMap(streams);
+        if(!Ath10k::writeLocalVHTCapabilityIE(reply+4,28,Ath10k::localVHTCapability(_wmi.vhtCapability),map,map))return kIOReturnError;
+        length=20;
+    }else return kIOReturnUnsupported;
+    bcopy(reply,data,length);return kIOReturnSuccess;
+}
 IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     if(_nativeStopping || powerIOBlocked() || !_wmiLive.active)return kIOReturnNotReady;
     auto &s=_connection;using N=AthNativeOp;
@@ -663,6 +685,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
        op!=N::NativeReady)return kIOReturnBadArgument;
     if((_nativeMACActive || _nativeMACWaiting) && op!=N::MACSet && op!=N::PowerGet && op!=N::getHW_ADDR)return kIOReturnBusy;
     switch(op){
+    case N::getHT_CAPABILITY:case N::getVHT_CAPABILITY:return nativePHYCapabilities(op,data);
     case N::MACSet:{
         const auto address=static_cast<const UInt8 *>(data);
         if(!AthNative::validMAC(address))return kIOReturnBadArgument;

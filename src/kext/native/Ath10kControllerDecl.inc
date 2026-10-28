@@ -29,6 +29,7 @@ public:
     IOReturn nativeCurrentAPInfo(AthNativeOp,void *);
     IOReturn nativeLinkStateUpdate(void *);
     IOReturn nativeLinkMetrics(AthNativeOp,void *);
+    IOReturn nativePHYCapabilities(AthNativeOp,void *);
     bool prepareNativeInterface();
     bool prepareNativeLogs();
     void nativeStartupPhase(const char *);

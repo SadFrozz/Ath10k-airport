@@ -324,6 +324,35 @@ inline bool supportedLegacyRate(UInt8 value,bool five) {
 #endif
 static_assert(ATH10K_MAX_WIDTH==20 || ATH10K_MAX_WIDTH==40 || ATH10K_MAX_WIDTH==80,"width must be 20, 40 or 80");
 static_assert(ATH10K_MAX_NSS>=1 && ATH10K_MAX_NSS<=2,"QCA6174 supports at most 2SS");
+// Shared local capability policy and IE encoding for association and native queries.
+inline UInt16 localHTCapability(UInt32 firmwareHT){
+    UInt16 cap=12|(ATH10K_MAX_WIDTH>=40?2:0); // Disabled SMPS, host width ceiling.
+    if(firmwareHT&2)cap|=0x20;
+    if(ATH10K_MAX_WIDTH>=40 && (firmwareHT&0x800))cap|=0x40;
+    return cap;
+}
+inline UInt32 localVHTCapability(UInt32 firmwareVHT){return (3u<<23)|(firmwareVHT&(1u<<5));}
+inline UInt16 localVHTMCSMap(UInt8 streams){
+    UInt16 map=0xffff;
+    if(!streams || streams>ATH10K_MAX_NSS)return map;
+    for(UInt32 n=0;n<streams;++n)
+        map=static_cast<UInt16>((map&~(3u<<(2*n)))|((ATH10K_MAX_WIDTH==20?1u:2u)<<(2*n)));
+    return map;
+}
+inline UInt32 writeLocalHTCapabilityIE(UInt8 *out,UInt32 capacity,UInt16 cap,UInt8 streams){
+    if(!out || capacity<28 || !streams || streams>ATH10K_MAX_NSS)return 0;
+    htcZero(out,28);out[0]=45;out[1]=26;auto h=out+2;htcWriteLE16(h,cap);
+    h[2]=3|(6<<2); // 64 KiB A-MPDU, 8us spacing; MPDUs delivered separately.
+    for(UInt32 i=0;i<streams;++i)h[3+i]=0xff;
+    h[15]=1; // TX MCS set defined, equal to RX.
+    return 28;
+}
+inline UInt32 writeLocalVHTCapabilityIE(UInt8 *out,UInt32 capacity,UInt32 cap,UInt16 rx,UInt16 tx){
+    if(!out || capacity<14 || (rx&3)==3 || (tx&3)==3)return 0;
+    htcZero(out,14);out[0]=191;out[1]=12;auto v=out+2;
+    htcWriteLE32(v,cap);htcWriteLE16(v+4,rx);htcWriteLE16(v+8,tx);
+    return 14;
+}
 inline bool homeChannelAllowed(UInt32 c){return channelCanConnect(c);}
 inline UInt16 intersectVHTMap(UInt16 a,UInt16 b){
     UInt16 result=0;for(UInt32 n=0;n<8;++n){UInt16 x=(a>>(2*n))&3,y=(b>>(2*n))&3;
@@ -381,9 +410,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
            static_cast<UInt32>((static_cast<int>(s.operatingChannel)+secondary)/2),40,s.regulatory.stationDFS)){
         s.width=40;s.centerChannel=static_cast<UInt8>((s.operatingChannel+secondary)/2);}
     // Disabled SMPS is essential: zero CapInfo incorrectly advertises static SMPS.
-    s.localHT=12|(ATH10K_MAX_WIDTH>=40?2:0);
-    if(s.firmwareHT&2)s.localHT|=0x20;
-    if(ATH10K_MAX_WIDTH>=40 && (s.firmwareHT&0x800))s.localHT|=0x40;
+    s.localHT=localHTCapability(s.firmwareHT);
     // SGI is used only when both sides support the selected width.
     s.shortGI=(apHT&s.localHT&(s.width>=40?0x40:0x20))!=0;
     s.peerHT=static_cast<UInt16>(apHT & ~(0x0100u|0x0300u|1u));
@@ -413,12 +440,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
             if(ch==static_cast<int>(s.operatingChannel))primary=true;}
         if(valid && primary && channelDefinitionAllowed(s.operatingChannel,c,80,s.regulatory.stationDFS)){vhtWidth=80;vhtCenter=static_cast<UInt8>(c);}
     }
-    UInt16 localMap=0xffff;
-    for(UInt32 n=0;n<streams;++n){
-        // VHT20 MCS9 is invalid at 1/2SS; 40/80MHz support MCS0..9.
-        // Capability covers future allowed widths; applied VHT20 rates are capped separately.
-        const UInt16 mcs=ATH10K_MAX_WIDTH==20?1:2;
-        localMap=static_cast<UInt16>((localMap&~(3u<<(2*n)))|(mcs<<(2*n)));}
+    const UInt16 localMap=localVHTMCSMap(streams);
     s.vhtRxMap=intersectVHTMap(localMap,tx);s.vhtTxMap=intersectVHTMap(localMap,rx);
     const UInt16 commonMap=intersectVHTMap(s.vhtRxMap,s.vhtTxMap);
     s.phyReason="vht-basic-mcs-not-supported";
@@ -437,7 +459,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
     s.vhtMap=commonMap;s.vhtEnabled=true;s.nss=1;
     for(UInt32 n=0;n<streams;++n)if(((commonMap>>(2*n))&3)!=3)s.nss=static_cast<UInt8>(n+1);
     // Bound RX MPDU to 3895 and A-MPDU to 64KiB. No beamforming/STBC claims.
-    s.localVHT=(3u<<23)|(s.firmwareVHT&(1u<<5));
+    s.localVHT=localVHTCapability(s.firmwareVHT);
     s.peerVHT=connLE32(a.vht)&~((1u<<4)|(1u<<7)|(7u<<8)|(0xfffu<<11));
     if(s.width==80)s.shortGI=(s.localVHT&connLE32(a.vht)&(1u<<5))!=0;
     s.phyReason="vht-common-capabilities";
@@ -816,17 +838,11 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         if(s.ap.wmmVendor){const UInt8 wmm[]={221,7,0,0x50,0xf2,2,0,1,0};for(UInt8 b:wmm)f[n++]=b;}
         else {f[n++]=46;f[n++]=1;f[n++]=0;}}
     if(s.htEnabled){
-        f[n++]=45;f[n++]=26;UInt8 *h=f+n;n+=26;
-        // One RX MCS0-7 mask per negotiated stream; TX equal to RX.
-        // Match Linux ath10k: 64 KiB A-MPDU and 8us MPDU spacing. An
-        // A-MPDU is delivered as separate MPDUs, not one 64KiB RX buffer.
-        const UInt8 localAmpduExponent=3,localMpduDensity=6;
-        htcWriteLE16(h,s.localHT);
-        h[2]=static_cast<UInt8>(localAmpduExponent|(localMpduDensity<<2));
-        for(UInt32 i=0;i<s.negotiatedNSS;++i)h[3+i]=0xff;
-        h[15]=1;
-        if(s.vhtEnabled){f[n++]=191;f[n++]=12;UInt8 *v=f+n;n+=12;
-            htcWriteLE32(v,s.localVHT);htcWriteLE16(v+4,s.vhtRxMap);htcWriteLE16(v+8,s.vhtTxMap);
+        const UInt32 htBytes=writeLocalHTCapabilityIE(f+n,capacity-n,s.localHT,s.negotiatedNSS);
+        if(!htBytes)return 0;n+=htBytes;
+        if(s.vhtEnabled){
+            const UInt32 vhtBytes=writeLocalVHTCapabilityIE(f+n,capacity-n,s.localVHT,s.vhtRxMap,s.vhtTxMap);
+            if(!vhtBytes)return 0;n+=vhtBytes;
             // Operating Mode Notification: selected width and receive NSS.
             f[n++]=199;f[n++]=1;f[n++]=static_cast<UInt8>((s.negotiatedWidth==80?2:(s.negotiatedWidth==40?1:0))|((s.negotiatedNSS-1)<<4));}
     }

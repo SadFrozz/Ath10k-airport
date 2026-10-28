@@ -501,3 +501,57 @@ Tests check exact reply flags, write boundary, unchanged output on rejection,
 join versus disconnect/failure/rekey state, measured RSSI, firmware rate units,
 missing/out-of-range rates, null output and unknown operation. Kernel/UI
 channel-width reporting and live performance remain unverified.
+
+
+## HT/VHT capability query implementation and callback inventory (2026-10-28)
+
+The adapter previously rejected getHT_CAPABILITY and getVHT_CAPABILITY while
+its association request advertised HT/VHT IEs. These existing virtual slots now
+forward through the normal WCL -> radio dispatcher. Replies describe local
+firmware/host capabilities independently of the current AP and are available
+after SERVICE_READY, before association. The native personality is restricted
+to the verified single-chain QCA9377; it does not inherit extra NSS, STBC,
+beamforming or 160/80+80 features from broad firmware capability bits.
+
+Matching IO80211Family/IO80211PeerManager::getHtCapabilityIE at
+0xffffff80021e7220 issues ioctl selector 0x9a at 0xffffff80021e7252.
+Failure clears its cached HT capability length at 0xffffff80021e729f.
+Success copies 28 IE bytes from reply offset 4 (0xffffff80021e72ec..7310).
+getVHtCapabilityIE at 0xffffff80021e7452 issues selector 0xd6 at
+0xffffff80021e7484. Failure clears its VHT-capable flag at
+0xffffff80021e74a3; success copies 14 IE bytes from offset 4 at
+0xffffff80021e7529..7546. This identifies a stock consumer and ABI; it does
+not prove these calls were the cause of this laptop's slow autojoin.
+
+HT reply is 32 bytes (version plus IE 45/26); VHT reply is 20 bytes
+(version plus IE 191/12 and two zero reserved bytes). Static assertions bind
+the adapter headers to these layouts. The generic policy/IE writers are now
+shared by association and native queries, preserving the existing supported
+features and rate-map negotiation. HT uses one RX MCS0..7 mask per enabled
+stream, disabled SMPS, the host width ceiling, supported SGI bits, 64KiB A-MPDU
+and 8us spacing. VHT keeps existing 3895-byte MPDU/64KiB A-MPDU policy and
+SGI80 only when reported by firmware; unknown highest-rate fields stay zero.
+These are capabilities, not an instantaneous transmit MCS or guard interval.
+
+Primary ath10k reference (local masks remain narrower than full Linux support):
+https://github.com/torvalds/linux/blob/v6.12/drivers/net/wireless/ath/ath10k/mac.c
+See ath10k_create_ht_cap and ath10k_create_vht_cap for firmware enablement,
+per-chain MCS masks and TX/RX capability encoding. No Linux driver code or
+Apple assembly was copied into this adapter by this change.
+
+Production-method tests cover readiness/disabled support, exact byte layouts,
+write boundaries, single-chain masks, masked optional firmware features, missing
+SGI bits, unknown operation/null outputs and undersized/invalid IE writers.
+The actual association request is parsed and its local HT/VHT IEs compared
+with the native replies. Width20/40 and globally disabled build profiles are
+checked separately from the default suite. Kernel consumers and real reconnect
+performance still require hardware validation.
+
+NATIVE-CALLBACK-MATRIX.json now inventories all 190 inline protocol overrides:
+31 forward and 159 return Unsupported. scripts/audit-native-callbacks.py
+checks the snapshot against the actual header, explicit aliases, enum and
+main dispatcher branches; CI runs --check. Negative probes verify stale
+snapshots, unfamiliar/nested bodies and missing enum/dispatch entries are
+rejected. Unsupported callbacks remain explicitly marked as requiring caller
+evidence; this inventory does not prove they are optional. Lifecycle and
+non-inline overrides remain in the separate contract matrix above.
