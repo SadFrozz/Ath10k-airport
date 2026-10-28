@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := all
 PROJ_ROOT := $(shell pwd)
 BUILD_DIR := $(PROJ_ROOT)/build
-NATIVE ?= 0
+NATIVE ?= 1
+DIAGNOSTIC_STAGE ?= 0
 ifeq ($(NATIVE),1)
 BUILD_DIR := $(PROJ_ROOT)/build/native
 endif
@@ -103,7 +104,7 @@ $(BUILD_DIR)/kmod_info.o: src/kext/kmod_info.c | $(BUILD_DIR)
 .PHONY: FORCE
 FORCE:
 $(BUILD_DIR)/experiment-config: FORCE | $(BUILD_DIR)
-	@printf '%s\n' 'DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
+	@printf '%s\n' 'DIAGNOSTIC_STAGE=$(DIAGNOSTIC_STAGE) DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
 	@cmp -s "$@.tmp" "$@" || cp "$@.tmp" "$@"
 	@rm -f "$@.tmp"
 
@@ -121,15 +122,11 @@ native-preflight:
 
 $(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist scripts/prepare-kext-info.py
 	@mkdir -p "$(OUT_KEXT)/Contents/MacOS"
-	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist"
+	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 clean:
 	rm -rf $(BUILD_DIR)
-
-.PHONY: app
-app:
-	./scripts/build-connectivity.sh
 
 ifeq ($(NATIVE),1)
 $(OBJS): $(wildcard src/kext/native/*)
