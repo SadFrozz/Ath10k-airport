@@ -649,3 +649,15 @@ completion; actual stuck drains remain bounded at five seconds. Tests cover a
 minute-old payload completing after disconnect and an identical payload that
 never completes, with the latter retaining ownership at the exact deadline.
 This is source/test evidence, not a verified explanation of a hardware hang.
+
+## Late abort during teardown (2026-10-28 hardware follow-up)
+
+Loaded d653974/B1A4D518 stopped its runtime with cancel-security-response-timeout.
+The captured registry showed disconnect stage 5, security phase 0 and a repeated
+cancel request after AP deauthentication. A host reproduction injects that late
+abort during DELETE_PEER after software key retirement; the old implementation
+fails to finish teardown. Cancellation waits for installation/CSA replies now
+apply only before teardown begins. DELETE/STOP/barrier keep their own command
+ownership and completion rules. The regression also requires successful
+reassociation through the same live runtime. This addresses the recovery failure;
+the original AP disconnect remains a separate unresolved issue.

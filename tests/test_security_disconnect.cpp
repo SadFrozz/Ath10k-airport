@@ -98,7 +98,12 @@ static void runtimeCases(){
                     receive(d,capturedClear());assert(!s.peerCount && d._wmiLive.active);
                     if(hold==1){pending=s.disconnect;return;}
                 }else receive(d,sec(71,0x80));
-            }else if(s.disconnect==D::DeletePeer){++deleteCommands;assert(!s.peerCount && s.peerCreateIssued);}
+            }else if(s.disconnect==D::DeletePeer){
+                ++deleteCommands;assert(!s.peerCount && s.peerCreateIssued);
+                // A late abort arrives after software key retirement, while
+                // submitted now belongs to DELETE_PEER, not INSTALL_KEY.
+                s.cancelRequested=true;s.securityPhase=0;s.securityAck=false;
+            }
             else if(s.disconnect==D::Stop){
                 if(hold==2){pending=D::Stop;credit();}else d.deliver(2,stopped(true));return;
             }else if(s.disconnect==D::Barrier){

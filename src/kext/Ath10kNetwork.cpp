@@ -674,10 +674,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             static_cast<UInt32>(s.stage),s.diagnostics.lastCommand,static_cast<unsigned long long>(nowMs-s.sinceMs),s.error);
         s.submitted=false;
     }
-    if(s.cancelRequested && s.stage==LinkStage::Connected && s.secure && s.submitted &&
+    // Once teardown starts, submitted belongs to its DELETE/STOP/barrier command.
+    // A repeated abort must not reinterpret that command as an INSTALL_KEY wait.
+    if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.stage==LinkStage::Connected && s.secure && s.submitted &&
        ((s.securityPhase<=2 && !s.securityAck) || (s.securityPhase==4 && !_connectionEcho.replyReceived)))
         return nowMs-s.sinceMs>=5000?"cancel-security-response-timeout":nullptr;
-    if(s.cancelRequested && s.csa.submitted &&
+    if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.csa.submitted &&
        ((s.csa.phase==Ath10k::ChannelSwitchPhase::Restart && !s.csa.restartReply) ||
         (s.csa.phase==Ath10k::ChannelSwitchPhase::Barrier && !_connectionEcho.replyReceived)))
         return nowMs-s.csa.sinceMs>=5000?"cancel-channel-switch-response-timeout":nullptr;
