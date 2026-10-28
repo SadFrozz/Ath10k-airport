@@ -155,6 +155,51 @@ int main(){
         d->serviceNativeNotifications(110);assert(!d->_nativeAbortRequested);
         assert((ids(*d)==std::vector<UInt32>{214}));
     }
+    { // Association and physical LinkUp are not completed WPA authorization.
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);
+        d->_nativeJoinPending=true;d->_connection.portAuthorized=false;
+        d->serviceNativeNotifications(100);
+        assert(d->_nativeAssocSent && d->_nativeLinkUpSent && d->_nativeBeaconSent);
+        assert(d->_nativeJoinPending);
+        for(const auto &e:d->events)assert(e.id!=AirportWCL::ConnectComplete);
+        d->events.clear();d->serviceNativeNotifications(110);
+        assert(d->events.empty() && d->_nativeJoinPending);
+        d->_connection.portAuthorized=true;d->serviceNativeNotifications(120);
+        unsigned completions=0;
+        for(const auto &e:d->events)if(e.id==AirportWCL::ConnectComplete){
+            ++completions;
+            auto event=reinterpret_cast<const AirportWCL::ConnectionEvent *>(e.data.data());
+            assert(event->status==0 && event->peers[0].driverStatus==kIOReturnSuccess);
+        }
+        assert(completions==1 && !d->_nativeJoinPending);
+        d->events.clear();d->serviceNativeNotifications(130);assert(d->events.empty());
+    }
+    for(unsigned blockedPhase=1;blockedPhase<=5;++blockedPhase){
+        // Cancellation between a failed enqueue and retry must never revive
+        // the old join, including when only ConnectComplete was left to send.
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);
+        d->_nativeJoinPending=true;d->failAt=blockedPhase;
+        d->serviceNativeNotifications(100);
+        assert(d->_nativeJoinPending && d->_nativePostError==kIOReturnNoMemory);
+        d->_connection.cancelRequested=true;
+        d->events.clear();d->serviceNativeNotifications(110);
+        unsigned completions=0;
+        for(const auto &e:d->events){
+            assert(e.id!=AirportWCL::AssocComplete && e.id!=AirportWCL::FirstBeacon);
+            if(e.id==AirportWCL::ConnectComplete){
+                ++completions;
+                auto event=reinterpret_cast<const AirportWCL::ConnectionEvent *>(e.data.data());
+                assert(event->status!=0 && event->peers[0].driverStatus!=kIOReturnSuccess);
+            }
+            if(e.id==AirportWCL::LinkStatus){
+                auto link=reinterpret_cast<const AirportWCL::LinkStatusEvent *>(e.data.data());
+                assert(!link->up);
+            }
+        }
+        assert(completions==1 && !d->_nativeJoinPending && !d->_connection.portAuthorized);
+        const auto delivered=d->events.size();d->serviceNativeNotifications(120);
+        assert(d->events.size()==delivered);
+    }
     { // A deadline cannot both announce success and run failure cleanup.
         auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);d->_nativeJoinPending=true;
         d->_nativeJoinDeadline=100;d->failAt=1;

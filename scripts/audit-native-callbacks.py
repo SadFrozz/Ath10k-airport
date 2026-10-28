@@ -39,6 +39,14 @@ def inventory():
                 consumer='IO80211PeerManager::getHtCapabilityIE' if name == 'getHT_CAPABILITY' else 'IO80211PeerManager::getVHtCapabilityIE',
                 address='0xffffff80021e7220' if name == 'getHT_CAPABILITY' else '0xffffff80021e7452',
                 failure_effect='clears cached HT capability length' if name == 'getHT_CAPABILITY' else 'clears cached VHT-capable flag')]
+        if name == 'setWCL_REASSOC':
+            row['requirement_audit'] = 'stock caller confirmed; request partially reconstructed; roaming implementation and completion contract pending'
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='WCLNetManager::sendReassocCommand',
+                address='0xffffff800212933e', command=0x1aa, input_bytes=0xbc,
+                observed_fields=dict(channel_count=0x94, flags=0x98, ssid=0x99, ssid_length=0xb9),
+                failure_effect='nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established')]
         rows.append(row)
     if not rows or len({r['callback'] for r in rows}) != len(rows):
         raise ValueError('Missing or duplicate callbacks')

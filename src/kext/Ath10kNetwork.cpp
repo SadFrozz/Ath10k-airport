@@ -859,11 +859,16 @@ const char *Ath10kPCIDevice::serviceAPMaintenance(UInt64 nowMs)
 {
     auto &s=_connection;auto &m=s.maintenance;
     if(!m.step){
-        if(s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None){m.blocked=false;return nullptr;}
+        if(s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None){m.blocked=false;m.draining=false;return nullptr;}
         if(s.stats.step || s.submitted || s.radio.step || s.radio.blocked || s.radio.powerBlocked || s.rekeyKind || s.eapolPause ||
            s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || s.probe.active || !s.portAuthorized)return nullptr;
         const auto desired=Ath10k::desiredAPConfig(s);
-        if(m.valid && Ath10k::sameAPConfig(desired,m.applied)){m.blocked=false;return nullptr;}
+        if(m.valid && Ath10k::sameAPConfig(desired,m.applied)){m.blocked=false;m.draining=false;return nullptr;}
+        // Finish scan cancellation before starting the independent DMA drain
+        // deadline. Scan service retains its own bounded firmware timeout.
+        if(!m.draining && !_wmiScan.completed){
+            m.blocked=true;_wmiScan.cancelRequested=true;return nullptr;
+        }
         if(!m.draining){m.draining=true;m.blocked=true;m.sinceMs=nowMs;}
         if(nowMs-m.sinceMs>=5000)return "ap-maintenance-drain-timeout";
         if(s.wmiOwned || s.txOwned || s.dataPending || !_wmiScan.completed || _wmiScan.txOwned || _wmi.credits.outstanding)return nullptr;

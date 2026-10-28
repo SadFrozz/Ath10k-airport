@@ -1490,7 +1490,7 @@ void Ath10kPCIDevice::publishWMIRuntimeProperties()
     setProperty("Ath10kWMIRuntimeAttempted",_wmiLive.attempted);
     setProperty("Ath10kWMIRuntimeActive",_wmiLive.active);
     setProperty("Ath10kWMIRuntimeStatus",_wmiLive.status);
-    setProperty("Ath10kWMIRuntimeMode","polling-1ms-connected-10ms-idle");
+    setProperty("Ath10kWMIRuntimeMode",_runtimeIRQArmed?"irq-worker-with-adaptive-watchdog":"adaptive-polling");
     setProperty("Ath10kWMIRuntimePollCount",(UInt64)_wmiLive.polls,32);
     setProperty("Ath10kWMIRuntimeRxCount",(UInt64)_wmiLive.rxCount,32);
     setProperty("Ath10kWMIRuntimeBudgetHits",(UInt64)_wmiLive.budgetHits,32);
@@ -2748,6 +2748,9 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
 {
     auto &state=_wmiScan;
     if (state.completed) return nullptr;
+    // CSA may arrive after native scan admission. Cancel before acquiring
+    // firmware ownership; an already submitted scan follows STOP_SCAN below.
+    if(_connection.csa.phase!=Ath10k::ChannelSwitchPhase::Idle)state.cancelRequested=true;
     // An accepted request cancelled before submission owns no DMA or firmware
     // scan. Finish it locally instead of starting a scan merely to stop it.
     if(!state.attempted && state.cancelRequested){

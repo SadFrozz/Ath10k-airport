@@ -789,7 +789,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             (s.wmiOwned?8u:0u)|(s.txOwned?16u:0u)|(_wmi.credits.outstanding?32u:0u)|
             ((s.stage!=Ath10k::LinkStage::Disabled && (!s.portAuthorized || s.stage!=Ath10k::LinkStage::Connected))?64u:0u)|
             ((_nativeWasUp || _nativeLinkUpSent) && s.stage==Ath10k::LinkStage::Disabled?128u:0u)|
-            (_nativeAbortRequested?256u:0u);
+            (_nativeAbortRequested?256u:0u)|
+            (s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle?512u:0u)|
+            ((s.maintenance.blocked || s.maintenance.draining || s.maintenance.step)?1024u:0u);
         setProperty("Ath10kNativeScanBusyMask",UInt64(busy),32);
         if(busy)return kIOReturnBusy;
         const UInt64 requested=Ath10k::wmiRequestedScanMask(scan.channelCount?scan.channels:nullptr,sizeof(scan.channels));

@@ -48,6 +48,9 @@ def main():
         (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
         driver=(ROOT/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        scan_service=driver[driver.index('const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)'):]
+        scan_service=scan_service[:scan_service.index('    if (!state.attempted && (_connection.stats.step')]
+        (include/'native_scan_start.inc').write_text(scan_service+'    (void)nowMs;++submissions;return nullptr;\n}\n')
         (include/'native_termination_power.inc').write_text(power[power.index('void Ath10kPCIDevice::blockPowerIOForTermination()'):power.index('bool Ath10kPCIDevice::controllerPowerClosed()')])
         (include/'native_termination_controller.inc').write_text(native[native.index('void Ath10kPCIDevice::prepareNativeInterfaceTermination('):native.index('void Ath10kPCIDevice::stopNativeRequests()')])
         (include/'native_termination_notifier.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareTerminationNotification()'):native.index('bool Ath10kNativeInterface::prepareRegistrationInfo(')])

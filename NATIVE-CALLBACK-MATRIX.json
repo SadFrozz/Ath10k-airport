@@ -1085,8 +1085,24 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "stock caller confirmed; request partially reconstructed; roaming implementation and completion contract pending",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::sendReassocCommand",
+          "address": "0xffffff800212933e",
+          "command": 426,
+          "input_bytes": 188,
+          "observed_fields": {
+            "channel_count": 148,
+            "flags": 152,
+            "ssid": 153,
+            "ssid_length": 185
+          },
+          "failure_effect": "nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established"
+        }
+      ]
     },
     {
       "callback": "setWCL_SET_ROAM_LOCK",

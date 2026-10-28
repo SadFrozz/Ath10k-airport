@@ -480,7 +480,6 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
         if(eventId==0x5006 && !allowVdevDelete)return "vdev-delete-unsolicited";
         scanEvent=eventId==0x3001;mgmt=eventId==0x7001;channelInfo=eventId==0x4002;
         if ((scanEvent || mgmt || channelInfo) && (!scan || (!scan->submitted && !scan->generation))) return "scan-unsolicited-event";
-        if (scanEvent && scan->terminal) return "scan-event-after-terminal";
         if (echoEvent && !rollbackEcho && (!echo || !echo->submitted || echo->replyReceived || echo->completed))
             return "wmi-echo-unexpected-reply";
         informational=eventId!=2 && !diagnostic && !package && !supported && !echoEvent && !scanEvent && !mgmt && !channelInfo && !deleteEvent && !startEvent && !stopEvent && !statsEvent && !peerDeleteEvent && !peerStateEvent && !pauseEvent && !roamEvent && !kickout && !temperatureEvent && !rfKillEvent;
@@ -602,6 +601,9 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
                        wmiReadLE32(f+p+20)!=0 || (wmiReadLE32(f+p+16)&0xf000)!=0xa000)return "scan-event-id-mismatch";
                     scanStale=true;
                 }
+                // Classify the generation before applying current-scan state.
+                // A delayed old completion cannot invalidate a finished newer scan.
+                if(!scanStale && scan->terminal)return "scan-event-after-terminal";
                 if(!scanStale && !scan->submitted)return "scan-unsolicited-event";
                 if (!scanType || (scanType&(scanType-1)) || scanType>256)
                     return "scan-event-value";

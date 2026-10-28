@@ -703,3 +703,513 @@ Focused native_notifications, native_scan and native_leave pass with ASan/UBSan.
 Native kext build/symbol checks pass. No hardware latency improvement is claimed
 until reboot testing; initial unsolicited sweep and system scan scheduling remain
 under investigation.
+
+## Reassociation contract investigation (local batch, 2026-10-28)
+
+Matching local IO80211Family image UUID: 0D5AC570-04D4-38B6-8577-9F21350CDD50.
+`WCLNetManager::sendReassocCommand` at 0xffffff800212933e sends command 0x1aa
+through cmdIouc with a 0xbc-byte input (call at 0xffffff80021294f4). Before
+dispatch it obtains the current SSID into offset 0x99 and its length at 0xb9.
+It reads a 32-bit count at 0x94 and modifies bit zero at offset 0x98.
+`remove6GChannels` at 0xffffff8002217f1c iterates at most 50 16-bit channel
+specifications from offset zero, removes entries with (value & 0xc000)==0x4000,
+and writes the compacted count back at 0x94. These offsets are observations,
+not a complete structure declaration: the intervening fields remain unknown.
+
+The sender issues bulletin-board messages before cmdIouc, and sends a compensating
+message when the command returns an error. Their full state/event semantics and
+the completion path still require reconstruction. Current setWCL_REASSOC remains
+explicitly unsupported. Mapping the request directly to the 0x2cc-byte join
+decoder would use the wrong envelope and skip roaming state/ownership handling.
+No driver behavior has been changed by this investigation. Raw Apple disassembly
+remains local, outside repository and SD release packages.
+
+Roaming event consumers were also inspected in the same image. RoamStart
+(0xffffff800214412e) and RoamPrep (0xffffff80021441b6) require nonnull
+12-byte payloads and dispatch internal FSM events 2 and 4 respectively.
+Reassoc (0xffffff8002144230) requires an 8-byte payload; only a zero first
+32-bit word dispatches internal event 5, with a null FSM payload. RoamDone
+(0xffffff80021442b2) requires a nonnull 0xa8-byte payload and dispatches
+internal event 6. These internal FSM numbers are NOT PostOffice message IDs.
+Invalid envelopes are logged/ignored and these handlers return zero, so a
+successful enqueue/handler return cannot establish that roaming progressed.
+Message registration, complete field meanings and the FSM transitions remain
+open; no guessed event IDs or success-only reassociation stub is installed.
+The generated callback inventory now records the confirmed setWCL_REASSOC
+caller and its exact input envelope while keeping implementation unsupported.
+
+The init method references gROAM_MANAGERCallBackArray at 0xffffff80023f3070
+and passes a count of 25. Its first four 24-byte records match the independently
+located handler symbols: registration words 0x00890002 (RoamStart), 0x008b0002
+(RoamPrep), 0x00490002 (Reassoc), 0x00500002 (RoamDone). These are raw
+registration words, not yet verified public postMessage IDs. Each record's
+encoded function pointer matches its handler and its adjustment word is zero.
+The table narrows the remaining translation work to bulletin-board registration
+and the PostOffice driver-message mapping; treating the high half as a public
+message ID without that mapping is not justified.
+
+Routing evidence: IO80211PostOffice::deliverMessage at 0xffffff80022b2746
+forwards the original message arguments through interface slot 0xb10.
+IO80211Glue::sendEvent at 0xffffff800212acc8 constructs a CommonGlueMessage
+with the input event number at offset zero and command flag zero at offset 4.
+WCLGlue::receiveMessageInternal at 0xffffff8002122ef0 maps event envelopes
+to bulletin-board words `(received_number << 16) | 2`, preserving input
+length/pointer, then calls sendMessage with manager argument 12. Thus the
+registration high-half interpretation is confirmed at the WCL receiver.
+The object invoked through slot 0x118 in CommonGlue::receiveMessage
+(0xffffff800211ecf1/0xffffff800211ed05) is a buffer pool, not an event
+translator. IO80211Glue::initWithOptions stores IO80211BufferPool::withOptions'
+result in context+0x10, then places it in CommonGlueOptions+8 at
+0xffffff800212a2a8..0xffffff800212a2ac. The IO80211BufferPool vtable at
+0xffffff80023d6ba8, address-point offset 16 plus slot 0x118, resolves to
+IO80211BufferPool::getBuffer (0xffffff800227f7ce). The receive path copies
+all 0x30 bytes of the message to a local envelope, including the original
+number/flags at 0xffffff800211ec44..0xffffff800211ec4f. Buffer allocation
+is conditional on envelope byte 6 being one; sendEvent sets it to zero.
+This branch changes payload pointers for copying, not event numbering.
+Therefore no event-number translation is present in this inspected CommonGlue
+receive segment. This corrects the earlier translator hypothesis; remaining
+upstream queue/interface dispatch and filtering must still be verified before
+promoting registration high halves to public driver-event constants. Payload
+field semantics, lifetime and roaming FSM ordering also remain unimplemented.
+
+The queued Glue path was inspected through complete function boundaries:
+addEventToPendingQueue (0xffffff800212aecc) stores the unmodified event number
+at entry+0x10, the length at +0x14, and copies payload bytes into entry+0x20.
+It appends at the tail; processPendingEventQueue (0xffffff800212ae38) removes
+from the head, invokes sendEventAndFilter, then frees the entry. The latter
+(0xffffff800212aba2) constructs the same event envelope without renumbering.
+Its byte-0x28 delivery/filter flag controls subsequent postMessageSync fallback;
+a successful queue insertion alone does not establish WCL consumption.
+WCLGlue::isMsgNeeded (0xffffff8002123072) passes type 2 and the unchanged
+number to WCLBulletinBoard::isMsgNeeded for event envelopes. Registration
+availability is therefore distinct from payload validation and FSM acceptance.
+These findings establish FIFO/copy behavior only for this inspected Glue queue,
+not all producer queues or asynchronous consumers.
+
+Independent symbolic cross-check: the same image's gAppleMIndexToString table
+at 0xffffff80023ed360 names indices 0x89 APPLE80211_M_ROAM_SCAN_START,
+0x8b APPLE80211_M_ROAM_PREP, 0x49 APPLE80211_M_REASSOC,
+0x50 APPLE80211_M_ROAM_STATUS, and 0x8a APPLE80211_M_ROAM_SCAN_END.
+This corroborates the registration high halves as Apple message numbers.
+In particular, WCL's handleRoamStart consumes ROAM_SCAN_START; its name must
+not be interpreted as an association-start notification. The inspected Glue
+route preserves these IDs. Full InfraInterface/PostOffice dispatch coverage,
+payload fields and FSM ordering are still required before implementing roaming.
+
+Roaming action-level evidence (same image, no implemented driver behavior):
+handleRoamScanEnd at 0xffffff8002144330 requires a nonnull 0x4c-byte
+payload and sends internal FSM event 3. Like the other envelope handlers,
+invalid input is logged/ignored while returning zero.
+roamPrep at 0xffffff80021450d6 obtains the current associated SSID and uses
+payload+4 as an ether_addr in getCachedBeacon. It reads a signed 16-bit value
+at payload+0xa, stores it in manager context+0x74 and cached-beacon context+0x27c,
+and updates a cached-beacon timestamp. The signed value's units/meaning are
+not yet proven; it must not be assigned a public field name based on guessing.
+The first four payload bytes remain unclassified here.
+
+roamDone at 0xffffff80021451a4 reads payload word zero: nonzero is copied
+to manager context+0x50, whereas zero invokes buildRoamCompletionStatus.
+Both branches clear force-roam flags and timestamp (context+0x34/+0x38)
+and can invoke WCLAdaptiveRoam::handleRoamEventConfiguration. The action
+also reads payload byte 0x68; when it or context byte 0x48 is nonzero,
+it copies 0x68 bytes FROM manager context+0x50 TO the event payload and
+then prints the result. Thus this consumer can mutate the supplied payload;
+a future delivery path must supply writable owned memory, not a const or
+shared immutable status blob. This evidence does not yet establish which
+values denote terminal failures or which FSM states admit this action.
+The reassoc action at 0xffffff800214519c itself is a zero-return no-op;
+its state transition and other message subscribers must be examined before
+concluding that the reassociation notification has no effects.
+
+### Reconstructed roaming FSM (local Sequoia image only)
+
+The static initializer at 0xffffff80021459c4 populates configuration pointers
+for 6 states, 10 events and 11 actions. CommonFsmManager::processEvent at
+0xffffff800211e8d4 indexes two-byte entries by state*10+event; byte zero
+is the next state (0xff preserves it), byte one indexes the action table.
+It writes the next state BEFORE invoking the action. The following complete
+60-entry matrix records decoded facts, not implemented driver support.
+Rows give next state / action. Names below omit common ROAM_MANAGER prefixes.
+
+| State | Event | Next state | Action |
+|---|---|---|---|
+| LINK_DOWN | CONNECT_COMPLEATE | LINK_UP | connectCompleate |
+| LINK_DOWN | LINK_DOWN | LINK_DOWN | ignore |
+| LINK_DOWN | ROAM_START | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | ROAM_SCAN_END | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | ROAM_PREP | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | REASSOC | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | ROAM_DONE | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | SLEEP | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | WAKE | LINK_DOWN | unhandledEvent |
+| LINK_DOWN | TIMEOUT | LINK_DOWN | unhandledEvent |
+| LINK_UP | CONNECT_COMPLEATE | LINK_UP | unhandledEvent |
+| LINK_UP | LINK_DOWN | LINK_DOWN | linkDown |
+| LINK_UP | ROAM_START | ROAM_SCAN | roamStart |
+| LINK_UP | ROAM_SCAN_END | LINK_UP | unhandledEvent |
+| LINK_UP | ROAM_PREP | LINK_UP | roamPrep |
+| LINK_UP | REASSOC | LINK_UP | ignore |
+| LINK_UP | ROAM_DONE | LINK_UP | ignore |
+| LINK_UP | SLEEP | SLEEP | sleep |
+| LINK_UP | WAKE | LINK_UP | unhandledEvent |
+| LINK_UP | TIMEOUT | LINK_UP | unhandledEvent |
+| ROAM_SCAN | CONNECT_COMPLEATE | ROAM_SCAN | unhandledEvent |
+| ROAM_SCAN | LINK_DOWN | LINK_DOWN | linkDown |
+| ROAM_SCAN | ROAM_START | ROAM_SCAN | roamStart |
+| ROAM_SCAN | ROAM_SCAN_END | ROAM_SCAN | roamScanEnd |
+| ROAM_SCAN | ROAM_PREP | ROAM_REASSOC | roamPrep |
+| ROAM_SCAN | REASSOC | ROAM_SCAN | unhandledEvent |
+| ROAM_SCAN | ROAM_DONE | LINK_UP | roamDone |
+| ROAM_SCAN | SLEEP | SLEEP | sleep |
+| ROAM_SCAN | WAKE | ROAM_SCAN | unhandledEvent |
+| ROAM_SCAN | TIMEOUT | LINK_UP | ignore |
+| ROAM_REASSOC | CONNECT_COMPLEATE | ROAM_REASSOC | unhandledEvent |
+| ROAM_REASSOC | LINK_DOWN | LINK_DOWN | linkDown |
+| ROAM_REASSOC | ROAM_START | ROAM_REASSOC | unhandledEvent |
+| ROAM_REASSOC | ROAM_SCAN_END | ROAM_REASSOC | roamScanEnd |
+| ROAM_REASSOC | ROAM_PREP | ROAM_REASSOC | roamPrep |
+| ROAM_REASSOC | REASSOC | WAIT_ROAM_DONE | ignore |
+| ROAM_REASSOC | ROAM_DONE | LINK_UP | roamDone |
+| ROAM_REASSOC | SLEEP | SLEEP | sleep |
+| ROAM_REASSOC | WAKE | ROAM_REASSOC | unhandledEvent |
+| ROAM_REASSOC | TIMEOUT | LINK_UP | ignore |
+| WAIT_ROAM_DONE | CONNECT_COMPLEATE | WAIT_ROAM_DONE | unhandledEvent |
+| WAIT_ROAM_DONE | LINK_DOWN | LINK_DOWN | linkDown |
+| WAIT_ROAM_DONE | ROAM_START | WAIT_ROAM_DONE | unhandledEvent |
+| WAIT_ROAM_DONE | ROAM_SCAN_END | WAIT_ROAM_DONE | roamScanEnd |
+| WAIT_ROAM_DONE | ROAM_PREP | WAIT_ROAM_DONE | unhandledEvent |
+| WAIT_ROAM_DONE | REASSOC | WAIT_ROAM_DONE | unhandledEvent |
+| WAIT_ROAM_DONE | ROAM_DONE | LINK_UP | roamDone |
+| WAIT_ROAM_DONE | SLEEP | SLEEP | sleep |
+| WAIT_ROAM_DONE | WAKE | WAIT_ROAM_DONE | unhandledEvent |
+| WAIT_ROAM_DONE | TIMEOUT | LINK_UP | ignore |
+| SLEEP | CONNECT_COMPLEATE | SLEEP | unhandledEvent |
+| SLEEP | LINK_DOWN | LINK_DOWN | linkDown |
+| SLEEP | ROAM_START | SLEEP | ignore |
+| SLEEP | ROAM_SCAN_END | SLEEP | ignore |
+| SLEEP | ROAM_PREP | SLEEP | ignore |
+| SLEEP | REASSOC | SLEEP | ignore |
+| SLEEP | ROAM_DONE | SLEEP | ignore |
+| SLEEP | SLEEP | SLEEP | unhandledEvent |
+| SLEEP | WAKE | LINK_UP | wake |
+| SLEEP | TIMEOUT | SLEEP | unhandledEvent |
+
+Implementation implications: REASSOC in ROAM_REASSOC transitions to
+WAIT_ROAM_DONE despite using the ignore action; omitting it because its action
+is empty would lose a real transition. ROAM_SCAN_END does not by itself exit
+a roaming state. ROAM_DONE from any of the three active roaming states returns
+to LINK_UP, while LINK_DOWN terminates the roaming state. TIMEOUT also returns
+to LINK_UP but uses ignore, so it does not substitute for the roamDone cleanup
+or establish successful radio association. SLEEP discards roaming events;
+WAKE from SLEEP returns to LINK_UP. These are WCL bookkeeping transitions,
+not proof that firmware or keys survived sleep. Full action side effects,
+request cancellation and other message subscribers remain open.
+
+Action-side continuation: roamStart (0xffffff8002144bc4) requires both its
+payload and an associated beacon before initializing its 0x68-byte status
+area. It snapshots the current BSSID/channel/authentication information,
+copies payload words at +0/+4 into status words +0/+4, then calls timer
+slot 0x1d0 with argument 10000 (milliseconds, verified below).
+linkDown (0xffffff8002144b5c), sleep (0xffffff80021457ac), and roamDone
+all invoke slot 0x218 on the same timer object. linkDown also updates roam
+locks, removes a roam offset and reinitializes the roaming profile. wake
+(0xffffff8002145776) removes roam offset 8 and invokes the adaptive-roam
+sleep-exit configuration; it does not itself restore firmware association.
+
+Current source comparison: Ath10kNativeInterface.hpp still explicitly rejects
+setWCL_REASSOC, roam profile/cache updates and roam locks. Consequently these
+reconstructed flows are implementation requirements, not claims that current
+roaming follows them. Ath10kRecovery.cpp uses driver retirement/rematching for
+wake recovery; WCL's bookkeeping return to LINK_UP cannot validate that path.
+
+Timer binding is now verified against both IO80211TimerSource and
+WCLTimerSource vtables (0xffffff80023c5768 / 0xffffff80023c9f58): slot
+0x1d0 resolves to IOTimerEventSource::setTimeoutMS at 0xffffff8000b00fd0;
+slot 0x218 resolves to cancelTimeout at 0xffffff8000b01130. The roaming
+protection timeout is therefore 10 seconds, and linkDown, sleep and roamDone
+cancel it. protectionTimer at 0xffffff8002143fd4 dispatches internal event
+9 (TIMEOUT) with null payload, confirming the table's timeout path directly.
+
+Entry/exit admission was also checked: linkStateUpdate at 0xffffff8002143fe6
+accepts exactly two payload bytes and emits LINK_DOWN only when byte zero is
+zero. A link-up indication here does not enter LINK_UP. joinDone at
+0xffffff8002144010 instead requires exactly 16 nonnull payload bytes and a
+zero first word before emitting CONNECT_COMPLEATE. It is registered under
+bulletin-board word 0x000c0003, not driver message type 2. Thus emitting a
+physical link-up event alone cannot initialize the roam manager; successful
+join completion through WCL is a separate prerequisite. These constraints
+must be retained when adding native reassociation and wake recovery.
+
+Production notification regression coverage: test_native_notifications now
+injects one enqueue failure separately at AssociationComplete, join BSS,
+LinkStatus-up, FirstBeacon and ConnectComplete, then cancels the connection
+before retry. All five paths emit exactly one failed ConnectComplete, no new
+association/beacon/up notification, close the controlled port and do not repeat
+completion on the next service call. The focused native_notifications run
+passed using the extracted production serviceNativeNotifications method.
+This validates host-side cancellation/retry ordering, not WCL execution,
+firmware roaming or physical sleep/wake. No driver behavior change was needed
+for these cases.
+
+The focused notification suite also now holds portAuthorized false after
+association, LinkUp and FirstBeacon: no ConnectComplete is emitted across
+repeated service calls until authorization becomes true; then exactly one
+successful completion is delivered. The complete native_notifications test
+passed with clang AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+This covers notification gating, not proof of correct firmware key installation.
+
+Key/authorization path source audit: serviceConnection in Ath10kNetwork.cpp
+waits for matching HTT security indications for phases 1/2, drains command DMA
+ownership and WMI credits, requires authorizeRequested at phase 3, and waits
+for the WMI ECHO reply at phase 4 before opening portAuthorized. Rekey also
+waits for pendingMPDUs to drain before discarding RX reorder/fragment batches
+and updating replay counters. This is stronger than merely enqueueing keys.
+The HTT validator ties non-NONE install acknowledgements to mapped peer,
+expected cipher/cast and install phase. NONE indications have a separate
+clear/teardown path and cannot acknowledge an install.
+
+A remaining correlation audit item: initial-association and security ECHO
+cookies are constants (0xa7100047 and 0xa7100057). Serialization and teardown
+may prevent reuse ambiguity, but cross-generation delayed replies have not
+yet been proved impossible across every cancellation/recovery path. Do not
+claim generation-safe correlation solely from the existing phase/peer checks;
+trace reply routing and retirement before changing cookies or accepting stale
+responses. No observed runtime failure is attributed to this hypothesis yet.
+
+Focused connection and security_disconnect suites passed with clang ASan/UBSan
+on this source state. This is simulated firmware evidence, not a hardware
+validation of key installation or stale-response exclusion.
+
+ECHO correlation follow-up: parseWMIInitResponse rejects a reply unless an
+ECHO is submitted and not already completed/replied; it also compares the
+payload cookie. An explicitly tracked rollback ECHO is separately recognized
+by rollback.echoCookie and does not acknowledge the current ECHO. Cancellation
+of an active security install/barrier waits for the outstanding semantic reply
+before teardown (bounded by cancel-security-response-timeout); association
+barrier cancellation instead records its cookie for rollback handling. The
+ordinary path therefore does not simply abandon an outstanding ECHO and reuse
+its cookie in the next join. A duplicate reply arriving during a later command
+with the same cookie is not distinguished by the parser, but production of
+such a duplicate has not been demonstrated. Treat this as defense-in-depth
+work pending lifecycle proof, not a confirmed disconnect cause. Any cookie
+change must update both command construction and expected reply state, and
+must preserve rollback consumption and transactional credit validation.
+
+Runtime snapshot 2026-10-28 10:34 UTC, same boot UUID as the 5a5d69c
+verification: DisconnectCount remained 1 (previously user-confirmed manual
+switch), ConnectionError none, WMIRuntimeRejected 0, DataTxErrors 0. Default
+route remained en1 and interface-bound HTTPS returned 200 in 0.146 seconds.
+These sampled counters do not prove uninterrupted traffic throughout the gap.
+The snapshot exposed an obsolete WMIRuntimeMode label claiming fixed 1/10 ms
+polling while the adaptive timer reported 100 ms. Source now describes the
+IRQ-worker/adaptive-watchdog or adaptive-polling mode; numeric interval telemetry
+remains authoritative. This diagnostic-only change does not alter scheduling
+and is not installed in the running kext.
+
+Reassociation pre-command messages partly resolved by callback registration:
+word 0x00070003 dispatches getRoamState; word 0x00040003 dispatches
+setForceRoamMsg (0xffffff800214472a). The latter consumes two bytes, stores
+byte 1 as the force-roam flag and byte 0 as the secondary flag, and clears
+the secondary flag/timestamp unless byte 1 equals one. This is an internal
+bulletin-board operation performed before the driver reassociation command,
+not an additional public driver event to synthesize. Word 0x00060003 and
+failure-compensation subscribers still require tracing. The decoder is not
+wired until request semantics, completion and cancellation are sufficient.
+
+The local native kext build after the diagnostic mode-label correction passed
+compilation, linking and check-kext-symbols. No new kext was installed, loaded,
+or tested on hardware; firmware/roaming behavior remains unchanged.
+
+Reassociation failure compensation is now identified: after cmdIouc(0x1aa)
+returns nonzero, sendReassocCommand clears the second byte of its two-byte
+force-roam message and sends 0x00040003 again. The setForceRoamMsg consumer
+therefore clears force-roam flags/timestamp. This is synchronous admission-error
+compensation, not asynchronous radio failure completion. Returning success from
+an unimplemented reassociation handler would bypass it and leave WCL expecting
+a real operation; keep explicit unsupported until the operation is implemented.
+
+Pre-command word 0x00060003 has matching callback records at
+0xffffff80023f05d8 (GAS scanAbortNotificationHandler), 0xffffff80023f2910
+(ScanManager scanAbortRequestHandler) and 0xffffff80023f47a0 (nearby-device
+abort). These addresses lie within their named callback arrays; registration
+counts for all three still need cross-checking. Direct inspection of
+scanAbortRequestHandler (0xffffff8002137986) confirms a nonnull four-byte
+payload is dispatched as scan FSM event 2. The reassociation sender supplies
+four-byte value 1. Therefore request admission occurs after a scan-abort request
+has already been issued; do not assume an idle radio or restart a scan solely
+because setWCL_REASSOC is called. Completion ordering between the scan abort
+and reassociation still needs the scan FSM and driver-side ownership checks.
+
+Scan-abort timing contract: WCLScanManager::abortScan at 0xffffff8002139a4e
+calls cmdIouc(0x1b3) with no payload. A successful return arms timer slot
+0x1d0 with 1000 ms and returns; there is no synchronous completion wait in
+this action. An immediate error sends scan FSM event 4 with 0xe00002eb.
+handleTimeoutAbort at 0xffffff800213a1fc sends the same event/status.
+Thus accepting the abort command is distinct from completing it, and the
+normal completion window is one second. Whether the caller's scan state
+admits the abort action still follows the scan FSM table.
+
+Current driver comparison: setWCL_SCAN_ABORT only sets cancelRequested for
+an outstanding native scan. serviceWMIScan waits for original command TX and
+credits, submits STOP_SCAN when the command ring is idle, then requires a
+terminal firmware event, stop consumption and returned credits before setting
+completed. serviceNativeNotifications emits aborted ScanDone only afterward.
+This ownership discipline must not be weakened to meet WCL's deadline by
+pretending that radio cancellation completed. A targeted abort-latency and
+late-ScanDone test remains required, especially before admitting reassociation
+while the previous scan is retiring.
+
+Confirmed parser ordering bug and local fix: parseWMIInitResponse previously
+rejected every scan event when the current scan was terminal, before decoding
+the event's scan ID. A delayed prior-generation completion was therefore
+reported as scan-event-after-terminal even though stale-event handling already
+exists. A regression test reproduced this with current ID 0xa037, terminal and
+completed, and an old completion for 0xa036. It failed on the original code.
+The terminal guard now runs after ID classification and applies only to the
+current scan. Old valid events retain normal stale-event handling; a duplicate
+terminal event for the current ID remains an error. native_scan and
+native_notifications passed with ASan/UBSan after the change. This is a
+reproduced parser bug, not yet a hardware-confirmed cause of user disconnects.
+
+Boundary coverage for the stale-scan fix passed with ASan/UBSan: every
+truncation of the 40-byte event, malformed fixed TLV, multi-bit event type,
+wrong requestor and wrong vdev are rejected without changing scan state,
+command credits or last-event metadata. A valid stale completion remains
+accepted without advancing the current scan; a same-ID duplicate terminal
+completion remains rejected. This exercises transactional parser behavior,
+not firmware abort timing or scan-ID wraparound.
+
+Transport-credit coverage for the stale completion passed with ASan/UBSan:
+a stale event carrying a valid HTC credit returns that credit without changing
+the current scan. An excessive credit return is rejected without partial
+changes to scan state, available/outstanding credits or event metadata. This
+confirms that ignoring the old scan event does not discard valid transport
+accounting attached to it. No additional production change was required.
+
+Request producer evidence: forceRoamUsingNeighborCache at
+0xffffff8002217100 passes the reassociation buffer itself to getNeighborCache
+with capacity 50 AppleChannelSpec_t entries. On a nonzero result it stores
+that count at +0x94, writes six 0xff bytes at +0x64..+0x69, stores 32-bit
+value 1 at +0x90, and calls sendReassocCommand with its boolean argument true.
+This independently confirms the 50-channel area ends at +0x64. The six-byte
+all-ones field is consistent with a broadcast BSSID, but its full field/list
+semantics and the +0x90 discriminator still require other producers/consumers;
+no guessed struct layout or runnable reassociation decoder has been added.
+
+Target address field confirmed by a second producer: setROAMDefault at
+0xffffff800221738e copies six bytes from apple80211_sta_roam_data+8 into
+reassoc+0x64. It passes that SAME source address as ether_addr to
+getCachedBeacon with the associated SSID. Thus +0x64 is a target BSSID,
+not an opaque six-byte token. This producer also writes 1 at +0x90; when a
+matching beacon exists it writes its chanspec at +0 and channel count 1 at
++0x94. A missing cache entry still reaches sendReassocCommand with its boolean
+argument false, so the request decoder must not assume every valid request
+contains at least one channel. The meaning/capacity of any additional BSSID
+entries and the +0x90 value still require confirmation before accepting lists.
+
+The local full-image disassembly identified ten direct sendReassocCommand call
+sites, including forced roaming, neighbor-cache roaming, band selection,
+setROAMDefault, setROAMWithChannel and startRoamScan. This is a direct-call
+inventory, not proof that indirect callers or other OS versions are covered.
+Raw disassembly remains local and is excluded from repository/SD artifacts.
+
+Explicit-channel producer: setROAMWithChannel (0xffffff80022175c2)
+confirms the same target-BSSID copy to +0x64 and value 1 at +0x90. It takes
+an 8-bit channel from sta_roam_data+7, constructs band bits (0xc000 for
+selector 2; 0x4000 for selector 3 when the corresponding capability is set),
+then applies `(spec & 0xc0ff) | 0x1000` and stores a single 16-bit chanspec
+at request+0 with channel count 1 at +0x94. Default selector 0 chooses
+0xc000 when the channel number is at least 15. These are concrete producer
+encodings; band/width interpretation must stay consistent with the existing
+chanspec conversion, not be inferred from the low channel byte alone.
+Vendor macOS15/macOS26 headers only forward-declare apple80211_reassoc,
+so they do not independently establish the missing BSSID-list fields.
+
+Unconstrained roaming producer: startRoamScan at 0xffffff8002217af4
+allocates 0xbc bytes through 0xffffff8000ab7060, independently resolved in
+the matching kernel symbol inventory as IOMallocZeroData. On its send path
+it writes only the broadcast target at +0x64 and value 1 at +0x90 before
+calling sendReassocCommand(false, 0). Thus channel count +0x94 is genuinely
+zero, not an uninitialized field; no individual target or channel is supplied.
+This confirms that REASSOC admission must support a request for candidate
+discovery, not merely a preselected-BSSID join. A future implementation must
+retain the current connection while discovering/selecting a candidate and
+report the roaming event sequence, rather than translating every such request
+into a disconnect and ordinary join. The callback remains unsupported until
+that lifecycle is implemented; request decoding alone is insufficient.
+The source boolean controls whether this send path is reached; it is not
+forwarded as the sendReassocCommand boolean on this path.
+
+Connected-scan source audit: native admission permits Connected plus authorized
+port; buildWMIScan caps connected passive dwell at 100 ms and sets minimum
+home-channel rest to 150 ms. submitDataPacket/dataTXAdmissionOpen do not
+globally close data admission for the whole scan. serviceDataTX uses scan
+activity to defer its queue-stall watchdog, not as a transmission prohibition.
+These are source properties, not measured latency or roaming success.
+
+Follow-up race identified: native setWCL_SCAN_REQ lacks the non-Idle CSA
+check already present in the diagnostic scan entry point. serviceChannelSwitch
+cancels scans in Announced and Drain, but later Down/Restart/Barrier/Confirm
+phases do not repeat that cancellation. serviceWMIScan also lacks a CSA
+phase gate. A new request accepted between CSA commands can therefore
+start a scan during channel transition. Reproduce admission for these phases
+and reject it before resetting scan state; also check a CSA announcement
+arriving after admission but before firmware submission. This finding does
+not yet establish a cause of the observed physical disconnects.
+
+CSA/scan race regression and fix: a test executes the extracted production
+serviceWMIScan pre-submission path, replacing only the later hardware section
+with a counter. Before the fix, the first non-Idle CSA phase reached that
+section and failed the assertion. Native scan admission now reports busy
+bit 512 for non-Idle CSA. The service also marks cancellation on observing
+any non-Idle phase, covering announcements after admission. Unattempted scans
+finish via the existing local cancellation path; submitted scans retain the
+existing STOP_SCAN and DMA/credit completion path. All ten non-Idle phases
+and normal Idle submission passed with ASan/UBSan, together with the existing
+channel_switch suite. This does not simulate firmware STOP timing or prove
+that the user's disconnects were caused by this race.
+
+CSA guard ownership checks also passed with ASan/UBSan for every non-Idle
+phase: an already submitted scan retains txOwned and does not become terminal
+or completed at the guard; a previously completed scan remains byte-for-byte
+unchanged. The test seam stops before hardware processing, so it proves guard
+behavior only, not STOP_SCAN completion. Native build and import checks passed.
+
+CSA scan-drain integration coverage: the actual serviceChannelSwitch path
+now has a regression that starts with an active scan and owned DMA, verifies
+scan cancellation and zero channel-switch commands, supplies scan completion
+while retaining DMA and verifies it still waits, then releases ownership.
+The transition subsequently reaches Confirm and requires the new-channel
+beacon before Idle. Passed with ASan/UBSan. Scan acknowledgements are injected
+by the test, so firmware stop latency remains unmeasured.
+
+Next scheduling concern: serviceAPMaintenance starts its 5-second drain
+deadline before waiting for _wmiScan.completed, while a connected scan can
+legitimately span multiple home-channel rests. It neither cancels that scan
+nor waits to start the deadline. Native scan admission also lacks a draining
+maintenance check. Reproduce a WMM/ERP update during a long scan before
+choosing cancellation versus revised timeout accounting; do not assume this
+is a confirmed observed hardware failure.
+
+AP maintenance/scan deadline reproduced and fixed: a WMM update while scan
+is incomplete failed at serviceAPMaintenance(8500) after starting the drain
+clock at 2500. The service now requests scan cancellation before arming its
+independent DMA drain deadline. The scan service retains its 35-second host
+bound; a stuck scan is not treated as completed. Native admission reports
+busy bit 1024 while AP maintenance is blocked, draining or executing.
+ASan/UBSan regression verifies a six-second scan wait produces no AP drain
+timeout, no maintenance command, and a cancellation request; after scan
+completion it retains the exact five-second deadline for stuck data DMA.
+ap_maintenance and native_scan suites passed; native build/import checks
+passed. Firmware cancellation latency and physical stability remain untested.
+
+AP drain cancellation follow-up: the combined regression run passed connection,
+security_disconnect and channel_switch, then reproduced stale maintenance.draining
+when a WMM update reverted to the applied configuration before command submission.
+The regression failed on the production methods extracted before the fix.
+The no-change and cancellation exits now clear draining along with blocked.
+This prevents native scan busy bit 1024 persisting after an abandoned update
+and gives a later update a fresh drain deadline. Follow-up ASan/UBSan suites ap_maintenance, runtime_power, native_scan and
+native_notifications passed, and the native rebuild/import check passed.
+This remains local validation, not hardware confirmation.
