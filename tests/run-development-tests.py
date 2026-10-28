@@ -99,7 +99,7 @@ def main():
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
         names=['native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
-        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session'])
+        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
             if unknown: parser.error('Unknown/unavailable tests: ' + ', '.join(unknown))

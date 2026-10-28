@@ -3,6 +3,7 @@
 #include "../../src/shared/Ath10kSAE.hpp"
 #include "../../src/shared/Ath10kSAEWire.hpp"
 #include "../../src/shared/Ath10kSAEExchange.hpp"
+#include "../../src/shared/Ath10kSupplicant.hpp"
 extern "C" __attribute__((used)) bool ath10k_sae_wire_compile_check(
     const AthSecurity::SAEGroup19AuthMessage *message,AthSecurity::SAEGroup19AuthMessage *decoded,
     const uint8_t *frame,size_t frameBytes,const uint8_t *local,const uint8_t *ap,
@@ -21,6 +22,49 @@ struct CompileOnlyHMAC {
         return function && function(key,keyBytes,input,bytes,out);
     }
 };
+struct CompileOnlyPersonal : CompileOnlyHMAC {
+    using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);
+    using Random=bool (*)(uint8_t *,size_t);
+    inline static Function sha1=nullptr;
+    inline static Block encryptBlock=nullptr,decryptBlock=nullptr;
+    inline static Random randomBytes=nullptr;
+    static bool hmac(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){return sha1 && sha1(k,kl,d,n,o);}
+    static bool encrypt(const uint8_t *k,const uint8_t *d,uint8_t *o){return encryptBlock && encryptBlock(k,d,o);}
+    static bool decrypt(const uint8_t *k,const uint8_t *d,uint8_t *o){return decryptBlock && decryptBlock(k,d,o);}
+    static bool random(uint8_t *o,size_t n){return randomBytes && randomBytes(o,n);}
+};
+// Preserve arbitrary established/rekey state: a begin()+receive() entry alone
+// permits the optimizer to erase every M3/group path as unreachable from M1.
+extern "C" __attribute__((used,noinline)) unsigned ath10k_sae_eapol_receive_compile_check(
+    AthSecurity::Supplicant<CompileOnlyPersonal,true,true> *supplicant,
+    CompileOnlyHMAC::Function sha256,CompileOnlyHMAC::Function sha1,
+    CompileOnlyPersonal::Block encrypt,CompileOnlyPersonal::Block decrypt,CompileOnlyPersonal::Random random,
+    const uint8_t *frame,size_t bytes)
+{
+    if(!supplicant)return 0;
+    CompileOnlyPersonal::function=sha256;CompileOnlyPersonal::sha1=sha1;
+    CompileOnlyPersonal::encryptBlock=encrypt;CompileOnlyPersonal::decryptBlock=decrypt;CompileOnlyPersonal::randomBytes=random;
+    const unsigned result=unsigned(supplicant->receive(frame,bytes));
+    CompileOnlyPersonal::function=CompileOnlyPersonal::sha1=nullptr;
+    CompileOnlyPersonal::encryptBlock=CompileOnlyPersonal::decryptBlock=nullptr;CompileOnlyPersonal::randomBytes=nullptr;
+    return result;
+}
+extern "C" __attribute__((used)) bool ath10k_sae_eapol_compile_check(
+    AthSecurity::Supplicant<CompileOnlyPersonal,true,true> *supplicant,
+    CompileOnlyHMAC::Function sha256,CompileOnlyHMAC::Function sha1,
+    CompileOnlyPersonal::Block encrypt,CompileOnlyPersonal::Block decrypt,CompileOnlyPersonal::Random random,
+    const uint8_t *pmk,const uint8_t *nonce,const uint8_t *local,const uint8_t *ap,
+    const uint8_t *rsn,size_t rsnBytes,const uint8_t *pmkid,const uint8_t *frame,size_t bytes)
+{
+    if(!supplicant)return false;
+    CompileOnlyPersonal::function=sha256;CompileOnlyPersonal::sha1=sha1;
+    CompileOnlyPersonal::encryptBlock=encrypt;CompileOnlyPersonal::decryptBlock=decrypt;CompileOnlyPersonal::randomBytes=random;
+    bool ok=supplicant->begin(pmk,nonce,local,ap,rsn,rsnBytes,8,pmkid,16);
+    if(ok)ok=supplicant->receive(frame,bytes)!=decltype(supplicant->receive(frame,bytes))::Fatal;
+    CompileOnlyPersonal::function=CompileOnlyPersonal::sha1=nullptr;
+    CompileOnlyPersonal::encryptBlock=CompileOnlyPersonal::decryptBlock=nullptr;CompileOnlyPersonal::randomBytes=nullptr;
+    return ok;
+}
 extern "C" __attribute__((used)) bool ath10k_sae_client_compile_check(
     AthSecurity::SAEGroup19ClientExchange *owner,AthSecurity::SAEGroup19CommitTx *tx,
     AthSecurity::SAEGroup19KeyWork *keys,AthSecurity::SAEGroup19ConfirmWork *localJob,

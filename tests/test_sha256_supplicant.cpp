@@ -18,6 +18,12 @@ struct Crypto {
 struct FailedHMAC:Crypto {
  static bool hmac256(const uint8_t *,size_t,const uint8_t *,size_t,uint8_t *out){memset(out,0x77,32);return false;}
 };
+struct FailedM4Encrypt:Crypto {
+ static inline unsigned calls=0,failAt=0;
+ static bool encrypt(const uint8_t *k,const uint8_t *p,uint8_t *out){
+  if(++calls==failAt){memset(out,0x77,16);return false;}return Crypto::encrypt(k,p,out);
+ }
+};
 struct FailSelectedHMAC:Crypto {
  static inline unsigned calls=0,failAt=0;
  static bool hmac256(const uint8_t *k,size_t kl,const uint8_t *p,size_t n,uint8_t *out){
@@ -113,6 +119,14 @@ static void checkSAEConfirmationFence(){
 }
 int main(){
  checkSAEConfirmationFence();
+ { using F=AthSecurity::Supplicant<FailedM4Encrypt,true>;F failed;
+   assert(failed.begin(s_pmk,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));
+   FailedM4Encrypt::calls=FailedM4Encrypt::failAt=0;assert(failed.receive(s_m1,sizeof(s_m1))==F::Reply);
+   memset(failed.keys,0xa5,sizeof(failed.keys));FailedM4Encrypt::calls=0;
+   FailedM4Encrypt::failAt=2+(sizeof(s_m3)-14+15)/16;
+   assert(failed.receive(s_m3,sizeof(s_m3))==F::Fatal && !failed.outputLength);
+   for(auto v:failed.keys)assert(v==0xa5);FailedM4Encrypt::failAt=0;
+ }
  { uint8_t identifier[255]{},out[96];const uint8_t password[]={1},ssid[]={2};
    assert(AthSecurity::saeGroup19H2EValues<Crypto>(ssid,1,password,1,identifier,254,out,sizeof(out)));
    memset(out,0xa5,sizeof(out));

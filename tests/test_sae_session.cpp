@@ -1,5 +1,8 @@
 #include "mock_sae_worker.hpp"
 #include "../src/shared/Ath10kSAEExchange.hpp"
+#include "../src/shared/Ath10kSupplicant.hpp"
+#include "common_crypto_personal.hpp"
+#include "sae_eapol_vectors.inc"
 #include "p256_corecrypto_fixtures.hpp"
 #include <CommonCrypto/CommonHMAC.h>
 #include <dlfcn.h>
@@ -129,6 +132,14 @@ int main(){
     ownerGate=true;assert(s->confirmReady(result,11,1504));assert(s->completeConfirm(result,true,11,1504)==Action::Accepted);ownerGate=false;
     assert(s->completeConfirm(failedTX,true,11,754)==Action::Ignore);failedTX->release();
     assert(s->copyPMK(pmk,32,id,16,11,1504) && !memcmp(pmk,expected.data(),32));
+    { // Real queued SAE output feeds opt-in AKM8 EAPOL without password/PSK substitution.
+      using E=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;E eapol;
+      assert(eapol.begin(pmk,w_snonce,local,ap,w_rsn,sizeof(w_rsn),8,id,16));
+      assert(eapol.receive(w_m1,sizeof(w_m1))==E::Reply);
+      assert(eapol.outputLength==sizeof(w_m2) && !memcmp(eapol.output,w_m2,sizeof(w_m2)));
+      assert(eapol.receive(w_m3,sizeof(w_m3))==E::Keys && eapol.keyChanges==7);
+      assert(!memcmp(eapol.keys,w_ptk+32,16) && !memcmp(eapol.managementKey.key,w_igtk,16));
+    }
     assert(!s->copyPMK(pmk,32,id,16,12,1504));s->cancel();assert(!s->confirmReady(result,11,1505));
     assert(!s->copyPMK(pmk,32,id,16,11,1505));s->release();result->release();assert(objects==1);
     { // A transferred old result retains its old session; replacement cannot consume it.

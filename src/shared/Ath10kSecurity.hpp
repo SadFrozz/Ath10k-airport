@@ -54,6 +54,21 @@ inline uint8_t wpa2GroupCipher(const uint8_t *ie,size_t n){
  return 0;
 }
 static constexpr uint8_t stationRSNSHA256[]={48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,6,0,0};
+// Explicit software SAE profile: CCMP-128, AKM 8, mandatory PMF/BIP-CMAC-128.
+// Caller supplies an already verified SAE PMKID when association uses it.
+inline bool buildSAEStationRSN(const uint8_t *pmkid,size_t idBytes,uint8_t *out,size_t capacity,size_t &bytes){
+ if(!out || (idBytes && (idBytes!=16 || !pmkid)))return false;
+ const size_t n=idBytes?44:28;if(capacity<n)return false;
+ static constexpr uint8_t prefix[]={48,26,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,8,0xc0,0};
+ copy(out,prefix,sizeof(prefix));out[1]=uint8_t(n-2);out[22]=idBytes?1:0;out[23]=0;
+ if(idBytes)copy(out+24,pmkid,16);
+ const size_t at=24+idBytes;out[at]=0;out[at+1]=15;out[at+2]=172;out[at+3]=6;
+ bytes=n;return true;
+}
+inline bool validSAEPersonalRSN(const uint8_t *ie,size_t n){
+ // This is opt-in software admission, not native backend capability publication.
+ return bool(selectPersonal(ie,n,PersonalMode::WPA3,{true,true,true}));
+}
 inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n,uint8_t akm=2){
  if(akm==6){if(group==cipherCCMP){n=sizeof(stationRSNSHA256);return stationRSNSHA256;}n=0;return nullptr;}
  if(akm!=2){n=0;return nullptr;}
