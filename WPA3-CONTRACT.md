@@ -1755,7 +1755,7 @@ is distinct from native request admission and physical validation.
 | Boundary | Current source evidence | Still required |
 | --- | --- | --- |
 | Password preparation | Retained H2E and legacy jobs, exact SSID/MAC/generation/deadline binding, exclusive worker, terminal errors and wiping; independent commit and authenticated PMK/PMKID tests | Decode/validate actual native password request and connect preparation ownership to native join cancellation |
-| P-256 provider | Userland real-provider tests; kernel compilation; eighteen-export offline link and static Sequoia ABI evidence | Bind and validate kernel provider/context execution and timing; repeat ABI work for other supported macOS versions |
+| P-256 provider | Userland real-provider tests; kernel compilation; eighteen-export offline link and static Sequoia ABI evidence; local typed diagnostic binding/public worker self-test described below | Validate kernel provider/context execution and timing, connect the validated provider to admission; repeat ABI work for other supported macOS versions |
 | Authentication TX/RX | Ath10kSAERadio routes algorithm 3, retained compute/confirm jobs, generation checks and actual management TX reservation; open-auth builder refuses AKM8 | Physical frames/firmware validation, plus accepted-state behavior audit for the station role |
 | Authentication to association | Verified local/peer confirmations precede PMK handoff; exact AKM8 RSNE/PMKID and negotiated H2E RSNXE; no PSK fallback | Native entry path and physical association |
 | EAPOL and keys | H2E RSNXE snapshot/M3 validation, PTK/GTK/IGTK staging, retained PMF ownership and replay epochs tested | Physical PMF RX layout, firmware management TX/PN ownership and complete required-PMF exchange |
@@ -1797,3 +1797,139 @@ legacy builds and callback-audit checks pass. The full 55-test sanitizer suite
 and sae_session ThreadSanitizer cover unchanged preparation/protocol source;
 subsequent edits are version metadata and documentation. No installed kernel
 collection, EFI files or running driver is changed by this validation.
+
+
+### Typed kernel diagnostic binding and public backend check (local follow-up)
+
+Ath10kP256KernelBinding.hpp supplies point/field function tables through typed
+private declarations in an isolated diagnostic translation unit. An explicit
+ATH10K_P256_DIAGNOSTIC_BINDING definition is required; the Wi-Fi driver does not
+include it or import these private P-256 functions. Constructing the tables
+calls no crypto. A separate typed offline probe preserves a callable public
+known-answer diagnostic, has no IOKit personality, never calls it from module
+start, and refuses start/stop. It is not installed or loaded.
+
+The typed probe needs seventeen crypto imports, omitting the older availability
+probe's unused ccn_write_uint_padded. Exact offline AuxKC inclusion matches
+probe UUID 45F0F25C-1394-37B6-823E-2E0B41DDCBB6. This checks symbol resolution for
+the compiled signatures, not their runtime ABI. Context shape and calling
+conventions still need a permitted, staged kernel test before native use.
+
+P256BackendCheck performs eleven public known-answer checks: field multiply,
+add, subtract, inverse, square root and nonsquare rejection; valid/invalid point
+validation; and point multiplication, addition and subtraction against public
+P-256 generator/2G constants. Output guards and workspace erasure are checked.
+It returns only the failed step, completed-step mask and completion boolean;
+no credential or radio state is involved.
+
+Ath10kP256CheckJob puts this check on the existing retained worker with no owner
+callback. initCheck validates/copies provider tables, epoch and original deadline
+without executing crypto. Report collection is one-shot, non-cryptographic and
+rejects changed epoch, backwards time and expiry; true means a report was
+collected, not that its checks succeeded. The caller must inspect report.complete.
+Queued/running cancellation follows the existing nonblocking worker protocol.
+No native controller currently schedules this job, and no result changes native
+SAE capability/admission.
+
+The p256_backend host test uses the same table-construction header with typed
+userland symbols resolved from the actual CoreCrypto library. It checks all
+known answers, deliberately wrong arithmetic/validation, workspace erasure,
+off-gate execution, repeated execution/collection, stale/expired reports,
+initialization failures and queued/running cancellation. Focused ASan/UBSan and
+ThreadSanitizer pass for p256_backend and sae_worker. Native and typed-probe
+builds pass; the driver has no new external imports. Optimized job execution
+uses 216 bytes of static stack, not a proof of total kernel call-depth usage.
+
+The development suite now contains 56 host tests; only the two focused tests
+were rerun for this local follow-up, not the full 56. The preceding published
+0.0.103 batch's full 55-test result is separate. Both GitHub workflow runs for
+published commit 2bd81869106fc1b97f256c53efa1fc7868bbd033 subsequently completed
+successfully, and that CI evidence is saved with its SD package. No installation,
+reboot, kernel self-test execution or hardware WPA3 success is claimed here.
+
+
+### Isolated stage-4 kernel diagnostic service (local follow-up)
+
+The existing public backend check can now be scheduled by a dedicated
+Ath10kP256DiagnosticService instead of the Wi-Fi controller. Building it requires
+all of NATIVE=1, P256_DIAGNOSTIC=1 and DIAGNOSTIC_STAGE=4. The Makefile rejects
+other combinations and records the flag in the experiment configuration so
+changing modes invalidates object caches. Use a separate BUILD_DIR, as in:
+
+    make NATIVE=1 P256_DIAGNOSTIC=1 DIAGNOSTIC_STAGE=4 BUILD_DIR="$PWD/build/p256-diagnostic" -j2
+
+This mode links only the generic retained worker, public check, registry reporter,
+standard IOService diagnostic and kmod entry. It omits Ath10kPCIDevice, networking,
+firmware, DMA, IO80211, Skywalk and CoreCapture code/dependencies. The generated
+personality selects only Ath10kP256DiagnosticService and does not declare a
+network root type. The normal personality remains Ath10kPCIDevice/stage 0 with
+no self-test marker and no private P-256 imports. This diagnostic mode intentionally
+provides no Wi-Fi interface; it is not a replacement normal-driver release.
+
+Before creating/submitting a check, probe/start require the exact cached PCI
+identity 168c:0042 / 1a3b:2b51, the explicit stage/self-test markers, Darwin
+24.6.0, OS build 24G90 and the xnu-11417.140.69~1/RELEASE_X86_64 version tag.
+The OS build comes from a retained OSString copied from the registry root's
+"OS Build Version" property; missing or mismatched values fail closed. An
+initial offline link proved that the SDK-declared osversion variable is not
+exported to kexts, so the implementation no longer imports it. The registry
+property was verified on this machine. These admission guards identify the
+reference platform, not a proven runtime crypto ABI.
+
+Ath10kP256RegistryJob owns a separate check object and a retained PCI registry
+entry, never the diagnostic service or NativeSecurity. Crypto executes only
+on the worker. The reporter consumes its exclusively owned inner check and
+writes public state, failed step, completed mask, epoch and queue/execution
+nanoseconds to Ath10kP256Check* properties; final state is written last. The
+result is not an SAE admission token. No callback enters the service, a WCL/
+radio gate, PCI configuration space or MMIO.
+
+Cancellation and result publication use a lock-free atomic state machine.
+Cancellation that wins Pending -> Cancelled prevents all reporter writes. A
+writer that already won Pending -> Writing finishes its report; stop does not
+overwrite it as cancelled and drains the existing worker before releasing owned
+objects. The service owns no workloop/timer/gate and never waits from a crypto
+callback. Partial startup and repeated cleanup release both retained objects.
+This cannot abort a faulty private kernel call; actual kernel execution remains
+the explicit next hardware-validation step.
+
+Host tests cover exact platform guards, 100 racing cancel/publication pairs,
+success/failure/expiry/backwards clocks, queued and executing cancellation, and
+cancellation after publication linearizes. Focused ASan/UBSan and ThreadSanitizer
+pass for p256_backend and sae_worker. Four Python configuration tests cover the
+isolated personality/dependencies, untouched default mode, invalid flags and
+preserving the destination on invalid configuration. No full 56-test rerun is
+claimed for this local follow-up.
+
+Normal and stage-4 builds pass. The normal image has no new imports relative
+to published 0.0.103. The signed diagnostic image is 82,256 bytes, contains no
+networking controller classes, and links offline with exact AuxKC inclusion of
+Mach-O UUID 7C134287-0BE3-3064-8DD1-C27FA4B72E30. Its five dependency families
+are IOPCIFamily, kpi.iokit, kpi.libkern, kpi.mach and kec.corecrypto. The offline
+copy alone removes OSBundleRequired for AuxKC eligibility; the signed candidate
+retains Network-Root. The diagnostic image and source remain local/uninstalled.
+No EFI edit, OS patch, live load, reboot or kernel test has been performed.
+
+
+The combined public-backend check, typed binding and isolated stage-4 service
+batch is development version 0.0.104 (compatible version 0.0.98). CI now compiles
+the diagnostic in its own build directory and both offline symbol probes,
+without loading them. Default startup logging reads the module's declared
+version instead of the stale hard-coded 0.0.98 text. Native SAE admission remains
+disabled; the immutable 0.0.99 candidate and installed EFI remain unchanged.
+
+
+The combined 0.0.104 batch passes the full 56-test ASan/UBSan suite with
+halt-on-error and checked logs, including the added diagnostic configuration
+checks. Native, legacy and isolated stage-4 builds pass. Strict signatures and
+exact offline AuxKC inclusion pass for normal UUID
+CB1E239B-47BA-351A-B622-E88CEAAF4811 and diagnostic UUID
+E521DBB3-59FB-3AB8-BC46-4D185CB547C2. The saved bundles retain Network-Root;
+only diagnostic copies used for offline linking omit OSBundleRequired.
+The compile-only P-256 target now includes its generated dependency file so
+changes in transitive session headers invalidate cached compile checks. No
+functional source changed after the full-suite run; that dependency inclusion
+and this validation record are build bookkeeping/documentation only. Existing
+focused ThreadSanitizer results cover unchanged worker/reporter source. Actual
+kernel diagnostic execution, firmware PMF/RX/PN proof and native SAE admission
+remain unverified/disabled. No installation or reboot was performed.

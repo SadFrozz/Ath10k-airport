@@ -16,8 +16,10 @@ jobs:
         run: python3 scripts/audit-native-callbacks.py --check
       - name: Build native kext and validate imports
         run: make NATIVE=1 kext -j2
-      - name: Build offline crypto symbol probe (never load)
-        run: make sae-crypto-link-probe
+      - name: Build isolated P-256 diagnostic service (never load)
+        run: make NATIVE=1 P256_DIAGNOSTIC=1 DIAGNOSTIC_STAGE=4 BUILD_DIR="$PWD/build/p256-diagnostic" kext -j2
+      - name: Build offline crypto symbol probes (never load)
+        run: make sae-crypto-link-probe sae-crypto-typed-link-probe
       - name: Check unwired P-256 candidate with sanitizers
         run: make sae-p256-userland-check sae-p256-kernel-compile
       - name: Portable native protocol regressions

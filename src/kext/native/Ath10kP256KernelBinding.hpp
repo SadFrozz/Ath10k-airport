@@ -1,0 +1,43 @@
+#pragma once
+// Isolated diagnostic translation units only: private, version-sensitive ABI.
+// Constructing these tables calls no crypto. Export linkage is not ABI approval.
+#ifndef ATH10K_P256_DIAGNOSTIC_BINDING
+#error "P-256 kernel binding requires explicit diagnostic compilation"
+#endif
+#include "../../shared/Ath10kP256CoreCrypto.hpp"
+namespace Ath10kP256KernelSymbols {
+#ifdef ATH10K_P256_SYMBOLS_TEST
+#define ATH10K_P256_SYMBOL(result,name,args) static result (*name) args=nullptr
+#else
+#define ATH10K_P256_SYMBOL(result,name,args) extern "C" result name args
+#endif
+ATH10K_P256_SYMBOL(const void *,ccec_cp_256,());
+ATH10K_P256_SYMBOL(int,ccec_x963_import_pub,(const void *,size_t,const uint8_t *,void *));
+ATH10K_P256_SYMBOL(bool,ccec_validate_pub,(void *));
+ATH10K_P256_SYMBOL(int,ccec_x963_export,(int,void *,const void *));
+ATH10K_P256_SYMBOL(int,ccec_projectify,(const void *,void *,const void *,void *));
+ATH10K_P256_SYMBOL(int,ccec_affinify,(const void *,void *,const void *));
+ATH10K_P256_SYMBOL(int,ccec_mult_blinded,(const void *,void *,const uint64_t *,const void *,void *));
+ATH10K_P256_SYMBOL(int,ccec_full_add,(const void *,void *,const void *,const void *));
+ATH10K_P256_SYMBOL(int,ccec_full_sub,(const void *,void *,const void *,const void *));
+ATH10K_P256_SYMBOL(int,ccn_read_uint,(size_t,uint64_t *,size_t,const void *));
+ATH10K_P256_SYMBOL(void *,ccrng,(int *));
+ATH10K_P256_SYMBOL(size_t,cczp_n,(const void *));
+ATH10K_P256_SYMBOL(const uint64_t *,cczp_prime,(const void *));
+ATH10K_P256_SYMBOL(int,cczp_mul,(const void *,uint64_t *,const uint64_t *,const uint64_t *));
+ATH10K_P256_SYMBOL(int,cczp_inv,(const void *,uint64_t *,const uint64_t *));
+ATH10K_P256_SYMBOL(int,cczp_add,(const void *,uint64_t *,const uint64_t *,const uint64_t *));
+ATH10K_P256_SYMBOL(int,cczp_sub,(const void *,uint64_t *,const uint64_t *,const uint64_t *));
+#undef ATH10K_P256_SYMBOL
+}
+struct Ath10kP256KernelBinding {
+    static AthSecurity::P256CoreCryptoAPI points(){
+        using namespace Ath10kP256KernelSymbols;
+        return {ccec_cp_256,ccec_x963_import_pub,ccec_validate_pub,ccec_x963_export,
+            ccec_projectify,ccec_affinify,ccec_mult_blinded,ccec_full_add,ccec_full_sub,ccn_read_uint,ccrng};
+    }
+    static AthSecurity::P256FieldAPI field(){
+        using namespace Ath10kP256KernelSymbols;
+        return {ccec_cp_256,cczp_n,cczp_prime,cczp_mul,cczp_inv,cczp_add,cczp_sub};
+    }
+};

@@ -3,6 +3,22 @@ PROJ_ROOT := $(shell pwd)
 BUILD_DIR := $(PROJ_ROOT)/build
 NATIVE ?= 1
 DIAGNOSTIC_STAGE ?= 0
+P256_DIAGNOSTIC ?= 0
+ifeq ($(P256_DIAGNOSTIC),1)
+ifneq ($(NATIVE),1)
+$(error P256_DIAGNOSTIC requires NATIVE=1)
+endif
+ifneq ($(DIAGNOSTIC_STAGE),4)
+$(error P256_DIAGNOSTIC requires DIAGNOSTIC_STAGE=4)
+endif
+else
+ifneq ($(P256_DIAGNOSTIC),0)
+$(error P256_DIAGNOSTIC must be 0 or 1)
+endif
+ifeq ($(DIAGNOSTIC_STAGE),4)
+$(error DIAGNOSTIC_STAGE=4 requires P256_DIAGNOSTIC=1)
+endif
+endif
 ifeq ($(NATIVE),1)
 BUILD_DIR := $(PROJ_ROOT)/build/native
 endif
@@ -31,7 +47,7 @@ RUNTIME_IRQ ?= 1
 RX_BATCH ?= 1
 RX_RESERVE ?= 1
 DIAGNOSTICS ?= 0
-KFLAGS = -MMD -MP -DATH10K_DIAGNOSTICS=$(DIAGNOSTICS) -fstack-usage -Wframe-larger-than=4096 -Werror=frame-larger-than $(OPT) -DATH10K_PAYLOAD_CACHE=$(PAYLOAD_CACHE) -DATH10K_RUNTIME_IRQ=$(RUNTIME_IRQ) -DATH10K_RX_BATCH=$(RX_BATCH) -DATH10K_RX_RESERVE=$(RX_RESERVE) -DATH10K_MAX_WIDTH=$(MAX_WIDTH) -DATH10K_MAX_NSS=$(MAX_NSS) -DATH10K_AMPDU_LIMIT=$(AMPDU_LIMIT) -DATH10K_AMSDU_LIMIT=$(AMSDU_LIMIT) -DATH10K_HT_VHT=$(HT_VHT) -DATH10K_DATA_TX_SLOTS=$(TX_SLOTS) -fno-stack-check -fno-stack-protector -mkernel $(ARCH) $(MINOS) \
+KFLAGS = -MMD -MP -DATH10K_P256_DIAGNOSTIC=$(P256_DIAGNOSTIC) -DATH10K_DIAGNOSTICS=$(DIAGNOSTICS) -fstack-usage -Wframe-larger-than=4096 -Werror=frame-larger-than $(OPT) -DATH10K_PAYLOAD_CACHE=$(PAYLOAD_CACHE) -DATH10K_RUNTIME_IRQ=$(RUNTIME_IRQ) -DATH10K_RX_BATCH=$(RX_BATCH) -DATH10K_RX_RESERVE=$(RX_RESERVE) -DATH10K_MAX_WIDTH=$(MAX_WIDTH) -DATH10K_MAX_NSS=$(MAX_NSS) -DATH10K_AMPDU_LIMIT=$(AMPDU_LIMIT) -DATH10K_AMSDU_LIMIT=$(AMSDU_LIMIT) -DATH10K_HT_VHT=$(HT_VHT) -DATH10K_DATA_TX_SLOTS=$(TX_SLOTS) -fno-stack-check -fno-stack-protector -mkernel $(ARCH) $(MINOS) \
           -isysroot $(SDK) \
           -I$(MKSDK)/Headers \
           -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers
@@ -46,10 +62,15 @@ LDFLAGS = $(ARCH) -static -nostdlib -Xlinker -kext \
 
 ifeq ($(NATIVE),1)
 CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/vendor/itlwm
-NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kPMFSession.o
+NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
 endif
 
+ifeq ($(P256_DIAGNOSTIC),1)
+# Standalone registry diagnostic: no controller, networking, firmware or DMA code.
+OBJS := $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kP256RegistryJob.o $(BUILD_DIR)/Ath10kP256DiagnosticService.o $(BUILD_DIR)/kmod_info.o
+else
 OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kRecovery.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+endif
 $(OBJS): $(wildcard src/shared/*.hpp)
 ifeq ($(NATIVE),1)
 $(OBJS): $(wildcard src/kext/native/*)
@@ -62,6 +83,15 @@ $(BUILD_DIR)/Ath10kSAEWorker.o: src/kext/native/Ath10kSAEWorker.cpp src/kext/nat
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kSAESession.o: src/kext/native/Ath10kSAESession.cpp src/kext/native/Ath10kSAESession.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kP256CheckJob.o: src/kext/native/Ath10kP256CheckJob.cpp src/kext/native/Ath10kP256CheckJob.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kP256RegistryJob.o: src/kext/native/Ath10kP256RegistryJob.cpp src/kext/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kP256DiagnosticService.o: src/kext/native/Ath10kP256DiagnosticService.cpp src/kext/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kPMFSession.o: src/kext/native/Ath10kPMFSession.cpp src/kext/native/Ath10kPMFSession.hpp | $(BUILD_DIR)
@@ -113,7 +143,7 @@ $(BUILD_DIR)/kmod_info.o: src/kext/kmod_info.c | $(BUILD_DIR)
 .PHONY: FORCE
 FORCE:
 $(BUILD_DIR)/experiment-config: FORCE | $(BUILD_DIR)
-	@printf '%s\n' 'DIAGNOSTIC_STAGE=$(DIAGNOSTIC_STAGE) DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
+	@printf '%s\n' 'P256_DIAGNOSTIC=$(P256_DIAGNOSTIC) DIAGNOSTIC_STAGE=$(DIAGNOSTIC_STAGE) DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
 	@cmp -s "$@.tmp" "$@" || cp "$@.tmp" "$@"
 	@rm -f "$@.tmp"
 
@@ -131,7 +161,7 @@ native-preflight:
 
 $(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist scripts/prepare-kext-info.py
 	@mkdir -p "$(OUT_KEXT)/Contents/MacOS"
-	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE)
+	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE) $(if $(filter 1,$(P256_DIAGNOSTIC)),--p256-diagnostic,)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 clean:
@@ -167,6 +197,7 @@ $(CRYPTO_PROBE_BIN): $(CRYPTO_PROBE_DIR)/probe.o tools/sae/CoreCryptoLinkProbe.p
 	$(LD) $(LDFLAGS) -o $@ $(CRYPTO_PROBE_DIR)/probe.o
 
 -include $(CRYPTO_PROBE_DIR)/probe.d
+-include $(CRYPTO_PROBE_DIR)/p256-kernel-compile.d
 
 # Executes math tests in an ordinary macOS process, not in the kernel.
 P256_CHECK_BIN := $(CRYPTO_PROBE_DIR)/p256-userland-check
@@ -184,3 +215,20 @@ $(CRYPTO_PROBE_DIR)/p256-kernel-compile.o: tools/sae/p256-kernel-compile.cpp src
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 -include $(CRYPTO_PROBE_DIR)/p256-kernel-compile.d
+
+# Typed offline candidate: refuses module start; never part of the driver bundle.
+TYPED_PROBE_KEXT := $(CRYPTO_PROBE_DIR)/Ath10kCryptoTypedProbe.kext
+TYPED_PROBE_BIN := $(TYPED_PROBE_KEXT)/Contents/MacOS/Ath10kCryptoTypedProbe
+.PHONY: sae-crypto-typed-link-probe
+sae-crypto-typed-link-probe: check-sdk $(TYPED_PROBE_BIN)
+	$(PYTHON) scripts/check-kext-symbols.py "$(TYPED_PROBE_BIN)"
+
+$(CRYPTO_PROBE_DIR)/typed-probe.o: tools/sae/corecrypto-typed-link-probe.cpp src/kext/native/Ath10kP256KernelBinding.hpp src/shared/Ath10kP256BackendCheck.hpp src/shared/Ath10kP256CoreCrypto.hpp Makefile | $(CRYPTO_PROBE_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(TYPED_PROBE_BIN): $(CRYPTO_PROBE_DIR)/typed-probe.o tools/sae/CoreCryptoTypedProbe.plist
+	@mkdir -p "$(TYPED_PROBE_KEXT)/Contents/MacOS"
+	cp tools/sae/CoreCryptoTypedProbe.plist "$(TYPED_PROBE_KEXT)/Contents/Info.plist"
+	$(LD) $(LDFLAGS) -o $@ $(CRYPTO_PROBE_DIR)/typed-probe.o
+
+-include $(CRYPTO_PROBE_DIR)/typed-probe.d

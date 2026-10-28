@@ -2,6 +2,8 @@
 #include "Ath10kPayload.hpp"
 #include "Ath10kDiagnostics.hpp"
 #include <IOKit/IOLib.h>
+#include <mach/kmod.h>
+extern "C" kmod_info_t kmod_info;
 #include <string.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSBoolean.h>
@@ -140,7 +142,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if(auto *timeout=OSDynamicCast(OSNumber,getProperty("Ath10kBeaconTimeoutMs"))){
         const UInt32 value=timeout->unsigned32BitValue();_connection.beaconTimeoutMs=value>=10000 && value<=120000?value:30000;
     }
-    IOLog("Ath10kMac: start v0.0.98 (deferred device initialization)\n");
+    IOLog("Ath10kMac: start v%s (deferred device initialization)\n", kmod_info.version);
 
 #ifdef ATH10K_NATIVE
     if (version_major!=24 || version_minor<2) return false;

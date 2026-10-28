@@ -35,6 +35,7 @@ def main():
     run('payload-python', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_payload.py', '-v'])
     run('kext-symbols', [sys.executable, 'tests/test_kext_symbols.py', '-v'])
     run('kernel-collection-inclusion', [sys.executable, 'tests/test_kernel_collection.py', '-v'])
+    run('p256-diagnostic-config', [sys.executable, 'tests/test_p256_diagnostic_config.py', '-v'])
     run('native-lock-order', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_lock_order.py', '-v'])
     run('diagnostic-privacy', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_preflight.py', '-v'])
     if args.zig:
@@ -113,12 +114,20 @@ def main():
         session='\n'.join(line for source in session_sources for line in source.read_text().splitlines()
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
+        p256_sources=[ROOT/'src/kext/native/Ath10kP256CheckJob.hpp',ROOT/'src/kext/native/Ath10kP256CheckJob.cpp']
+        p256='\n'.join(line for source in p256_sources for line in source.read_text().splitlines()
+                       if not line.startswith('#include') and line!='#pragma once')
+        (include/'p256_check.inc').write_text(p256+'\n')
+        p256_registry_sources=[ROOT/'src/kext/native/Ath10kP256RegistryJob.hpp',ROOT/'src/kext/native/Ath10kP256RegistryJob.cpp']
+        p256_registry='\n'.join(line for source in p256_registry_sources for line in source.read_text().splitlines()
+                                if not line.startswith('#include') and line!='#pragma once')
+        (include/'p256_registry.inc').write_text(p256_registry+'\n')
         pmf_sources=[ROOT/'src/kext/native/Ath10kPMFSession.hpp',ROOT/'src/kext/native/Ath10kPMFSession.cpp']
         pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'pmf_session.inc').write_text(pmf+'\n')
         names=['regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
-        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session','native_pmf_receive','native_key_stage','native_sae_radio'])
+        if sys.platform == 'darwin': names.extend(['p256_backend','sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session','native_pmf_receive','native_key_stage','native_sae_radio'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
             if unknown: parser.error('Unknown/unavailable tests: ' + ', '.join(unknown))
@@ -127,7 +136,7 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['sae_session','pmf_session','native_pmf_receive','sae_worker','power','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
+            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['p256_backend','sae_session','pmf_session','native_pmf_receive','sae_worker','power','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
                 'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({
