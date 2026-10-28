@@ -276,7 +276,7 @@ public:
     struct DataBuffers {Buffer payload{},command{},fragments{};};
     DataBuffers _dataBuffers[Ath10k::kDataTxSlots]{};
     const char *submitNetworkCE(UInt32,Buffer &,UInt32,UInt32 &);
-    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64);
+    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64,AthSecurity::ManagementTX=AthSecurity::ManagementTX::Plain);
     void networkLink(bool up){networkUp=up;}
     void publishConnection(){}
     unsigned receivedFrames=0;

@@ -27,6 +27,8 @@ def vector(name, h, body, pn):
     emit(name+'_plain', h+body)
     emit(name+'_wire', h+ccmp+cipher)
     emit(name+'_decrypted', h+ccmp+body+cipher[-8:])
+    if name.startswith('c_tx'):
+        emit(name+'_hardware', h+ccmp+body+bytes(8))
     print(f'static constexpr uint64_t {name}_pn=0x{pn:012x}ull;')
 
 def emit(name, data):

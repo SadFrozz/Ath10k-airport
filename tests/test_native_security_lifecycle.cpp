@@ -2,6 +2,7 @@
 #include <cstring>
 #include <vector>
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
+#include "../src/kext/native/Ath10kNativePMFInbox.hpp"
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
 #include "sha256_vectors.inc"
@@ -38,7 +39,7 @@ public:
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
     struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
-        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false;} _connection;
+        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false;} _connection;
     void discardIfStopped();
     void discardNativeSecurity();
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
@@ -51,6 +52,12 @@ public:
 #include "native_pmf_firmware_guard.inc"
 #include "native_security_terminal_cleanup.inc"
 int main(){
+    { Ath10kPCIDevice d;UInt8 key[16]{};d._connection.pmfRequired=true;
+      assert(!d.nativePMFPairwiseAcknowledged(key) && !d.nativePMFPortReady() && d.beforeFirmwareAuthorization(3));
+      d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      assert(!d.nativePMFPairwiseAcknowledged(key) && !d.nativePMFPortReady());delete d._nativeSecurity;
+    }
+
     { Ath10kPCIDevice d;assert(!d.beforeFirmwareAuthorization(3));
       d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;auto pmf=new Ath10kPMFSession;
       d._nativeSecurity->pmfSession=pmf;pmf->portResult=false;

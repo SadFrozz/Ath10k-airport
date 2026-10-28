@@ -67,14 +67,16 @@ bool Ath10kPMFSession::consume(Ath10kSAEWorkItem *item,uint64_t generation,Messa
     else {out.bytes=job->bytes-18;AthSecurity::copy(out.frame,job->frame,out.bytes);out.groupID=job->management.keyID;out.groupEpoch=job->groupEpoch;}
     return true;
 }
-Ath10kPMFSession::Submission Ath10kPMFSession::queueProtect(Ath10kSAEWorker *worker,const uint8_t *frame,size_t bytes,uint64_t generation){
+Ath10kPMFSession::Submission Ath10kPMFSession::queueProtect(Ath10kSAEWorker *worker,const uint8_t *frame,size_t bytes,uint64_t generation,AthSecurity::ManagementTX mode){
     if(!current(generation) || !authorized || !worker)return Submission::Aborted;
-    if(!frame || bytes<26 || bytes>496 || !AthSecurity::pmfCCMPHeader(frame,bytes,local,ap,false) || !AthSecurity::pmfRobustBody(frame,bytes))return Submission::NoWork;
+    if((mode!=AthSecurity::ManagementTX::SoftwareCCMP && mode!=AthSecurity::ManagementTX::HardwareCCMP) ||
+       !frame || bytes<26 || bytes>496 || !AthSecurity::pmfCCMPHeader(frame,bytes,local,ap,false) || !AthSecurity::pmfRobustBody(frame,bytes))return Submission::NoWork;
     if(pendingTXPN || !worker->available())return Submission::Busy;
     auto job=new Ath10kPMFJob;if(!job)return Submission::NoMemory;
     if(!job->init()){job->release();return Submission::NoMemory;}
     if(!pairwise.reserveTX(job->pairwise,job->txPN)){job->release();return Submission::Aborted;}
-    job->session=this;retain();job->connection=connection;job->kind=Kind::ProtectTX;
+    job->session=this;retain();job->connection=connection;job->kind=Kind::ProtectTX;job->txMode=mode;
+    if(mode==AthSecurity::ManagementTX::HardwareCCMP)AthSecurity::wipe(job->pairwise.key,sizeof(job->pairwise.key));
     AthSecurity::copy(job->frame,frame,bytes);job->bytes=bytes;
     const uint64_t reserved=job->txPN;const bool submitted=worker->submit(job);
     // A terminal submit failure burns the reserved PN but no pending lease.
@@ -88,9 +90,13 @@ bool Ath10kPMFSession::protectedReady(Ath10kSAEWorkItem *item,uint64_t generatio
         pendingTXPN==job->txPN && pairwise.current(job->pairwise);
 }
 bool Ath10kPMFSession::copyProtected(Ath10kSAEWorkItem *item,uint8_t *frame,size_t capacity,size_t &bytes,uint64_t generation) const {
+    auto job=OSDynamicCast(Ath10kPMFJob,item);AthSecurity::ManagementTX mode{};
+    return job && job->txMode==AthSecurity::ManagementTX::SoftwareCCMP && copyForTransport(item,frame,capacity,bytes,mode,generation);
+}
+bool Ath10kPMFSession::copyForTransport(Ath10kSAEWorkItem *item,uint8_t *frame,size_t capacity,size_t &bytes,AthSecurity::ManagementTX &mode,uint64_t generation) const {
     auto job=OSDynamicCast(Ath10kPMFJob,item);
     if(!frame || !protectedReady(item,generation) || capacity<job->result.bytes)return false;
-    AthSecurity::copy(frame,job->result.frame,job->result.bytes);bytes=job->result.bytes;return true;
+    AthSecurity::copy(frame,job->result.frame,job->result.bytes);bytes=job->result.bytes;mode=job->txMode;return true;
 }
 bool Ath10kPMFSession::retireProtected(Ath10kSAEWorkItem *item,uint64_t generation){
     auto job=OSDynamicCast(Ath10kPMFJob,item);
@@ -105,7 +111,10 @@ void Ath10kPMFJob::execute(){
         const auto selected=layout==Ath10kPMFSession::Layout::Ciphertext?C::RXLayout::Ciphertext:C::RXLayout::PlaintextWithEncryptedTag;
         verified=C::receive(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,pairwise.rxPN,selected,result,workspace);
     }else if(kind==Ath10kPMFSession::Kind::ProtectTX){
-        verified=C::protect(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,txPN,result,workspace);
+        if(txMode==AthSecurity::ManagementTX::HardwareCCMP)
+            verified=AthSecurity::PMFHardwareCCMP::prepare(frame,bytes,pairwise.local,pairwise.ap,txPN,result);
+        else if(txMode==AthSecurity::ManagementTX::SoftwareCCMP)
+            verified=C::protect(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,txPN,result,workspace);
     }else if(kind==Ath10kPMFSession::Kind::GroupManagement){
         verified=AthSecurity::verifyBIPManagement<Ath10kKernelCrypto>(frame,bytes,ap,management,management.ipn,acceptedIPN);
     }

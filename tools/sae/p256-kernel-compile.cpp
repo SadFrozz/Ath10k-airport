@@ -6,12 +6,23 @@
 #include "../../src/shared/Ath10kSupplicant.hpp"
 #include "../../src/shared/Ath10kSAQuery.hpp"
 #include "../../src/shared/Ath10kPMFCCMP.hpp"
+#include "../../src/shared/Ath10kPMFTransport.hpp"
 // Preserve both layouts and arbitrary acknowledged key epochs in kernel code.
 struct CompileOnlyPMFAES {
  using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);
  inline static Block block=nullptr;
  static bool encrypt(const uint8_t *k,const uint8_t *in,uint8_t *out){return block && block(k,in,out);}
 };
+extern "C" __attribute__((used,noinline)) bool ath10k_pmf_hardware_prepare_compile_check(
+    const uint8_t *frame,size_t bytes,const uint8_t *local,const uint8_t *ap,uint64_t pn,AthSecurity::PMFCCMPResult *out)
+{
+    return out && AthSecurity::PMFHardwareCCMP::prepare(frame,bytes,local,ap,pn,*out);
+}
+extern "C" __attribute__((used,noinline)) bool ath10k_pmf_hardware_validate_compile_check(
+    const uint8_t *frame,size_t bytes,const uint8_t *local,const uint8_t *ap)
+{
+    return AthSecurity::PMFHardwareCCMP::valid(frame,bytes,local,ap);
+}
 extern "C" __attribute__((used,noinline)) bool ath10k_pmf_ccmp_compile_check(
     CompileOnlyPMFAES::Block encrypt,const uint8_t *frame,size_t bytes,const uint8_t *key,
     const uint8_t *local,const uint8_t *ap,uint64_t pn,uint64_t lastPN,bool decrypted,bool tx,

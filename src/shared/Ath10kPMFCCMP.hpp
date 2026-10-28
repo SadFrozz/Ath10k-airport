@@ -153,6 +153,7 @@ public:
   uint64_t next=0;if(!active || !nextCCMPPacketNumber(txPN,next) || !snapshot(out))return false;
   txPN=next;pn=next;return true; // No rollback after allocation/crypto/TX failure.
  }
+ uint64_t currentEpoch() const {return active?epoch:0;}
  bool current(const Snapshot &snapshot) const {
   return active && snapshot.connection==connection && snapshot.epoch==epoch;
  }

@@ -910,7 +910,29 @@ static void deferredDataWakeTests(){
     assert(!d.serviceConnection(1840));assert(d.queue.wakes==2 && !d._dataTXStalled);
     d.releaseWMIRuntime();
 }
+static void protectedManagementTransport(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;s.secure=true;s.pairInstalled=true;s.pmfRequired=true;s.portAuthorized=true;s.securityPhase=5;
+    UInt8 plain[28]{};plain[0]=0xd0;plain[1]=0x40;memcpy(plain+4,s.bssid,6);memcpy(plain+10,s.local,6);memcpy(plain+16,s.bssid,6);
+    plain[24]=8;plain[26]=0x12;plain[27]=0x34;AthSecurity::PMFCCMPResult prepared;
+    assert(AthSecurity::PMFHardwareCCMP::prepare(plain,sizeof(plain),s.local,s.bssid,1,prepared));
+    bool submitted=false;
+    d._regs.tx4Consume=[&](){
+        const auto cmd=static_cast<const UInt8 *>(d._packetCommand.virtualAddress());
+        assert(s.txOwned && cmd[9]==0x61 && Ath10k::htcReadLE16(cmd+12)==prepared.bytes);
+        assert(Ath10k::wmiReadLE32(cmd+16)==d._packetBuffer.dmaAddress());
+        assert(!memcmp(d._packetBuffer.virtualAddress(),prepared.frame,prepared.bytes));submitted=true;
+        d.deliver(1,mgmtCompletion(s.txId));
+    };
+    const auto id=s.txId;const bool complete=s.txComplete;
+    assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000)); // Plain mode cannot bypass protected TX.
+    assert(s.txId==id && s.txComplete==complete && !s.txOwned && !submitted);
+    assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::SoftwareCCMP));
+    assert(!s.txOwned && !submitted);
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::HardwareCCMP));
+    assert(submitted && s.txOwned);d.tick(2010);assert(!s.txOwned && !s.cancelRequested);d.releaseWMIRuntime();
+}
 int main(){
+    protectedManagementTransport();
     deferredDataWakeTests();
     partialCancelTests();
     blockAckTests();

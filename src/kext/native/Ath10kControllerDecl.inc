@@ -44,6 +44,8 @@ public:
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);
+    void serviceNativePMF();
+    static bool nativePMFManagement(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32);
     void serviceNativeNotifications(UInt64);
     void requestNativeService();
     static void nativeServiceThread(thread_call_param_t,thread_call_param_t);

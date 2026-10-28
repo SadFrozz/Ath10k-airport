@@ -10,6 +10,7 @@
 #include "Ath10kSAESession.hpp"
 #include "Ath10kPMFSession.hpp"
 #include "Ath10kKernelCrypto.hpp"
+#include "Ath10kNativePMFInbox.hpp"
 #include <kern/clock.h>
 #include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
@@ -77,6 +78,11 @@ public:
     Ath10kSAEWorker *saeWorker=nullptr;
     Ath10kSAESession *saeSession=nullptr;
     Ath10kPMFSession *pmfSession=nullptr;
+    AthNative::PMFInbox pmfInbox;
+    AthSecurity::PMFCCMPRXLayout pmfRXLayout=AthSecurity::PMFCCMPRXLayout::Ciphertext;
+    bool pmfLayoutVerified=false,pmfRXInFlight=false,pmfQueryTrigger=false;
+    UInt64 pmfRXGeneration=0,pmfRXDropped=0,pmfRXVerified=0;
+    UInt32 pmfRXChannel=0,pmfRXSnr=0;
     Ath10kSAEWorkItem *saePendingTX=nullptr;
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
     AthNative::CandidateCache candidates;
@@ -101,6 +107,8 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        pmfInbox.clear();pmfRXInFlight=pmfLayoutVerified=pmfQueryTrigger=false;
+        pmfRXGeneration=0;pmfRXChannel=pmfRXSnr=0;
         if(pmfSession){pmfSession->cancel();pmfSession->release();pmfSession=nullptr;}
         if(saeSession)saeSession->cancel();
         if(saePendingTX){saePendingTX->discard();saePendingTX->release();saePendingTX=nullptr;}
@@ -469,16 +477,71 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     setProperty("Ath10kNativeABI","Sequoia-15.2-WCL-experimental");
     return true;
 }
+// Called synchronously after complete WMI validation under the radio gate.
+// No WCL call, crypto, wait or borrowing of the DMA frame occurs here.
+bool Ath10kPCIDevice::nativePMFManagement(void *context,const UInt8 *frame,UInt32 bytes,UInt32 status,UInt32 channel,UInt32 snr){
+    auto self=static_cast<Ath10kPCIDevice *>(context);if(!self)return false;
+    auto &s=self->_connection;
+    if(!s.pmfRequired || !s.pairInstalled || !AthSecurity::robustManagementFrame(frame,bytes))return false;
+    auto sec=self->_nativeSecurity;
+    if(!sec || !sec->pmfSession)return true;
+    if(s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed || s.disconnect!=Ath10k::DisconnectStage::None)return true;
+    if(!frame || bytes<26 || bytes>512 || (status&0x39u)){++sec->pmfRXDropped;return true;}
+    const bool group=(frame[4]&1)!=0,protectedFrame=(frame[1]&0x40)!=0;
+    if(!AthSecurity::equal(frame+10,s.bssid,6) || !AthSecurity::equal(frame+16,s.bssid,6) ||
+       (!group && !AthSecurity::equal(frame+4,s.local,6))){++sec->pmfRXDropped;return true;}
+    if(!group && !protectedFrame){
+        if(AthSecurity::saQueryDisconnectTrigger(frame,bytes,true,s.portAuthorized,s.local,s.bssid))sec->pmfQueryTrigger=true;
+        ++sec->pmfRXDropped;return true;
+    }
+    // No assumption that this firmware retained the original encrypted MIC.
+    if(!group && !sec->pmfLayoutVerified){++sec->pmfRXDropped;return true;}
+    if(!sec->pmfInbox.push(frame,bytes,status,channel,snr,sec->pmfRXLayout))++sec->pmfRXDropped;
+    return true;
+}
+void Ath10kPCIDevice::serviceNativePMF(){
+    auto sec=_nativeSecurity;if(!sec || !sec->pmfSession || !sec->saeWorker)return;
+    if(_connection.cancelRequested || _connection.stage==Ath10k::LinkStage::Disabled || _connection.stage==Ath10k::LinkStage::Failed ||
+       _connection.disconnect!=Ath10k::DisconnectStage::None){sec->pmfInbox.clear();return;}
+    auto pmf=sec->pmfSession;const UInt64 generation=pmf->activeGeneration();
+    if(sec->pmfRXInFlight){
+        auto item=sec->saeWorker->takeCompleted();
+        if(item){
+            Ath10kPMFSession::Message message;
+            const bool accepted=sec->pmfRXGeneration==generation && pmf->consume(item,generation,message);
+            sec->pmfRXInFlight=false;
+            if(accepted){
+                ++sec->pmfRXVerified;
+                if(sec->pmfRXSnr<=95)_connection.signalDbm=static_cast<int32_t>(sec->pmfRXSnr)-95;
+                const auto authentication=message.kind==Ath10kPMFSession::Kind::Pairwise?
+                    Ath10k::ManagementAuthentication::Pairwise:Ath10k::ManagementAuthentication::Group;
+                Ath10k::receiveStationManagementAuthenticated(_connection,message.frame,message.bytes,0,sec->pmfRXChannel,authentication);
+            }else ++sec->pmfRXDropped;
+            item->release();
+        }else if(sec->saeWorker->available())sec->pmfRXInFlight=false; // Independently cancelled/disposed.
+    }
+    if(!generation || _connection.cancelRequested || _connection.disconnect!=Ath10k::DisconnectStage::None){sec->pmfInbox.clear();return;}
+    if(!sec->pmfRXInFlight){
+        const auto frame=sec->pmfInbox.peek();if(!frame)return;
+        const auto result=pmf->queue(sec->saeWorker,frame->bytes,frame->length,frame->status,frame->layout,generation);
+        if(result==Ath10kPMFSession::Submission::Busy)return;
+        if(result==Ath10kPMFSession::Submission::Queued){
+            sec->pmfRXInFlight=true;sec->pmfRXGeneration=generation;sec->pmfRXChannel=frame->channel;sec->pmfRXSnr=frame->snr;
+        }else ++sec->pmfRXDropped;
+        sec->pmfInbox.pop();
+    }
+}
 // Invoked by the radio-gated data-key state machine, only at its actual
 // PTK acknowledgement, before firmware authorization and at the final
 // controlled-port barrier. An optional PMF
 // session is admitted by a future complete native WPA3 join, never implicitly.
 bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
-    return !_nativeSecurity || !_nativeSecurity->pmfSession ||
-        _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
+    if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
+    return _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
 }
 bool Ath10kPCIDevice::nativePMFPortReady(){
-    return !_nativeSecurity || !_nativeSecurity->pmfSession || _nativeSecurity->pmfSession->authorize();
+    if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
+    return _nativeSecurity->pmfSession->authorize();
 }
 // Radio-gated terminal cleanup. Event metadata and the last BSSID survive
 // until macOS accepts the terminal notifications; cryptographic material does not.
@@ -923,6 +986,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     _nativePostError=kIOReturnSuccess;
     if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
     auto &s=_connection;auto sec=_nativeSecurity;
+    serviceNativePMF();
     if(sec && _wmiScan.completed && !_wmiScan.failed && !_wmiScan.cancelRequested &&
        sec->cachedGeneration!=_wmiScan.generation){
         for(UInt32 i=0;i<_wmiBSS.count;++i)sec->candidates.add(_wmiBSS.entries[i],now);

@@ -576,9 +576,10 @@ const char *Ath10kPCIDevice::submitNetworkCE(UInt32 ce,Ath10kDMABuffer &buffer,U
     if(!_regs.write32(doorbell,next) || !_regs.read32(doorbell,value) || value!=next)return "connection-ce-doorbell";
     return nullptr;
 }
-const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs)
+const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs,AthSecurity::ManagementTX protection)
 {
     if(powerIOBlocked() || _connection.maintenance.step || _connection.csa.blocked || _connection.radio.blocked || _connection.radio.powerBlocked || _connection.txOwned || _connection.dataPending || !_wmiLive.active || _dmaQuarantine)return "connection-tx-busy";
+    if(!Ath10k::packetProtectionAllowed(data,bytes,_connection,mgmt,protection))return "packet-protection";
     if(!_packetBuffer.allocated() && !_packetBuffer.allocate(2048,128,_dmaMapper,Ath10kDMABuffer::Role::Payload))return "packet-allocation";
     if(!_packetCommand.allocated() && !_packetCommand.allocate(256,128,_dmaMapper))return "packet-command-allocation";
     if(!_packetFragments.allocated() && !_packetFragments.allocate(16,16,_dmaMapper))return "packet-fragment-allocation";
@@ -595,7 +596,7 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     _connection.lastTxProbe=mgmt && _connection.probe.active && bytes>=24 && Ath10k::htcReadLE16(data)==0x40;
     UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(_packetCommand.virtualAddress()),256,data,bytes,
         static_cast<UInt32>(_packetBuffer.dmaAddress()),static_cast<UInt32>(_packetFragments.dmaAddress()),
-        _htcHTTData.endpoint,_connection,mgmt);
+        _htcHTTData.endpoint,_connection,mgmt,protection);
     if(!length || !_packetBuffer.syncForDevice() || !_packetFragments.syncForDevice())return "packet-sync";
     _connection.lastTxEAPOL=!mgmt && bytes>=14 && data[12]==0x88 && data[13]==0x8e;
     _connection.txSinceMs=nowMs;

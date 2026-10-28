@@ -18,6 +18,18 @@ AWDL/AirDrop and compatibility expansion. Implement in dependency order:
 4. Connect native credential/capability handling only to the completed paths;
    verify SAE-only and transition APs, rekey, reconnect and sleep/stop.
 
+Next integration gates, in order (the software primitives below are not hardware
+support):
+
+- Complete native SA Query request/response scheduling and protected management
+  TX retirement, including timeout/cancel/rekey and existing robust-action producers.
+- Establish QCA9377 protected RX layout, firmware PMF setup and management TX PN
+  ownership before enabling the profile.
+- Finish the credential-to-SAE worker path, then connect authenticated PMK/IGTK
+  publication, AKM8 EAPOL and controlled-port readiness as one admission policy.
+- Validate WPA3-only/H2E and transition APs, downgrade rejection, rekey, reconnect,
+  forget-network, sleep and stop; only then expose the native capability.
+
 Do not advertise SAE or PMF while these dependent stages remain incomplete.
 Roaming preparation stays local and deferred; no need to restart that work
 before the security dependency path is functional.
@@ -608,6 +620,67 @@ The final focused key-boundary regression extracts the phase-3 readiness guard
 from before the firmware security-command builder and verifies rejection when
 PMF is incomplete, while key-install phases remain able to make progress.
 
+### Explicit hardware PMF transport and required-profile guards (source-integrated)
+
+The pinned Linux v6.12 HTT path selects management packet type 3 with a MAC
+header. For protected action/deauth/disassoc it appends an eight-byte CCMP MIC
+slot before DMA; CCMP keys request host-generated management IVs, while firmware
+performs encryption. It sets NO_ENCRYPT only when hardware crypto is disabled.
+Thus the normal protected-management reference is not proof that a complete
+software ciphertext/tag may be passed unchanged through our old 0x65 path.
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/htt_tx.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/htt.h
+
+`ManagementTX` now distinguishes Plain, HardwareCCMP and SoftwareCCMP explicitly.
+`PMFHardwareCCMP::prepare` constructs the protected 24-byte header, eight-byte
+CCMP IV with caller-reserved PN, plaintext body and exactly one zeroed eight-byte
+MIC slot. It publishes only after profile/bounds/alias validation. It performs
+no AES operation and requires neither a password nor a key copy. Its separate
+validator checks ordinary unicast robust management, expected identities, key
+index 0, reserved IV bits, nonzero PN, supported body and the reserved MIC slot.
+
+The retained PMF TX queue accepts an explicit representation; its default remains
+the existing software candidate for compatibility with the host tests. Hardware
+jobs immediately wipe the unused secret key from their snapshot and prepare the
+frame off-gate. `copyForTransport` exports the representation together with the
+bytes. The old ciphertext-only `copyProtected` refuses hardware plaintext results,
+preventing accidental use by a caller that did not request a representation.
+Hardware and software jobs share one epoch/PN pool and one pending lease.
+Independent fixtures verify hardware PN1 -> software PN2 -> hardware PN3 without
+counter reuse, plus byte-for-byte hardware IV/body/MIC-slot construction.
+
+`submitNetworkPacket` and `buildHTTPacket` accept the explicit representation.
+The driver validates it before allocations, descriptor-ID changes or DMA ownership.
+Plain management uses 0x65 (MAC header + management + NO_ENCRYPT); hardware PMF
+uses 0x61 with NO_ENCRYPT clear, TID 17 and a direct payload DMA address. The
+prepared length already includes the MIC slot; the transport never appends a
+second slot. Software ciphertext passthrough is explicitly rejected by this HTT
+profile rather than silently choosing another mode. Ethernet/control-port flags
+and their existing encryption policy are unchanged.
+
+ConnectionState now has a default-false pmfRequired policy bit. No current
+native join sets it. Hardware PMF submission requires that bit, a secure
+association and an acknowledged pairwise key. After PTK installation, the ordinary
+raw management path rejects unverified robust input and the Plain TX path rejects
+robust output for that profile; pre-key rejection and nonrobust/public traffic
+retain their previous admission rules. Verified PMF receive dispatch must use
+a dedicated authenticated path, not fall back to this raw handler. Native PTK and
+port-readiness hooks refuse missing PMF owners when the connection requires PMF;
+absence of resources cannot silently select WPA2 behavior.
+
+The portable transport regression checks exact HTT header bytes, pointer, length,
+TID, NO_ENCRYPT polarity, max 512-byte payload and PN, mode separation, missing
+key/profile, malformed IV/MIC-slot, output preservation and raw pre-/post-key
+policy. A production submitNetworkPacket/CE host model confirms the actual DMA
+payload/length and completion flow, and that rejected modes leave TX ownership
+and descriptor state unchanged. Retained PMF hardware preparation invokes no AES
+and passes lifecycle/race tests. Native owner-absence guards are also tested.
+These checks prove host formatting/submission in a model, not firmware encryption,
+wire MIC validity, PMF negotiation or autonomous firmware PN coordination. SAE
+admission, protected TX scheduling and hardware interoperability remain open.
+The receive bridge added below supplies authenticated WMI dispatch and RX job
+scheduling; WPA3/PMF is not advertised or enabled by this work.
+
 ## Verified Sequoia credential envelope
 
 Matching local IO80211Family UUID: 0D5AC570-04D4-38B6-8577-9F21350CDD50.
@@ -889,3 +962,42 @@ validated by cryptography/OpenSSL and the result by CoreCrypto. A used kernel
 compile entry instantiates scalar reduction; the full password pipeline has
 only userland execution evidence. Timing/side-channel review, kernel ABI and
 worker/session integration remain mandatory; WPA3 is still not enabled.
+
+
+### Native PMF WMI receive bridge (source-integrated, profile still disabled)
+
+The runtime WMI parser now offers an optional synchronous management consumer
+only after complete HTC/TLV/trailer/credit validation. Consumed frames bypass
+both raw station-management dispatch and its unauthenticated RSSI update. The
+native consumer copies required-profile robust frames into a four-entry,
+512-byte-per-entry radio-owned inbox, without crypto, allocation, WCL calls or
+waiting. DMA storage is never retained. Overflow and invalid status/identity
+are drops. Legacy associations keep their existing path.
+
+Native service submits at most one retained PMF receive job to the existing
+worker, and only takes a completion it submitted. A busy worker preserves the
+queued frame; polling uses the existing service cadence without a new wake loop.
+The owner commits the live generation/key epoch and replay counter before
+trusted station-management dispatch or signal publication. Pairwise and BIP
+group authentication have separate dispatch assertions; the ordinary raw entry
+cannot assert either. Reset wipes the inbox and cancels retained security work.
+An explicitly required PMF association with a missing owner cannot fall back
+to accepting an unverified disconnect.
+
+Tests exercise the production callback, completion service and crypto jobs:
+DMA overwrite after admission, invalid MIC/status, replay, key rotation while
+queued, terminal cancellation, bounded overflow, BIP disconnect without a
+pairwise-layout assumption, and preservation of another worker user's result.
+A parser-level regression proves malformed/truncated WMI and invalid credit
+trailers never reach the consumer, while consumed frames cannot trigger the
+raw disconnect/RSSI path. Software tests do not prove firmware interoperability.
+
+Unicast receive remains blocked unless the exact firmware frame layout has
+been verified and explicitly selected. No code currently enables that flag or
+creates a native PMF association. Unprotected reason-6/7 disconnects are dropped
+and mark an SA Query trigger; the native query initiator/responder, deadlines,
+protected TX handoff and routing of existing robust action producers remain
+unfinished. The primitive query state machine is not sufficient by itself.
+Native credential/SAE integration, authenticated IGTK staging, firmware PMF
+configuration and real WPA3-only AP validation also remain required. SAE/PMF
+capabilities stay disabled until that complete path is ready.

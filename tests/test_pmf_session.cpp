@@ -1,5 +1,5 @@
 #include "mock_sae_worker.hpp"
-#include "../src/shared/Ath10kPMFCCMP.hpp"
+#include "../src/shared/Ath10kPMFTransport.hpp"
 #include "../src/shared/Ath10kSHA256.hpp"
 #include "common_crypto_personal.hpp"
 #include "pmf_ccmp_vectors.inc"
@@ -147,4 +147,24 @@ static void abandonRunningTX(){
  assert(s->copyProtected(item,frame,sizeof(frame),bytes,9) && !memcmp(frame,c_txpn2_wire,bytes));
  assert(s->retireProtected(item,9));item->release();stop(s,w);
 }
-int main(){objectFreeObserver=observeFree;lifecycle();groupAndRotation();admissionAndFailures();cancelRunning();protectedTX();groupAction();abandonRunningTX();objectFreeObserver=nullptr;clean();}
+static void hardwareTX(){
+ auto s=create();auto w=worker();const unsigned before=aesCalls;
+ ownerGate=true;assert(s->queueProtect(w,c_txpn1_plain,sizeof(c_txpn1_plain),9,AthSecurity::ManagementTX::HardwareCCMP)==Submit::Queued);ownerGate=false;
+ auto item=complete(w);assert(aesCalls==before && s->protectedReady(item,9));
+ uint8_t frame[512]{};size_t bytes=123;auto mode=AthSecurity::ManagementTX::Plain;
+ assert(!s->copyProtected(item,frame,sizeof(frame),bytes,9) && bytes==123);
+ assert(s->copyForTransport(item,frame,sizeof(frame),bytes,mode,9) && mode==AthSecurity::ManagementTX::HardwareCCMP);
+ assert(bytes==sizeof(c_txpn1_hardware) && !memcmp(frame,c_txpn1_hardware,bytes));
+ assert(s->retireProtected(item,9));item->release();
+ // Switching representations cannot create a second PN pool.
+ assert(queueTX(s,w)==Submit::Queued);item=complete(w);bytes=0;
+ assert(s->copyForTransport(item,frame,sizeof(frame),bytes,mode,9) && mode==AthSecurity::ManagementTX::SoftwareCCMP);
+ assert(bytes==sizeof(c_txpn2_wire) && !memcmp(frame,c_txpn2_wire,bytes));
+ assert(s->retireProtected(item,9));item->release();
+ assert(s->queueProtect(w,c_txpn1_plain,sizeof(c_txpn1_plain),9,AthSecurity::ManagementTX::Plain)==Submit::NoWork);
+ assert(s->queueProtect(w,c_txpn1_plain,sizeof(c_txpn1_plain),9,AthSecurity::ManagementTX::HardwareCCMP)==Submit::Queued);
+ item=complete(w);assert(s->copyForTransport(item,frame,sizeof(frame),bytes,mode,9) && mode==AthSecurity::ManagementTX::HardwareCCMP);
+ assert(bytes==sizeof(c_txpn3_hardware) && !memcmp(frame,c_txpn3_hardware,bytes));
+ assert(s->retireProtected(item,9));item->release();stop(s,w);
+}
+int main(){objectFreeObserver=observeFree;lifecycle();groupAndRotation();admissionAndFailures();cancelRunning();protectedTX();groupAction();abandonRunningTX();hardwareTX();objectFreeObserver=nullptr;clean();}

@@ -139,7 +139,7 @@ private:
     struct DataBuffers {Ath10kDMABuffer payload{},command{},fragments{};};
     DataBuffers _dataBuffers[Ath10k::kDataTxSlots]{};
     const char *submitNetworkCE(UInt32,Ath10kDMABuffer &,UInt32,UInt32 &);
-    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64);
+    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64,AthSecurity::ManagementTX=AthSecurity::ManagementTX::Plain);
     IOWorkLoop *_networkWorkLoop=nullptr;
     IONetworkInterface *_networkInterface=nullptr;
     bool _networkEnabled=false,_networkLinkUp=false;

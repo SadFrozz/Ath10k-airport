@@ -10,6 +10,11 @@ inline bool equal(const uint8_t *a,const uint8_t *b,size_t n){uint8_t d=0;for(si
 inline bool robustManagementActionCategory(uint8_t category){
  switch(category){case 4:case 7:case 11:case 15:case 20:case 21:case 22:case 127:return false;default:return true;}
 }
+inline bool robustManagementFrame(const uint8_t *frame,size_t bytes){
+ if(!frame || bytes<24 || (frame[0]&15))return false;
+ const uint8_t subtype=frame[0]&0xf0;
+ return subtype==0xc0 || subtype==0xa0 || (subtype==0xd0 && ((frame[1]&0x40) || (bytes>=25 && robustManagementActionCategory(frame[24]))));
+}
 inline bool nextCCMPPacketNumber(uint64_t used,uint64_t &out){
  if(used>=0xffffffffffffull)return false;
  out=used+1;return true;

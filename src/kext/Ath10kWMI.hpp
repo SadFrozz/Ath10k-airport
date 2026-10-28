@@ -415,10 +415,16 @@ struct WMIRuntimeState {
     const char *status = "not-run";
 };
 
+// Synchronous post-validation consumer; true means never pass to raw MLME.
+// The consumer must copy bytes before returning if it defers processing.
+struct WMIManagementConsumer {
+    void *context=nullptr;
+    bool (*receive)(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32)=nullptr;
+};
 // Accept READY on the negotiated WMI endpoint and trailer-only reports on
 // endpoint 0 or WMI. Credits are committed only after the entire frame validates.
 inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endpoint,
-                                      HTCCreditState &credits, WMIInitState &out, WMIEchoState *echo=nullptr, WMIScanState *scan=nullptr, WMIBSSCache *bss=nullptr, bool allowVdevDelete=false, ConnectionState *connection=nullptr) {
+                                      HTCCreditState &credits, WMIInitState &out, WMIEchoState *echo=nullptr, WMIScanState *scan=nullptr, WMIBSSCache *bss=nullptr, bool allowVdevDelete=false, ConnectionState *connection=nullptr,const WMIManagementConsumer *managementConsumer=nullptr) {
     if (!f || bytes < 8 || bytes > kWMIRxBytes) return "wmi-init-rx-size";
     if (f[0] != 0 && f[0] != endpoint) return "wmi-init-rx-endpoint";
     if (f[1] & ~(kHTCTrailerPresent | kHTCMoreBlock)) return "wmi-init-rx-flags";
@@ -741,8 +747,10 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
             connectionFailure(*connection,"vdev-start-rejected");
             if(!rollbackStart)connection->stage=LinkStage::Failed;}}
     if(mgmt && connection){
-        receiveStationManagement(*connection,mgmtData,mgmtLen,mgmtStatus,mgmtChannel);
-        if(mgmtLen>=24 && sameMAC(mgmtData+16,connection->bssid) && mgmtSnr<=95)
+        const bool consumed=managementConsumer && managementConsumer->receive &&
+            managementConsumer->receive(managementConsumer->context,mgmtData,mgmtLen,mgmtStatus,mgmtChannel,mgmtSnr);
+        if(!consumed)receiveStationManagement(*connection,mgmtData,mgmtLen,mgmtStatus,mgmtChannel);
+        if(!consumed && mgmtLen>=24 && sameMAC(mgmtData+16,connection->bssid) && mgmtSnr<=95)
             connection->signalDbm=static_cast<int32_t>(mgmtSnr)-95;
     }
     if(scanEvent || mgmt || channelInfo)*scan=scanNext;

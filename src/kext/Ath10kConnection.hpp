@@ -2,6 +2,7 @@
 #include "Ath10kHTC.hpp"
 #include "Ath10kBSS.hpp"
 #include "Ath10kMulticast.hpp"
+#include "../shared/Ath10kPMFTransport.hpp"
 
 namespace Ath10k {
 // Ethernet MTU excludes headers. Permit at most two in-band VLAN tags, not jumbo payloads.
@@ -187,7 +188,7 @@ struct ConnectionState {
     UInt32 disconnectCount=0;
     LinkStage stage=LinkStage::Disabled;
     UInt8 securityAKM=2;
-    bool secure=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
+    bool secure=false,pmfRequired=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
     bool cancelRequested=false,rekeySkipGroup=false,vdevStarted=false,vdevUp=false,eapolPause=false;
     UInt8 rekeyKind=0;UInt32 securityGeneration=0,beaconSerial=0;
     // Actual associated beacon, including TSF, for native freshness queries.
@@ -1210,12 +1211,21 @@ inline UInt32 buildChannelSwitchWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,Conn
     else return 0;
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,n-8);htcWriteLE32(f+8,cmd);return n;
 }
-inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel=0) {
-    if(s.disconnect!=DisconnectStage::None || s.stage<LinkStage::Auth || s.stage==LinkStage::Failed || status&0x39u || bytes<24)return;
+enum class ManagementAuthentication : UInt8 {Unverified,Pairwise,Group};
+// Authentication is an internal dispatch assertion, never derived from WMI
+// status or Protected alone. Native callers must first commit a PMF result.
+inline void receiveStationManagementAuthenticated(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel,ManagementAuthentication authentication) {
+    if(!f || s.disconnect!=DisconnectStage::None || s.stage<LinkStage::Auth || s.stage==LinkStage::Failed || status&0x39u || bytes<24)return;
     UInt16 fc=htcReadLE16(f);
-    if((fc&0x470fu) || (htcReadLE16(f+22)&15) || !sameMAC(f+10,s.bssid) || !sameMAC(f+16,s.bssid))return;
+    if(authentication!=ManagementAuthentication::Unverified && authentication!=ManagementAuthentication::Pairwise && authentication!=ManagementAuthentication::Group)return;
+    const UInt16 forbidden=authentication==ManagementAuthentication::Pairwise?0x070fu:0x470fu;
+    if((fc&forbidden) || (htcReadLE16(f+22)&15) || !sameMAC(f+10,s.bssid) || !sameMAC(f+16,s.bssid))return;
+    if(authentication==ManagementAuthentication::Pairwise && (!(fc&0x4000) || !sameMAC(f+4,s.local)))return;
+    if(authentication==ManagementAuthentication::Group && (!(f[4]&1) || !AthSecurity::robustManagementFrame(f,bytes)))return;
+    // Raw WMI input cannot bypass the retained PMF verifier after PTK setup.
+    if(authentication==ManagementAuthentication::Unverified && s.pmfRequired && s.pairInstalled && AthSecurity::robustManagementFrame(f,bytes))return;
     bool broadcast=true;for(UInt32 i=0;i<6;++i)if(f[4+i]!=255)broadcast=false;
-    if(!sameMAC(f+4,s.local) && !broadcast)return;
+    if(!sameMAC(f+4,s.local) && !broadcast && authentication!=ManagementAuthentication::Group)return;
     const UInt32 subtype=fc&0xf0u;
     if((subtype==0xc0 || subtype==0xa0) && bytes>=26){
         ++s.diagnostics.mlmeCount;s.diagnostics.mlmeSubtype=static_cast<UInt8>(subtype);
@@ -1357,6 +1367,10 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
         s.aid=aid;s.assocReply=true;
     }
 }
+inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel=0){
+    receiveStationManagementAuthenticated(s,f,bytes,status,rxChannel,ManagementAuthentication::Unverified);
+}
+
 inline UInt32 connectionReadLE32(const UInt8 *p) {
     return static_cast<UInt32>(htcReadLE16(p)) |
            (static_cast<UInt32>(htcReadLE16(p+2))<<16);
@@ -1535,14 +1549,27 @@ inline UInt8 txPriorityTID(const ConnectionState &s,const UInt8 *packet,UInt32 l
     }
     return 255;
 }
+// Our HTT management path follows Linux v6.12 hardware CCMP with host IV.
+// Software ciphertext passthrough has not been validated for this firmware.
+inline bool packetProtectionAllowed(const UInt8 *packet,UInt32 length,const ConnectionState &s,bool management,AthSecurity::ManagementTX protection){
+    if(!packet || length<14 || length>kEthernetFrameMax)return false;
+    if(!management)return protection==AthSecurity::ManagementTX::Plain && ethernetFrameAllowed(packet,length);
+    if(protection==AthSecurity::ManagementTX::Plain)
+        return length>=24 && !(htcReadLE16(packet)&0xc70fu) && !(htcReadLE16(packet+22)&15) &&
+            !(s.pmfRequired && s.pairInstalled && AthSecurity::robustManagementFrame(packet,length));
+    if(protection!=AthSecurity::ManagementTX::HardwareCCMP || !s.pmfRequired || !s.secure || !s.pairInstalled ||
+       s.stage!=LinkStage::Connected || s.disconnect!=DisconnectStage::None)return false;
+    return AthSecurity::PMFHardwareCCMP::valid(packet,length,s.local,s.bssid);
+}
 inline UInt32 buildHTTPacket(UInt8 *f,UInt32 capacity,const UInt8 *packet,UInt32 length,
-                            UInt32 address,UInt32 frags,UInt8 ep,const ConnectionState &s,bool management) {
-    if(!f || !packet || capacity<256 || !ep || ep==255 || !address || length<14 || length>kEthernetFrameMax || (!management && !ethernetFrameAllowed(packet,length)))return 0;
+                            UInt32 address,UInt32 frags,UInt8 ep,const ConnectionState &s,bool management,
+                            AthSecurity::ManagementTX protection=AthSecurity::ManagementTX::Plain) {
+    if(!f || capacity<256 || !ep || ep==255 || !address || !frags || !packetProtectionAllowed(packet,length,s,management,protection))return 0;
     htcZero(f,256);f[0]=ep;f[5]=s.httSequence;
     UInt32 bytes=0;
     if(!frags)return 0;
     UInt32 prefetch=length<50?length:50;bytes=24+((prefetch+3u)&~3u);
-    f[8]=1;f[9]=management?0x65:((s.secure && (s.portAuthorized || s.rekeyKind))?0x42:0x46); // HTT >=3: TX_FRM for both management and Ethernet.
+    f[8]=1;f[9]=management?(protection==AthSecurity::ManagementTX::HardwareCCMP?0x61:0x65):((s.secure && (s.portAuthorized || s.rekeyKind))?0x42:0x46); // HTT >=3: TX_FRM for both management and Ethernet.
     const UInt8 tid=management?17:txPriorityTID(s,packet,length);if(tid==255)return 0;
     htcWriteLE16(f+10,static_cast<UInt16>(0x800u|(UInt16(tid)<<6))); // POSTPONED, TID bits 6..10
     htcWriteLE16(f+12,static_cast<UInt16>(length));htcWriteLE16(f+14,s.txId);
