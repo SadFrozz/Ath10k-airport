@@ -20,9 +20,9 @@ class NativeLockOrder(unittest.TestCase):
         self.assertIn("thread_call_enter",scheduler)
         self.assertNotIn("runAction",scheduler)
         thread=native.split("void Ath10kPCIDevice::nativeServiceThread",1)[1].split("IOReturn Ath10kPCIDevice::nativeServiceWCLAction",1)[0]
-        self.assertIn("_nativeBSDGate->runAction(nativeServiceWCLAction)",thread)
+        self.assertIn("_nativeBSDGate->attemptAction(nativeServiceWCLAction)",thread)
         wcl=native.split("IOReturn Ath10kPCIDevice::nativeServiceWCLAction",1)[1].split("IOReturn Ath10kPCIDevice::nativeServiceRadioAction",1)[0]
-        self.assertIn("_nativeGate->runAction(nativeServiceRadioAction)",wcl)
+        self.assertIn("_nativeGate->attemptAction(nativeServiceRadioAction)",wcl)
         stop=native.split("void Ath10kPCIDevice::stopNativeRequests()",1)[1].split("void Ath10kPCIDevice::releaseNativeInterface()",1)[0]
         self.assertLess(stop.index("runAction(nativeStopAction)"),stop.index("thread_call_cancel_wait"))
         self.assertLess(stop.index("thread_call_cancel_wait"),stop.index("thread_call_free"))

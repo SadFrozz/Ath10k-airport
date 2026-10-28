@@ -2,7 +2,11 @@
 #include <cstdint>
 #include <vector>
 using UInt64=uint64_t;using IOReturn=int;using thread_call_param_t=void *;
-constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3;
+constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4;
+using AbsoluteTime=UInt64;constexpr unsigned kMillisecondScale=1;
+static void clock_interval_to_deadline(unsigned n,unsigned,AbsoluteTime *out){*out=n;}
+static unsigned delayed=0;
+static void thread_call_enter_delayed(void *,AbsoluteTime deadline){assert(deadline==10);++delayed;}
 struct OSObject {};
 #define OSDynamicCast(type,obj) static_cast<type *>(obj)
 namespace Ath10k {inline UInt64 uptimeNS(){return 123000000u;}}
@@ -12,7 +16,8 @@ static bool thread_call_cancel_wait(void *){assert(rank==0);++cancelled;return t
 static bool thread_call_free(void *){assert(rank==0 && cancelled>freed);++freed;return true;}
 using Action=IOReturn (*)(OSObject *,void *,void *,void *,void *);
 struct Gate {
- unsigned ownRank;OSObject *owner;
+ unsigned ownRank;OSObject *owner;bool busy=false;
+ IOReturn attemptAction(Action action){return busy?kIOReturnCannotLock:runAction(action);}
  Gate *getWorkLoop(){return this;}void commandWakeup(void *){}
  IOReturn runAction(Action action){
   assert(ownRank>rank);unsigned previous=rank;rank=ownRank;order.push_back(rank);
@@ -46,9 +51,16 @@ int main(){
  d.requestNativeService();assert(scheduled==2);d._nativeStopping=true;
  d.nativeServiceThread(&d,nullptr);assert(d.services==1 && !d._nativeServicePending);
  d.requestNativeService();assert(scheduled==2);
+ Ath10kPCIDevice contended;contended.requestNativeService();
+ contended.radio.busy=true;contended.nativeServiceThread(&contended,nullptr);
+ assert(contended.services==0 && contended._nativeServicePending && delayed==1 && rank==0);
+ contended.radio.busy=false;contended.wcl.busy=true;contended.nativeServiceThread(&contended,nullptr);
+ assert(contended.services==0 && delayed==2 && rank==0);
+ contended.wcl.busy=false;contended.nativeServiceThread(&contended,nullptr);
+ assert(contended.services==1 && !contended._nativeServicePending);
  Ath10kPCIDevice inactive;inactive._wmiLive.active=false;inactive.requestNativeService();inactive.nativeServiceThread(&inactive,nullptr);assert(!inactive.services);
  inactive._nativeWasUp=true;inactive.requestNativeService();inactive.nativeServiceThread(&inactive,nullptr);assert(inactive.services==1);
- Ath10kPCIDevice unattached;unattached._nativeServiceCall=nullptr;unattached.requestNativeService();assert(scheduled==4);
+ Ath10kPCIDevice unattached;unattached._nativeServiceCall=nullptr;unattached.requestNativeService();assert(scheduled==5);
  Ath10kPCIDevice stopping;stopping.requestNativeService();stopping._nativeMACWaiting=true;
  stopping.stopNativeRequests();assert(stopping._nativeStopping && !stopping._nativeServiceCall && !stopping._nativeServicePending && stopping._nativeMACResult==kIOReturnAborted && cancelled==1 && freed==1);
  stopping.stopNativeRequests();assert(cancelled==1 && freed==1);

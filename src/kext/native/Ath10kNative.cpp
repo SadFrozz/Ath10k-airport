@@ -477,12 +477,17 @@ void Ath10kPCIDevice::requestNativeService() {
 }
 void Ath10kPCIDevice::nativeServiceThread(thread_call_param_t context,thread_call_param_t) {
     auto self=static_cast<Ath10kPCIDevice *>(context);
-    if(self->_nativeBSDGate)self->_nativeBSDGate->runAction(nativeServiceWCLAction);
+    // IOService termination can hold the network workloop while stopping an
+    // Apple user client on WCL. Never wait for either gate in this bridge.
+    if(self->_nativeBSDGate && self->_nativeBSDGate->attemptAction(nativeServiceWCLAction)==kIOReturnCannotLock){
+        AbsoluteTime deadline;clock_interval_to_deadline(10,kMillisecondScale,&deadline);
+        thread_call_enter_delayed(self->_nativeServiceCall,deadline);
+    }
 }
 IOReturn Ath10kPCIDevice::nativeServiceWCLAction(OSObject *owner,void *,void *,void *,void *) {
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self || !self->_nativeGate)return kIOReturnNotReady;
-    return self->_nativeGate->runAction(nativeServiceRadioAction);
+    return self->_nativeGate->attemptAction(nativeServiceRadioAction);
 }
 IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *,void *,void *) {
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);

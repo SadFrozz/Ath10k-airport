@@ -1,5 +1,6 @@
 #include "Ath10kPCIDevice.hpp"
 #include "Ath10kPayload.hpp"
+#include "Ath10kDiagnostics.hpp"
 #include <IOKit/IOLib.h>
 #include <string.h>
 #include <libkern/c++/OSString.h>
@@ -67,7 +68,7 @@ IOService *Ath10kPCIDevice::probe(IOService *provider, SInt32 *score)
     const UInt16 vendor = pci->configRead16(kIOPCIConfigVendorID);
     const UInt16 device = pci->configRead16(kIOPCIConfigDeviceID);
 
-    IOLog("Ath10kMac: probe vendor=%04x device=%04x\n", vendor, device);
+    ATH10K_TRACE("Ath10kMac: probe vendor=%04x device=%04x\n", vendor, device);
 
     if (!Ath10k::isSupportedDevice(vendor, device))
         return nullptr;
@@ -82,7 +83,7 @@ IOService *Ath10kPCIDevice::probe(IOService *provider, SInt32 *score)
     if (auto *probeOnly = OSDynamicCast(OSBoolean, getProperty("Ath10kProbeOnly"))) {
         if (probeOnly->isTrue()) {
             provider->setProperty("Ath10kNativeStartupPhase", "opencore-probe-only");
-            IOLog("Ath10kMac: OpenCore probe-only matched; controller startup skipped\n");
+            ATH10K_TRACE("Ath10kMac: OpenCore probe-only matched; controller startup skipped\n");
             return nullptr;
         }
     }
@@ -120,7 +121,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if (!_networkWorkLoop && !createWorkLoop()) return false;
     if (diagnosticStage == 1) {
         provider->setProperty("Ath10kNativeStartupPhase", "opencore-workqueue-passed");
-        IOLog("Ath10kMac: diagnostic workqueue passed; controller startup skipped\n");
+        ATH10K_TRACE("Ath10kMac: diagnostic workqueue passed; controller startup skipped\n");
         return false;
     }
     nativeStartupPhase("corecapture-init");
@@ -128,7 +129,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if (diagnosticStage == 2) {
         releaseNativeLogs();
         provider->setProperty("Ath10kNativeStartupPhase", "opencore-corecapture-passed");
-        IOLog("Ath10kMac: diagnostic CoreCapture passed; controller startup skipped\n");
+        ATH10K_TRACE("Ath10kMac: diagnostic CoreCapture passed; controller startup skipped\n");
         return false;
     }
     nativeStartupPhase("controller-legacy-thread-check");
@@ -155,13 +156,13 @@ bool Ath10kPCIDevice::start(IOService *provider)
         super::stop(provider);
         releaseNativeLogs();
         provider->setProperty("Ath10kNativeStartupPhase", "opencore-controller-passed");
-        IOLog("Ath10kMac: diagnostic controller start/stop passed; PCI startup skipped\n");
+        ATH10K_TRACE("Ath10kMac: diagnostic controller start/stop passed; PCI startup skipped\n");
         return false;
     }
 #endif
     _pci = OSDynamicCast(IOPCIDevice, provider);
     if (!_pci) {
-        IOLog("Ath10kMac: provider is not IOPCIDevice\n");
+        ATH10K_TRACE("Ath10kMac: provider is not IOPCIDevice\n");
         return false;
     }
     ath10kSetRecoveryStatus(_pci, "driver-starting", "Ath10kMac matched the PCI device");
@@ -173,7 +174,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     }
 
     if (!identifyDevice()) {
-        IOLog("Ath10kMac: unsupported device after start\n");
+        ATH10K_TRACE("Ath10kMac: unsupported device after start\n");
         _pci->close(this);
         _pci = nullptr;
         return false;
@@ -209,7 +210,7 @@ bool Ath10kPCIDevice::start(IOService *provider)
     if (_deferredProbeCall) {
         _deferredProbePending = true;
         thread_call_enter(_deferredProbeCall);
-        IOLog("Ath10kMac: deferred target probe queued; network becomes available after initialization\n");
+        ATH10K_TRACE("Ath10kMac: deferred target probe queued; network becomes available after initialization\n");
         return true;
     }
 
@@ -232,7 +233,7 @@ void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_
 
 void Ath10kPCIDevice::runDeferredProbe()
 {
-    IOLog("Ath10kMac: deferred target probe begin\n");
+    ATH10K_TRACE("Ath10kMac: deferred target probe begin\n");
     ath10kSetRecoveryStatus(_pci, "probe-running", "Firmware and runtime initialization are in progress");
     const char *probeFailure = "target-probe-did-not-run";
 
@@ -292,12 +293,12 @@ void Ath10kPCIDevice::runDeferredProbe()
           chipName(), _revisionId, _bar0,
           (unsigned long long)_bar0Map->getLength());
     if (_selectedHw) {
-        IOLog("Ath10kMac: target profile=%s firmware=%s (post-reset chip-id)\n",
+        ATH10K_TRACE("Ath10kMac: target profile=%s firmware=%s (post-reset chip-id)\n",
               _selectedHw->targetRevision, _selectedHw->firmwareDirectory);
     } else {
-        IOLog("Ath10kMac: target profile unresolved after cold-reset diagnostic\n");
+        ATH10K_TRACE("Ath10kMac: target profile unresolved after cold-reset diagnostic\n");
     }
-    IOLog("Ath10kMac: next=explicit open STA configuration; Ethernet stays down until association\n");
+    ATH10K_TRACE("Ath10kMac: next=explicit open STA configuration; Ethernet stays down until association\n");
 }
 
 void Ath10kPCIDevice::cancelDeferredProbe()
@@ -312,7 +313,7 @@ void Ath10kPCIDevice::cancelDeferredProbe()
             IOLockSleep(_deferredProbeLock, &_deferredProbePending, THREAD_UNINT);
         IOLockUnlock(_deferredProbeLock);
         if (!thread_call_free(_deferredProbeCall))
-            IOLog("Ath10kMac: deferred probe worker could not be released\n");
+            ATH10K_TRACE("Ath10kMac: deferred probe worker could not be released\n");
         _deferredProbeCall = nullptr;
     }
     if (_deferredProbeLock) {
@@ -355,7 +356,7 @@ void Ath10kPCIDevice::stop(IOService *provider)
     if(rematch)rematch->retain();
     if (_reprobeRequested)
         ath10kSetRecoveryStatus(provider, "stop-started", "Driver stop began for a requested recovery rematch");
-    IOLog("Ath10kMac: stop %s\n", chipName());
+    ATH10K_TRACE("Ath10kMac: stop %s\n", chipName());
     releasePowerNotifications();
     if (_powerManaged) { PMstop(); _powerManaged=false; }
     releaseWMIRuntime();
@@ -508,10 +509,10 @@ bool Ath10kPCIDevice::prepareDeviceDMAMapper()
     _dmaMapperReady = true;
 
     if (_dmaMapper) {
-        IOLog("Ath10kMac: DMA mapping policy READY device-bound=yes mapper=%p mode=kMapped explicit-sync=required\n",
+        ATH10K_TRACE("Ath10kMac: DMA mapping policy READY device-bound=yes mapper=%p mode=kMapped explicit-sync=required\n",
               _dmaMapper);
     } else {
-        IOLog("Ath10kMac: DMA mapping policy READY device-bound=no mapper=null mode=kMapped-default/buffered explicit-sync=required\n");
+        ATH10K_TRACE("Ath10kMac: DMA mapping policy READY device-bound=no mapper=null mode=kMapped-default/buffered explicit-sync=required\n");
     }
     return true;
 }
@@ -555,7 +556,7 @@ bool Ath10kPCIDevice::mapBAR0()
         return false;
     }
 
-    IOLog("Ath10kMac: BAR0 virtual=%p physical=0x%llx length=0x%llx\n",
+    ATH10K_TRACE("Ath10kMac: BAR0 virtual=%p physical=0x%llx length=0x%llx\n",
           _bar0,
           (unsigned long long)_bar0Map->getPhysicalAddress(),
           (unsigned long long)_bar0Map->getLength());
@@ -578,13 +579,13 @@ void Ath10kPCIDevice::dumpPCIConfig()
     const UInt32 bar0 = _pci->configRead32(kIOPCIConfigBaseAddress0);
     const UInt32 bar1 = _pci->configRead32(kIOPCIConfigBaseAddress1);
 
-    IOLog("Ath10kMac: PCI %04x:%04x subsystem=%04x:%04x pci-rev=%02x\n",
+    ATH10K_TRACE("Ath10kMac: PCI %04x:%04x subsystem=%04x:%04x pci-rev=%02x\n",
           _vendorId, _deviceId, _subsystemVendorId, _subsystemId, _revisionId);
-    IOLog("Ath10kMac: class=%02x:%02x:%02x irq-line=%02x irq-pin=%02x\n",
+    ATH10K_TRACE("Ath10kMac: class=%02x:%02x:%02x irq-line=%02x irq-pin=%02x\n",
           _classCode, _subclass, _progIf, _interruptLine, _interruptPin);
-    IOLog("Ath10kMac: PCI command=%04x (original=%04x) status=%04x BAR0=%08x BAR1=%08x\n",
+    ATH10K_TRACE("Ath10kMac: PCI command=%04x (original=%04x) status=%04x BAR0=%08x BAR1=%08x\n",
           command, _originalCommand, status, bar0, bar1);
-    IOLog("Ath10kMac: NOTE pci-rev=%02x is PCI config revision, not ath10k target chip revision\n",
+    ATH10K_TRACE("Ath10kMac: NOTE pci-rev=%02x is PCI config revision, not ath10k target chip revision\n",
           _revisionId);
 }
 
@@ -601,7 +602,7 @@ void Ath10kPCIDevice::dumpPCICapabilities()
 
     const UInt16 status = _pci->configRead16(kIOPCIConfigStatus);
     if ((status & kPCIStatusCapabilitiesList) == 0) {
-        IOLog("Ath10kMac: PCI capabilities list not advertised\n");
+        ATH10K_TRACE("Ath10kMac: PCI capabilities list not advertised\n");
         return;
     }
 
@@ -612,7 +613,7 @@ void Ath10kPCIDevice::dumpPCICapabilities()
         const UInt8 capId = _pci->configRead8(ptr);
         const UInt8 next = static_cast<UInt8>(_pci->configRead8(ptr + 1) & 0xfc);
 
-        IOLog("Ath10kMac: PCI capability id=%02x offset=%02x next=%02x\n",
+        ATH10K_TRACE("Ath10kMac: PCI capability id=%02x offset=%02x next=%02x\n",
               capId, ptr, next);
 
         switch (capId) {
@@ -641,7 +642,7 @@ void Ath10kPCIDevice::dumpPCICapabilities()
         ptr = next;
     }
 
-    IOLog("Ath10kMac: capabilities PM=%s MSI=%s MSI-X=%s PCIe=%s offsets pm=%02x msi=%02x msix=%02x pcie=%02x\n",
+    ATH10K_TRACE("Ath10kMac: capabilities PM=%s MSI=%s MSI-X=%s PCIe=%s offsets pm=%02x msi=%02x msix=%02x pcie=%02x\n",
           _hasPM ? "yes" : "no",
           _hasMSI ? "yes" : "no",
           _hasMSIX ? "yes" : "no",
@@ -668,7 +669,7 @@ bool Ath10kPCIDevice::disableASPMForBringup()
     const UInt16 aspmBefore = _pcieLinkControlBefore & kPCIeLinkControlASPMMask;
     const UInt16 desired = static_cast<UInt16>(_pcieLinkControlBefore & ~kPCIeLinkControlASPMMask);
 
-    IOLog("Ath10kMac: PCIe Link Control original=0x%04x ASPM L0s=%s L1=%s; disabling ASPM for reset window\n",
+    ATH10K_TRACE("Ath10kMac: PCIe Link Control original=0x%04x ASPM L0s=%s L1=%s; disabling ASPM for reset window\n",
           _pcieLinkControlBefore,
           (aspmBefore & 0x1) ? "yes" : "no",
           (aspmBefore & 0x2) ? "yes" : "no");
@@ -677,7 +678,7 @@ bool Ath10kPCIDevice::disableASPMForBringup()
     _pcieLinkControlDuring = _pci->configRead16(offset);
     _aspmDisabled = ((_pcieLinkControlDuring & kPCIeLinkControlASPMMask) == 0);
 
-    IOLog("Ath10kMac: PCIe Link Control ASPM-disable readback=%s value=0x%04x\n",
+    ATH10K_TRACE("Ath10kMac: PCIe Link Control ASPM-disable readback=%s value=0x%04x\n",
           _aspmDisabled ? "PASS" : "FAIL", _pcieLinkControlDuring);
     return _aspmDisabled;
 }
@@ -696,7 +697,7 @@ void Ath10kPCIDevice::restoreASPM()
     _aspmRestoreSucceeded = ((_pcieLinkControlAfterRestore & kPCIeLinkControlASPMMask) ==
                              (_pcieLinkControlBefore & kPCIeLinkControlASPMMask));
 
-    IOLog("Ath10kMac: PCIe Link Control restore readback=%s value=0x%04x original-ASPM=0x%x\n",
+    ATH10K_TRACE("Ath10kMac: PCIe Link Control restore readback=%s value=0x%04x original-ASPM=0x%x\n",
           _aspmRestoreSucceeded ? "PASS" : "FAIL",
           _pcieLinkControlAfterRestore,
           _pcieLinkControlBefore & kPCIeLinkControlASPMMask);
@@ -722,7 +723,7 @@ void Ath10kPCIDevice::logMSIState(const char *stage)
         data = _pci->configRead16(_msiCapOffset + 8);
     }
 
-    IOLog("Ath10kMac: MSI %s control=0x%04x enabled=%s 64bit=%s pvm=%s mmc=%u mme=%u addr=%08x:%08x data=%04x\n",
+    ATH10K_TRACE("Ath10kMac: MSI %s control=0x%04x enabled=%s 64bit=%s pvm=%s mmc=%u mme=%u addr=%08x:%08x data=%04x\n",
           stage ? stage : "state", control,
           (control & kMSIControlEnable) ? "yes" : "no",
           is64 ? "yes" : "no", pvm ? "yes" : "no",
@@ -799,7 +800,7 @@ bool Ath10kPCIDevice::prepareIRQParity()
     _pci->configWrite16(kIOPCIConfigCommand,_intxCommandBefore|UInt16(0x400));
     if(_pci->configRead16(kIOPCIConfigCommand)!=(_intxCommandBefore|0x400)){teardownIRQParity();return false;}
     _irqPrepared=true;
-    IOLog("Ath10kMac: INTx prepared index=%d bootstrap=polling shared-filter=runtime\n",legacy);
+    ATH10K_TRACE("Ath10kMac: INTx prepared index=%d bootstrap=polling shared-filter=runtime\n",legacy);
     return true;
 }
 
@@ -830,7 +831,7 @@ void Ath10kPCIDevice::teardownIRQParity()
             }
         }
         if(restored)_intxConfigChanged=false;
-        else IOLog("Ath10kMac: INTx config restoration unverified\n");
+        else ATH10K_TRACE("Ath10kMac: INTx config restoration unverified\n");
     }
 }
 
@@ -958,7 +959,7 @@ bool Ath10kPCIDevice::startRuntimeCEIRQ()
     _irqEnabled = _irqMessaged;
     _runtimeActive = true;
     _runtimeStatus = "active";
-    IOLog("Ath10kMac: Phase 3 CE/IRQ runtime ACTIVE CE1 slot=%u next=%u host-ie=0x%08x misc-ie=0x%08x pcie-intr=0x%08x core-ctrl=0x%08x irq-index=%d\n",
+    ATH10K_TRACE("Ath10kMac: Phase 3 CE/IRQ runtime ACTIVE CE1 slot=%u next=%u host-ie=0x%08x misc-ie=0x%08x pcie-intr=0x%08x core-ctrl=0x%08x irq-index=%d\n",
           _runtimeRxSlot, _runtimeRxNext, _runtimeLastHostIE,
           _runtimeLastMiscIE, _runtimeLastPCIeIntrEnable,
           _runtimeLastCoreCtrl, _irqIndex);
@@ -971,7 +972,7 @@ bool Ath10kPCIDevice::stopRuntimeCEIRQ()
     if (_pci && _irqEnabled && _irqIndex >= 0) {
         const IOReturn disabled = _pci->disableInterrupt(_irqIndex);
         ok &= disabled == kIOReturnSuccess;
-        IOLog("Ath10kMac: Phase 3 CE/IRQ host interrupt disable ret=0x%08x\n",
+        ATH10K_TRACE("Ath10kMac: Phase 3 CE/IRQ host interrupt disable ret=0x%08x\n",
               static_cast<UInt32>(disabled));
         _irqEnabled = false;
     }
@@ -1060,7 +1061,7 @@ IOReturn Ath10kPCIDevice::controlWMIRuntime(OSObject *owner, void *reason,
     if(irqError){self->endWMIRuntime(irqError);return kIOReturnError;}
     self->_wmiLive.status=self->_runtimeIRQArmed?"active-msi-worker":"active-polling";
     self->publishWMIRuntimeProperties();
-    IOLog("Ath10kMac: WMI RUNTIME ACTIVE mode=%s watchdog=10ms CE1+CE2 budget=32 HTT budget=64\n",self->_wmiLive.status);
+    ATH10K_TRACE("Ath10kMac: WMI RUNTIME ACTIVE mode=%s watchdog=10ms CE1+CE2 budget=32 HTT budget=64\n",self->_wmiLive.status);
     return kIOReturnSuccess;
 }
 
@@ -1105,7 +1106,7 @@ const char *Ath10kPCIDevice::serviceRuntime()
     // sustained traffic; completion/DONE/refill validation still runs per MPDU.
     if(maintenance){
         const bool idle=_lastMaintenanceRxPackets==_connection.rxPackets && _lastMaintenanceTxPackets==_connection.txPackets;
-        if(!error && idle)error=sampleHTTRxPool();
+        if(ATH10K_DIAGNOSTICS && !error && idle)error=sampleHTTRxPool();
         _lastMaintenanceRxPackets=_connection.rxPackets;_lastMaintenanceTxPackets=_connection.txPackets;
     }
     flushNetworkRX();_rxDeliveryBatch=false;
@@ -1608,7 +1609,7 @@ bool Ath10kPCIDevice::htcSubmitControlFrame(const UInt8 *request,
         if (_boot.fwIndicator & Ath10k::kFwIndicatorEventPending) {
             _boot.firmwareCrash = true;
             _htcStatus = "firmware-crash-indicated";
-            IOLog("Ath10kMac: HTC firmware crash waited=%u ms CE0 src=%u/%u CE1 dst=%u/%u indicator=0x%x\n",
+            ATH10K_TRACE("Ath10kMac: HTC firmware crash waited=%u ms CE0 src=%u/%u CE1 dst=%u/%u indicator=0x%x\n",
                   waitedMs, srcRead, txNext, dstRead, _runtimeRxNext, _boot.fwIndicator);
             return false;
         }
@@ -1669,7 +1670,7 @@ bool Ath10kPCIDevice::htcSubmitControlFrame(const UInt8 *request,
             prefix[2 * i] = hex[raw[i] >> 4];
             prefix[2 * i + 1] = hex[raw[i] & 15];
         }
-        IOLog("Ath10kMac: HTC CONTROL RX bytes=%u payload=%u flags=0x%02x trailer-field=%u prefix=%s\n",
+        ATH10K_TRACE("Ath10kMac: HTC CONTROL RX bytes=%u payload=%u flags=0x%02x trailer-field=%u prefix=%s\n",
               completedBytes, completedBytes >= 4 ? Ath10k::htcReadLE16(raw + 2) : 0,
               completedBytes >= 2 ? raw[1] : 0, completedBytes >= 5 ? raw[4] : 0, prefix);
         if (completedBytes < Ath10k::kHTCHeaderBytes + 2 ||
@@ -1697,7 +1698,7 @@ bool Ath10kPCIDevice::htcSubmitControlFrame(const UInt8 *request,
     ++_htcControlTxCount;
     _htcStatus = expectResponse ? "control-exchange-complete" :
                                   "control-submit-complete";
-    IOLog("Ath10kMac: HTC control %s tx=%u bytes=%u waited=%u ms CE0 src=%u->%u\n",
+    ATH10K_TRACE("Ath10kMac: HTC control %s tx=%u bytes=%u waited=%u ms CE0 src=%u->%u\n",
           expectResponse ? "EXCHANGE COMPLETE" : "SUBMIT COMPLETE",
           _htcControlTxCount, requestBytes, waitedMs, txSlot, txNext);
     return true;
@@ -1755,7 +1756,7 @@ bool Ath10kPCIDevice::runHTCServiceSetup()
     _htcReservedControl.connected = true;
     _htcReservedControl.creditFlowEnabled = false;
     _htcReservedControlConnected = true;
-    IOLog("Ath10kMac: HTC reserved-control LOCAL endpoint=0 uplink=CE%u downlink=CE%u max=%u\n",
+    ATH10K_TRACE("Ath10kMac: HTC reserved-control LOCAL endpoint=0 uplink=CE%u downlink=CE%u max=%u\n",
           reservedUplink, reservedDownlink, _htcReservedControl.maxMessageSize);
 
     UInt8 frame[Ath10k::kHTCControlMaxBytes]{};
@@ -1789,7 +1790,7 @@ bool Ath10kPCIDevice::runHTCServiceSetup()
         return false;
     }
     _htcHTTData.creditFlowEnabled = false;
-    IOLog("Ath10kMac: HTC SERVICE HTT_DATA READY endpoint=%u max=%u uplink=CE%u downlink=CE%u\n",
+    ATH10K_TRACE("Ath10kMac: HTC SERVICE HTT_DATA READY endpoint=%u max=%u uplink=CE%u downlink=CE%u\n",
           _htcHTTData.endpoint, _htcHTTData.maxMessageSize,
           _htcHTTData.uplinkPipe, _htcHTTData.downlinkPipe);
 
@@ -1821,7 +1822,7 @@ bool Ath10kPCIDevice::runHTCServiceSetup()
         return false;
     }
     _htcWMIControl.creditFlowEnabled = true;
-    IOLog("Ath10kMac: HTC SERVICE WMI_CONTROL READY endpoint=%u max=%u uplink=CE%u downlink=CE%u credit-flow=negotiated-data-tx-deferred\n",
+    ATH10K_TRACE("Ath10kMac: HTC SERVICE WMI_CONTROL READY endpoint=%u max=%u uplink=CE%u downlink=CE%u credit-flow=negotiated-data-tx-deferred\n",
           _htcWMIControl.endpoint, _htcWMIControl.maxMessageSize,
           _htcWMIControl.uplinkPipe, _htcWMIControl.downlinkPipe);
 
@@ -1831,10 +1832,10 @@ bool Ath10kPCIDevice::runHTCServiceSetup()
     }
     // SETUP_COMPLETE enables WMI SERVICE_READY. CE2 receive and event handling
     // must exist before starting it; this milestone only assigns endpoints.
-    IOLog("Ath10kMac: HTC services connected; SETUP_COMPLETE awaits CE2 arm\n");
+    ATH10K_TRACE("Ath10kMac: HTC services connected; SETUP_COMPLETE awaits CE2 arm\n");
     _htcServiceSetupSucceeded = true;
     _htcStatus = "services-connected-setup-deferred";
-    IOLog("Ath10kMac: Phase 3 step 2 HTC SERVICES READY reserved=endpoint0 WMI=endpoint%u HTT=endpoint%u tx=%u rx=%u setup-complete=deferred\n",
+    ATH10K_TRACE("Ath10kMac: Phase 3 step 2 HTC SERVICES READY reserved=endpoint0 WMI=endpoint%u HTT=endpoint%u tx=%u rx=%u setup-complete=deferred\n",
           _htcWMIControl.endpoint, _htcHTTData.endpoint,
           _htcControlTxCount, _htcControlRxCount);
     return true;
@@ -1895,7 +1896,7 @@ bool Ath10kPCIDevice::runWMIBootstrap()
         !_regs.read32(base + Ath10k::kCEDstWriteIndex, writeback) || writeback != _wmi.next)
         return false;
     _wmi.rxPosted = true;
-    IOLog("Ath10kMac: WMI CE2 RX ARMED slot=%u next=%u bytes=%u credits=%u size=%u\n",
+    ATH10K_TRACE("Ath10kMac: WMI CE2 RX ARMED slot=%u next=%u bytes=%u credits=%u size=%u\n",
           _wmi.slot, _wmi.next, Ath10k::kWMIRxBytes, _wmi.credits.available, _wmi.credits.size);
 
     UInt8 setup[Ath10k::kHTCSetupCompleteExFrameBytes]{};
@@ -1906,7 +1907,7 @@ bool Ath10kPCIDevice::runWMIBootstrap()
         return false;
     }
     _htcSetupCompleteSent = true; // CE consumed, not yet firmware service-ready.
-    IOLog("Ath10kMac: HTC SETUP_COMPLETE_EX consumed; waiting for WMI SERVICE_READY\n");
+    ATH10K_TRACE("Ath10kMac: HTC SETUP_COMPLETE_EX consumed; waiting for WMI SERVICE_READY\n");
     for (_wmi.waitMs = 0; ; ++_wmi.waitMs) {
         _wmi.status = "wmi-poll-failed";
         UInt32 read = 0xffffffffu;
@@ -1935,7 +1936,7 @@ bool Ath10kPCIDevice::runWMIBootstrap()
             for (UInt32 i = 0; i < _wmi.rxBytes && i < 32; ++i) {
                 prefix[2*i] = hex[data[i] >> 4]; prefix[2*i+1] = hex[data[i] & 15];
             }
-            IOLog("Ath10kMac: WMI CE2 RX bytes=%u waited=%u ms prefix=%s\n", _wmi.rxBytes, _wmi.waitMs, prefix);
+            ATH10K_TRACE("Ath10kMac: WMI CE2 RX bytes=%u waited=%u ms prefix=%s\n", _wmi.rxBytes, _wmi.waitMs, prefix);
             const char *error = Ath10k::parseWMIBootstrapEvent(data, _wmi.rxBytes, _htcWMIControl.endpoint, _wmi);
             if (error) {
                 _wmi.status = error;
@@ -1946,12 +1947,12 @@ bool Ath10kPCIDevice::runWMIBootstrap()
             ++_wmi.rxCount;
             if (_wmi.serviceReady) {
                 _wmi.status = "service-ready-before-reset";
-                IOLog("Ath10kMac: WMI SERVICE_READY VERIFIED event=%u build=0x%x abi=0x%x chains=%u mem-requests=%u reg-tlv-bytes=%u reg-tlv-count=%u; preparing WMI_INIT\n",
+                ATH10K_TRACE("Ath10kMac: WMI SERVICE_READY VERIFIED event=%u build=0x%x abi=0x%x chains=%u mem-requests=%u reg-tlv-bytes=%u reg-tlv-count=%u; preparing WMI_INIT\n",
                       _wmi.eventId, _wmi.fwBuild, _wmi.abi0, _wmi.rfChains, _wmi.memoryRequests,
                       _wmi.regCapsBytes,_wmi.regCapsCount);
                 return true;
             }
-            IOLog("Ath10kMac: WMI SERVICE_AVAILABLE VERIFIED count=%u bits=%u; awaiting SERVICE_READY\n",
+            ATH10K_TRACE("Ath10kMac: WMI SERVICE_AVAILABLE VERIFIED count=%u bits=%u; awaiting SERVICE_READY\n",
                   _wmi.availableCount, _wmi.availableBits);
             // Bound even an uninterrupted stream of valid AVAILABLE events.
             if (_wmi.availableCount >= 8) { _wmi.status = "wmi-event-limit"; return false; }
@@ -2023,7 +2024,7 @@ bool Ath10kPCIDevice::runWMIInit()
     if (error) { _wmiInit.status=error;return false; }
     _wmiInit.requestedChainMask=Ath10k::wmiReadLE32(
         static_cast<const UInt8 *>(_wmiTxBuffer.virtualAddress())+76);
-    IOLog("Ath10kMac: WMI INIT RF chains=%u requested-tx-mask=0x%x requested-rx-mask=0x%x source=SERVICE_READY\n",
+    ATH10K_TRACE("Ath10kMac: WMI INIT RF chains=%u requested-tx-mask=0x%x requested-rx-mask=0x%x source=SERVICE_READY\n",
           _wmi.rfChains,_wmiInit.requestedChainMask,_wmiInit.requestedChainMask);
     const UInt32 ce=3, entries=Ath10k::kCEHostConfig[ce].srcEntries;
     Ath10k::CESnapshot snap{};_wmiInit.status="wmi-init-ce3-state";
@@ -2048,7 +2049,7 @@ bool Ath10kPCIDevice::runWMIInit()
     if (!_regs.write32(base+Ath10k::kCESrcWriteIndex,_wmiInit.txNext) ||
         !_regs.read32(base+Ath10k::kCESrcWriteIndex,back) || back!=_wmiInit.txNext) return false;
     _wmiInit.submitted=true;
-    IOLog("Ath10kMac: WMI INIT SUBMITTED CE3 endpoint=%u bytes=%u credits=%u outstanding=%u\n",
+    ATH10K_TRACE("Ath10kMac: WMI INIT SUBMITTED CE3 endpoint=%u bytes=%u credits=%u outstanding=%u\n",
           _htcWMIControl.endpoint,_wmiInit.frameBytes,_wmi.credits.available,_wmi.credits.outstanding);
     for (_wmiInit.waitMs=0;;++_wmiInit.waitMs) {
         _wmiInit.status="wmi-init-poll-failed";
@@ -2077,21 +2078,21 @@ bool Ath10kPCIDevice::runWMIInit()
             for (UInt32 i=0;i<bytes && i<64;++i) {
                 prefix[2*i]=hex[raw[i]>>4];prefix[2*i+1]=hex[raw[i]&15];
             }
-            IOLog("Ath10kMac: WMI INIT RX RAW CE%u bytes=%u prefix=%s\n",rxCE,bytes,prefix);
+            ATH10K_TRACE("Ath10kMac: WMI INIT RX RAW CE%u bytes=%u prefix=%s\n",rxCE,bytes,prefix);
             error=Ath10k::parseWMIInitResponse(reinterpret_cast<const UInt8 *>(buffer.virtualAddress()),
                 bytes,_htcWMIControl.endpoint,_wmi.credits,_wmiInit);
             if (error) {_wmiInit.status=error;return false;}
             ++_wmiInit.rxCount;
             if (_wmiInit.lastEventId==0x1d011)
-                IOLog("Ath10kMac: WMI DIAG ACCEPTED count=%u payload-total=%u; continuing credit wait\n",
+                ATH10K_TRACE("Ath10kMac: WMI DIAG ACCEPTED count=%u payload-total=%u; continuing credit wait\n",
                       _wmiInit.diagCount,_wmiInit.diagBytes);
             if (_wmiInit.lastEventId==0x1d019)
-                IOLog("Ath10kMac: WMI PKGID ACCEPTED count=%u id=0x%08x; continuing credit wait\n",
+                ATH10K_TRACE("Ath10kMac: WMI PKGID ACCEPTED count=%u id=0x%08x; continuing credit wait\n",
                       _wmiInit.pkgIdCount,_wmiInit.pkgId);
             if (_wmiInit.lastEventId==0x16006)
-                IOLog("Ath10kMac: WMI DIAG SUPPORTED count=%u entries=%u; continuing INIT\n",
+                ATH10K_TRACE("Ath10kMac: WMI DIAG SUPPORTED count=%u entries=%u; continuing INIT\n",
                       _wmiInit.diagSupportedCount,_wmiInit.diagSupportedEntries);
-            IOLog("Ath10kMac: WMI INIT RX CE%u bytes=%u ready=%s credits=%u outstanding=%u\n",
+            ATH10K_TRACE("Ath10kMac: WMI INIT RX CE%u bytes=%u ready=%s credits=%u outstanding=%u\n",
                   rxCE,bytes,_wmiInit.ready?"yes":"no",_wmi.credits.available,_wmi.credits.outstanding);
             if (_wmiInit.rxCount>32) {_wmiInit.status="wmi-init-event-limit";return false;}
             if (rxCE==1) {
@@ -2104,7 +2105,7 @@ bool Ath10kPCIDevice::runWMIInit()
             _wmiInit.completed=true;
             _htcCreditFlowDeferred=false;
             _wmiInit.status="ready-and-credit-returned";
-            IOLog("Ath10kMac: WMI INIT PASS READY status=0 credit-returned=yes waited=%u ms\n",_wmiInit.waitMs);
+            ATH10K_TRACE("Ath10kMac: WMI INIT PASS READY status=0 credit-returned=yes waited=%u ms\n",_wmiInit.waitMs);
             return true;
         }
         if (_wmiInit.waitMs>=5000) {
@@ -2157,7 +2158,7 @@ const char *Ath10kPCIDevice::serviceWMIEcho(UInt64 nowMs)
         if (!_regs.write32(doorbell,_wmiEcho.txNext) || !_regs.read32(doorbell,back) || back!=_wmiEcho.txNext)
             return _wmiEcho.status;
         _wmiEcho.submitted=true;_wmiEcho.status="waiting-for-echo-and-credit";
-        IOLog("Ath10kMac: WMI ECHO SUBMITTED CE3 cookie=0x%08x sequence=1 bytes=%u credits=%u outstanding=%u\n",
+        ATH10K_TRACE("Ath10kMac: WMI ECHO SUBMITTED CE3 cookie=0x%08x sequence=1 bytes=%u credits=%u outstanding=%u\n",
               _wmiEcho.cookie,Ath10k::kWMIEchoFrameBytes,_wmi.credits.available,_wmi.credits.outstanding);
     }
     if (!_wmiEcho.submitted) return _wmiEcho.status;
@@ -2177,7 +2178,7 @@ const char *Ath10kPCIDevice::serviceWMIEcho(UInt64 nowMs)
     }
     if (_wmiEcho.txConsumed && _wmiEcho.replyReceived && _wmiEcho.creditReturned) {
         _wmiEcho.completed=true;_wmiEcho.status="reply-and-credit-returned";
-        IOLog("Ath10kMac: WMI ECHO PASS cookie=0x%08x tx-consumed=yes reply=yes credit-returned=yes elapsed=%llu ms\n",
+        ATH10K_TRACE("Ath10kMac: WMI ECHO PASS cookie=0x%08x tx-consumed=yes reply=yes credit-returned=yes elapsed=%llu ms\n",
               _wmiEcho.cookie,static_cast<unsigned long long>(_wmiEcho.elapsedMs));
     }
     return nullptr;
@@ -2256,7 +2257,7 @@ const char *Ath10kPCIDevice::serviceRxSetup(UInt64 nowMs)
         s.status="rx-setup-submit-failed";
         if(!_regs.write32(doorbell,s.txNext) || !_regs.read32(doorbell,back) || back!=s.txNext)return s.status;
         s.submitted=true;s.status="waiting-for-setup-stage";
-        IOLog("Ath10kMac: RX SETUP SUBMITTED stage=%u CE%u bytes=%u\n",s.stage,ce,bytes);
+        ATH10K_TRACE("Ath10kMac: RX SETUP SUBMITTED stage=%u CE%u bytes=%u\n",s.stage,ce,bytes);
     }
     UInt32 read=0xffffffffu;
     if(!_regs.read32(Ath10k::ceBaseAddress(ce)+Ath10k::kCECurrentSrcRead,read) ||
@@ -2268,7 +2269,7 @@ const char *Ath10kPCIDevice::serviceRxSetup(UInt64 nowMs)
         (!creditsOK?"rx-setup-credit-timeout":"rx-setup-response-timeout");
     if(consumed && creditsOK && responseOK){
         if(ce==3)s.wmiNext=s.txNext;else s.httNext=s.txNext;
-        IOLog("Ath10kMac: RX SETUP STAGE COMPLETE stage=%u CE%u version=%u.%u\n",s.stage,ce,s.major,s.minor);
+        ATH10K_TRACE("Ath10kMac: RX SETUP STAGE COMPLETE stage=%u CE%u version=%u.%u\n",s.stage,ce,s.major,s.minor);
         ++s.stage;s.submitted=false;
         if(s.stage==6){s.completed=true;s.status="transport-complete-ordered-rx-ready";}
     }
@@ -2511,7 +2512,7 @@ const char *Ath10kPCIDevice::serviceWMIVdevCreate(UInt64 nowMs)
         if (!_regs.write32(doorbell,state.txNext) || !_regs.read32(doorbell,back) || back!=state.txNext)
             return state.status;
         state.submitted=true;state.status="waiting-for-tx-and-credit";
-        IOLog("Ath10kMac: WMI VDEV_CREATE SUBMITTED id=0 type=STA sequence=5 bytes=36 credits=%u outstanding=%u\n",
+        ATH10K_TRACE("Ath10kMac: WMI VDEV_CREATE SUBMITTED id=0 type=STA sequence=5 bytes=36 credits=%u outstanding=%u\n",
               _wmi.credits.available,_wmi.credits.outstanding);
     }
     if (!state.submitted) return state.status; // No retry after any failed attempt.
@@ -2529,7 +2530,7 @@ const char *Ath10kPCIDevice::serviceWMIVdevCreate(UInt64 nowMs)
     if (state.txConsumed && state.creditReturned) {
         state.completed=true;state.status="transport-complete-no-create-response";
         // VDEV_CREATE has no semantic success response in this ath10k TLV path.
-        IOLog("Ath10kMac: WMI VDEV_CREATE TRANSPORT PASS id=0 tx-consumed=yes credit-returned=yes elapsed=%llu ms; semantic creation not confirmed\n",
+        ATH10K_TRACE("Ath10kMac: WMI VDEV_CREATE TRANSPORT PASS id=0 tx-consumed=yes credit-returned=yes elapsed=%llu ms; semantic creation not confirmed\n",
               static_cast<unsigned long long>(state.elapsedMs));
     }
     return nullptr;
@@ -2587,7 +2588,7 @@ const char *Ath10kPCIDevice::serviceWMIRadio(UInt64 nowMs, UInt32 index)
         if (!_regs.write32(doorbell,state.txNext) || !_regs.read32(doorbell,back) || back!=state.txNext)
             return state.status;
         state.submitted=true;state.status="waiting-for-tx-and-credit";
-        IOLog("Ath10kMac: WMI RADIO SUBMITTED step=%u command=0x%x param=%u value=%u sequence=%u bytes=%u\n",
+        ATH10K_TRACE("Ath10kMac: WMI RADIO SUBMITTED step=%u command=0x%x param=%u value=%u sequence=%u bytes=%u\n",
               index,index==2?0x4001:0x4003,param,value,index+6,frameBytes);
     }
     if (!state.submitted) return state.status; // No retry after any failed attempt.
@@ -2605,7 +2606,7 @@ const char *Ath10kPCIDevice::serviceWMIRadio(UInt64 nowMs, UInt32 index)
     if (state.txConsumed && state.creditReturned) {
         state.completed=true;state.status="transport-complete-rf-unconfirmed";
         // Credits prove transport completion, not application by the RF hardware.
-        IOLog("Ath10kMac: WMI RADIO TRANSPORT PASS step=%u elapsed=%llu ms; RF application unconfirmed\n",
+        ATH10K_TRACE("Ath10kMac: WMI RADIO TRANSPORT PASS step=%u elapsed=%llu ms; RF application unconfirmed\n",
               index,static_cast<unsigned long long>(state.elapsedMs));
     }
     return nullptr;
@@ -2648,7 +2649,7 @@ const char *Ath10kPCIDevice::serviceWMIScanChannels(UInt64 nowMs)
         if (!_regs.write32(doorbell,state.txNext) || !_regs.read32(doorbell,back) || back!=state.txNext)
             return state.status;
         state.submitted=true;state.status="waiting-for-tx-and-credit";
-        IOLog("Ath10kMac: WMI SCAN_CHAN_LIST SUBMITTED channels=%u bands=2.4+5GHz passive=yes sequence=8 bytes=%u credits=%u outstanding=%u\n",
+        ATH10K_TRACE("Ath10kMac: WMI SCAN_CHAN_LIST SUBMITTED channels=%u bands=2.4+5GHz passive=yes sequence=8 bytes=%u credits=%u outstanding=%u\n",
               Ath10k::regulatoryScanCount(&_regulatory),Ath10k::htcReadLE16(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress())+2)+8,_wmi.credits.available,_wmi.credits.outstanding);
     }
     if (!state.submitted) return state.status; // No retry after any failed attempt.
@@ -2666,7 +2667,7 @@ const char *Ath10kPCIDevice::serviceWMIScanChannels(UInt64 nowMs)
     if (state.txConsumed && state.creditReturned) {
         state.completed=true;state.status="transport-complete-scan-not-started";
         // Transport completion does not prove channel acceptance or scan success.
-        IOLog("Ath10kMac: WMI SCAN_CHAN_LIST TRANSPORT PASS channels=%u bands=2.4+5GHz passive=yes tx-consumed=yes credit-returned=yes elapsed=%llu ms; scan not started; channel acceptance not confirmed\n",
+        ATH10K_TRACE("Ath10kMac: WMI SCAN_CHAN_LIST TRANSPORT PASS channels=%u bands=2.4+5GHz passive=yes tx-consumed=yes credit-returned=yes elapsed=%llu ms; scan not started; channel acceptance not confirmed\n",
               Ath10k::regulatoryScanCount(&_regulatory),static_cast<unsigned long long>(state.elapsedMs));
     }
     return nullptr;
@@ -2716,7 +2717,7 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
         if (!_regs.write32(doorbell,state.txNext) || !_regs.read32(doorbell,back) || back!=state.txNext)
             return state.status;
         state.submitted=true;state.status="waiting-for-scan-events";
-        IOLog("Ath10kMac: WMI START_SCAN SUBMITTED id=0x%x request=0xa001 vdev=0 channels=%u passive=yes sequence=9 bytes=%u credits=%u outstanding=%u\n",
+        ATH10K_TRACE("Ath10kMac: WMI START_SCAN SUBMITTED id=0x%x request=0xa001 vdev=0 channels=%u passive=yes sequence=9 bytes=%u credits=%u outstanding=%u\n",
               state.id,Ath10k::regulatoryScanCount(&_regulatory),Ath10k::htcReadLE16(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress())+2)+8,_wmi.credits.available,_wmi.credits.outstanding);
     }
     if (!state.submitted) return state.status; // No retry after any failed attempt.
@@ -2757,7 +2758,7 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
     if (state.txConsumed && state.creditReturned && (state.started || state.cancelRequested) && state.terminal && (!state.stopSubmitted || state.stopConsumed)) {
         state.completed=true;state.status="scan-completed";
         // Success requires correlated STARTED and COMPLETED(reason=0), plus TX/credit.
-        IOLog("Ath10kMac: WMI START_SCAN PASS id=0x%x channels=%u started=%s completed=yes reason=%u tx-consumed=yes credit-returned=yes elapsed=%llu ms\n",
+        ATH10K_TRACE("Ath10kMac: WMI START_SCAN PASS id=0x%x channels=%u started=%s completed=yes reason=%u tx-consumed=yes credit-returned=yes elapsed=%llu ms\n",
               state.id,Ath10k::regulatoryScanCount(&_regulatory),state.started?"yes":"no",state.reason,static_cast<unsigned long long>(state.elapsedMs));
     }
     return nullptr;
@@ -2800,7 +2801,7 @@ const char *Ath10kPCIDevice::drainWMIRuntime()
             if (_wmiLive.lastEventId==0x7001) ++_wmiLive.rawMgmt;
             // Bound diagnostic volume; log headers only, never SSID/packet contents.
             if (_wmiLive.rawCount<=64)
-                IOLog("Ath10kMac: WMI RX ENVELOPE CE%u endpoint=%u id=0x%x bytes=%u payload=%u trailer=%u\n",
+                ATH10K_TRACE("Ath10kMac: WMI RX ENVELOPE CE%u endpoint=%u id=0x%x bytes=%u payload=%u trailer=%u\n",
                       ce,raw[0],_wmiLive.lastEventId,bytes,payload,trailer);
             // INIT has already completed; a second READY is not a new success.
             if (_wmiLive.lastEventId==2) return "runtime-unexpected-ready";
@@ -2815,7 +2816,7 @@ const char *Ath10kPCIDevice::drainWMIRuntime()
                     _rxSetup.attempted && (_rxSetup.stage>1 || (_rxSetup.stage==1 && _rxSetup.submitted)),&_connection);
             const bool httMessage=isHTT && bytes>=12 && payload>=trailer+4;
             if(httMessage && !error && _rxSetup.messages<=16)
-                IOLog("Ath10kMac: HTT RX type=0x%x bytes=%u version=%u.%u\n",_rxSetup.lastType,bytes,_rxSetup.major,_rxSetup.minor);
+                ATH10K_TRACE("Ath10kMac: HTT RX type=0x%x bytes=%u version=%u.%u\n",_rxSetup.lastType,bytes,_rxSetup.major,_rxSetup.minor);
             if(httMessage && !error && (raw[8]==3 || raw[8]==4) &&
                _connection.diagnostics.maps+_connection.diagnostics.unmaps<=128){
                 const auto &d=_connection.diagnostics;
@@ -2826,7 +2827,7 @@ const char *Ath10kPCIDevice::drainWMIRuntime()
             }
             if(httMessage && !error && raw[8]==0xb && _connection.securityInd.received<=16){
                 const auto &d=_connection.securityInd;
-                IOLog("Ath10kMac: SECURITY_IND peer=%u flags=0x%02x disconnect=%u mapped=%s retired=%s ack=%s action=%s\n",
+                ATH10K_TRACE("Ath10kMac: SECURITY_IND peer=%u flags=0x%02x disconnect=%u mapped=%s retired=%s ack=%s action=%s\n",
                       d.peer,d.flags,d.disconnect,d.mapped?"yes":"no",d.retired?"yes":"no",d.ack?"yes":"no",d.action);
             }
             if (error) {
@@ -2840,13 +2841,13 @@ const char *Ath10kPCIDevice::drainWMIRuntime()
             }
             ++_wmiLive.rxCount;++consumed;progress=true;
             if (!isHTT && _wmiEvents.lastEventId==0x3001)
-                IOLog("Ath10kMac: WMI SCAN EVENT type=0x%x reason=%u freq=%u count=%u\n",
+                ATH10K_TRACE("Ath10kMac: WMI SCAN EVENT type=0x%x reason=%u freq=%u count=%u\n",
                       _wmiScan.lastType,_wmiScan.reason,_wmiScan.frequency,_wmiScan.eventCount);
             if (!isHTT && _wmiEvents.lastEventId==0x1d019)
-                IOLog("Ath10kMac: WMI RUNTIME PKGID count=%u value=0x%08x\n",
+                ATH10K_TRACE("Ath10kMac: WMI RUNTIME PKGID count=%u value=0x%08x\n",
                       _wmiEvents.pkgIdCount,_wmiEvents.pkgId);
             if (!isHTT && _wmiEvents.lastEventId==0x16006)
-                IOLog("Ath10kMac: WMI RUNTIME DIAG SUPPORTED count=%u entries=%u\n",
+                ATH10K_TRACE("Ath10kMac: WMI RUNTIME DIAG SUPPORTED count=%u entries=%u\n",
                       _wmiEvents.diagSupportedCount,_wmiEvents.diagSupportedEntries);
             if (ce==1) {
                 ++_runtimeRxCompletedCount;_runtimeLastRxBytes=bytes;
@@ -2865,7 +2866,7 @@ bool Ath10kPCIDevice::preparePCIeBringupParity()
     _pcieParityPrepared = false;
     _pcieParityRestored = false;
 
-    IOLog("Ath10kMac: PCIe bring-up parity begin (ASPM off + IOPCIFamily IRQ registration)\n");
+    ATH10K_TRACE("Ath10kMac: PCIe bring-up parity begin (ASPM off + IOPCIFamily IRQ registration)\n");
 
     if (!disableASPMForBringup()) {
         IOLog("Ath10kMac: PCIe bring-up parity stopped: ASPM disable/readback failed\n");
@@ -2879,7 +2880,7 @@ bool Ath10kPCIDevice::preparePCIeBringupParity()
     }
 
     _pcieParityPrepared = true;
-    IOLog("Ath10kMac: PCIe bring-up parity READY ASPM=off IRQ=%s\n",
+    ATH10K_TRACE("Ath10kMac: PCIe bring-up parity READY ASPM=off IRQ=%s\n",
           _irqMessaged?"MSI-registered-disabled":"INTx-polled-bootstrap");
     return true;
 }
@@ -2896,10 +2897,10 @@ void Ath10kPCIDevice::restorePCIeBringupParity()
 
 void Ath10kPCIDevice::validateRegisterLayer()
 {
-    IOLog("Ath10kMac: MMIO layer attached=%s length=0x%llx\n",
+    ATH10K_TRACE("Ath10kMac: MMIO layer attached=%s length=0x%llx\n",
           _regs.attached() ? "yes" : "no",
           (unsigned long long)_regs.length());
-    IOLog("Ath10kMac: MMIO policy=QCA6174 Host Interest + board/OTP/WLAN + BMI_DONE + HTC READY + Phase 3 HTC services in 0.0.91\n");
+    ATH10K_TRACE("Ath10kMac: MMIO policy=QCA6174 Host Interest + board/OTP/WLAN + BMI_DONE + HTC READY + Phase 3 HTC services in 0.0.91\n");
 
     if (!_regs.valid32(0))
         IOLog("Ath10kMac: ERROR BAR0 cannot satisfy even a 32-bit MMIO access\n");
@@ -2907,13 +2908,13 @@ void Ath10kPCIDevice::validateRegisterLayer()
 
 void Ath10kPCIDevice::dumpHardwareCandidates()
 {
-    IOLog("Ath10kMac: hardware candidates for PCI device %04x:\n", _deviceId);
+    ATH10K_TRACE("Ath10kMac: hardware candidates for PCI device %04x:\n", _deviceId);
     UInt32 count = 0;
     for (const auto &candidate : Ath10k::kCandidates) {
         if (candidate.deviceId != _deviceId)
             continue;
         ++count;
-        IOLog("Ath10kMac:   candidate=%s chip-rev=%u firmware=%s cal=%u cpu=%u diag-ce=%s\n",
+        ATH10K_TRACE("Ath10kMac:   candidate=%s chip-rev=%u firmware=%s cal=%u cpu=%u diag-ce=%s\n",
               candidate.targetRevision,
               candidate.chipRevision,
               candidate.firmwareDirectory,
@@ -2921,7 +2922,7 @@ void Ath10kPCIDevice::dumpHardwareCandidates()
               candidate.targetCpuFrequencyHz,
               candidate.firmwareDiagCeDownload ? "yes" : "no");
     }
-    IOLog("Ath10kMac: %u candidate target profile(s); final selection remains deferred until post-reset chip-id\n", count);
+    ATH10K_TRACE("Ath10kMac: %u candidate target profile(s); final selection remains deferred until post-reset chip-id\n", count);
 }
 
 
@@ -3184,14 +3185,14 @@ bool Ath10kPCIDevice::wakeTarget(bool &assertedWake)
     }
 
     const UInt32 beforeState = Ath10k::rtcStateValue(_rtcStateBefore);
-    IOLog("Ath10kMac: target RTC_STATE before=0x%08x state=%u expected-on=%u\n",
+    ATH10K_TRACE("Ath10kMac: target RTC_STATE before=0x%08x state=%u expected-on=%u\n",
           _rtcStateBefore, beforeState, layout.rtcStateValueOn);
 
     // RTC=ON describes the current state, not ownership of a wake request.
     // Linux __ath10k_pci_wake() asserts SOC_WAKE even when already awake.
     _targetWasAlreadyAwake = beforeState == layout.rtcStateValueOn;
 
-    IOLog("Ath10kMac: target wake assert offset=0x%08x value=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: target wake assert offset=0x%08x value=0x%08x\n",
           wakeOffset, Ath10k::kPcieSocWakeMask);
     if (!_regs.write32(wakeOffset, Ath10k::kPcieSocWakeMask)) {
         IOLog("Ath10kMac: target wake ERROR cannot write SOC_WAKE\n");
@@ -3212,7 +3213,7 @@ bool Ath10kPCIDevice::wakeTarget(bool &assertedWake)
         if (Ath10k::rtcStateValue(rtcValue) == layout.rtcStateValueOn) {
             _rtcStateAfter = rtcValue;
             _wakeDelayUs = totalDelay;
-            IOLog("Ath10kMac: target awake RTC_STATE=0x%08x delay=%u us%s\n",
+            ATH10K_TRACE("Ath10kMac: target awake RTC_STATE=0x%08x delay=%u us%s\n",
                   rtcValue, totalDelay,
                   totalDelay > Ath10k::kWakeLateUs ? " (late)" : "");
             return true;
@@ -3238,7 +3239,7 @@ void Ath10kPCIDevice::releaseTargetWake(bool assertedWake)
 
     const UInt32 wakeOffset = Ath10k::socWakeOffset(Ath10k::kQca6174RegisterLayout);
     if (_regs.write32(wakeOffset, Ath10k::kPcieSocWakeReset))
-        IOLog("Ath10kMac: target wake released; SOC_WAKE=0\n");
+        ATH10K_TRACE("Ath10kMac: target wake released; SOC_WAKE=0\n");
     else
         IOLog("Ath10kMac: target wake release ERROR\n");
 }
@@ -3252,7 +3253,7 @@ bool Ath10kPCIDevice::coldResetTarget()
     const UInt32 offset = Ath10k::globalResetOffset(layout);
     UInt32 before = 0xffffffffu;
 
-    IOLog("Ath10kMac: cold reset begin offset=0x%08x mask=0x%08x delay=%u+%u ms\n",
+    ATH10K_TRACE("Ath10kMac: cold reset begin offset=0x%08x mask=0x%08x delay=%u+%u ms\n",
           offset, Ath10k::kSocGlobalResetMask,
           Ath10k::kColdResetDelayMs, Ath10k::kColdResetDelayMs);
 
@@ -3266,7 +3267,7 @@ bool Ath10kPCIDevice::coldResetTarget()
     const UInt32 asserted = before | Ath10k::kSocGlobalResetMask;
     const UInt32 deasserted = before & ~Ath10k::kSocGlobalResetMask;
 
-    IOLog("Ath10kMac: cold reset assert SOC_GLOBAL_RESET 0x%08x -> 0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: cold reset assert SOC_GLOBAL_RESET 0x%08x -> 0x%08x\n",
           before, asserted);
     if (!_regs.write32(offset, asserted)) {
         IOLog("Ath10kMac: cold reset ERROR assert write failed\n");
@@ -3277,7 +3278,7 @@ bool Ath10kPCIDevice::coldResetTarget()
     // this reset because the link/controller may be temporarily unstable.
     IOSleep(Ath10k::kColdResetDelayMs);
 
-    IOLog("Ath10kMac: cold reset deassert SOC_GLOBAL_RESET value=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: cold reset deassert SOC_GLOBAL_RESET value=0x%08x\n",
           deasserted);
     if (!_regs.write32(offset, deasserted)) {
         IOLog("Ath10kMac: cold reset ERROR deassert write failed\n");
@@ -3291,7 +3292,7 @@ bool Ath10kPCIDevice::coldResetTarget()
     if (_pci) {
         _pci->setMemoryEnable(true);
         _pci->setBusMasterEnable(true);
-        IOLog("Ath10kMac: cold reset PCI command after=0x%04x\n",
+        ATH10K_TRACE("Ath10kMac: cold reset PCI command after=0x%04x\n",
               _pci->configRead16(kIOPCIConfigCommand));
     }
 
@@ -3299,7 +3300,7 @@ bool Ath10kPCIDevice::coldResetTarget()
     // returns after the second delay; 0.0.91 verifies the released bit only
     // after reacquiring target wake in probeTarget().
     _coldResetSucceeded = true;
-    IOLog("Ath10kMac: cold reset pulse COMPLETE; post-reset readback deferred until wake reacquire\n");
+    ATH10K_TRACE("Ath10kMac: cold reset pulse COMPLETE; post-reset readback deferred until wake reacquire\n");
     return true;
 }
 
@@ -3340,7 +3341,7 @@ bool Ath10kPCIDevice::waitForTargetInit()
         if (value != lastValue) {
             if (lastValue != 0xffffffffu)
                 ++_fwIndicatorChangeCount;
-            IOLog("Ath10kMac: target-init indicator change elapsed=%u ms value=0x%08x\n",
+            ATH10K_TRACE("Ath10kMac: target-init indicator change elapsed=%u ms value=0x%08x\n",
                   elapsed, value);
             lastValue = value;
         } else {
@@ -3350,7 +3351,7 @@ bool Ath10kPCIDevice::waitForTargetInit()
                 elapsed == 1500 || elapsed == 2000 || elapsed == 2500 ||
                 elapsed == 3000;
             if (checkpoint)
-                IOLog("Ath10kMac: target-init indicator sample elapsed=%u ms value=0x%08x\n",
+                ATH10K_TRACE("Ath10kMac: target-init indicator sample elapsed=%u ms value=0x%08x\n",
                       elapsed, value);
         }
 
@@ -3365,7 +3366,7 @@ bool Ath10kPCIDevice::waitForTargetInit()
             if (value & Ath10k::kFwIndicatorInitialized) {
                 _targetInitWaitSucceeded = true;
                 _targetInitWaitMs = elapsed;
-                IOLog("Ath10kMac: target-init READY indicator=0x%08x elapsed=%u ms samples=%u changes=%u\n",
+                ATH10K_TRACE("Ath10kMac: target-init READY indicator=0x%08x elapsed=%u ms samples=%u changes=%u\n",
                       value, elapsed, _fwIndicatorSampleCount, _fwIndicatorChangeCount);
                 return true;
             }
@@ -3427,18 +3428,18 @@ bool Ath10kPCIDevice::readPostResetChipId()
     _selectedHw = Ath10k::findCandidate(_deviceId, _chipRevision);
     _chipIdValid = (_selectedHw != nullptr);
 
-    IOLog("Ath10kMac: SOC_CHIP_ID post-reset=0x%08x chip-rev-field=%u (0x%x) supported=%s\n",
+    ATH10K_TRACE("Ath10kMac: SOC_CHIP_ID post-reset=0x%08x chip-rev-field=%u (0x%x) supported=%s\n",
           _chipId, _chipRevision, _chipRevision,
           _chipIdValid ? "yes" : "no");
 
     if (_selectedHw) {
-        IOLog("Ath10kMac: selected target profile=%s firmware=%s cpu=%u diag-ce=%s\n",
+        ATH10K_TRACE("Ath10kMac: selected target profile=%s firmware=%s cpu=%u diag-ce=%s\n",
               _selectedHw->targetRevision,
               _selectedHw->firmwareDirectory,
               _selectedHw->targetCpuFrequencyHz,
               _selectedHw->firmwareDiagCeDownload ? "yes" : "no");
     } else {
-        IOLog("Ath10kMac: post-reset chip revision is not in supported table for PCI device %04x\n",
+        ATH10K_TRACE("Ath10kMac: post-reset chip revision is not in supported table for PCI device %04x\n",
               _deviceId);
     }
 
@@ -3489,7 +3490,7 @@ bool Ath10kPCIDevice::maskTargetIRQsForWarmReset()
     ok &= _regs.read32(coreCtrl, coreAfter);
     _warmResetIRQMasked = ok && flush == 0 &&
                           (coreAfter & Ath10k::kCoreCtrlPCIeReg31Mask) == 0;
-    IOLog("Ath10kMac: warm reset IRQ mask %s intr-enable=0x%08x clear-mask=0x%08x core-ctrl=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset IRQ mask %s intr-enable=0x%08x clear-mask=0x%08x core-ctrl=0x%08x\n",
           _warmResetIRQMasked ? "PASS" : "FAIL", flush, clearMask, coreAfter);
     return _warmResetIRQMasked;
 }
@@ -3502,7 +3503,7 @@ bool Ath10kPCIDevice::warmResetSI0()
     if (!ok)
         return false;
 
-    IOLog("Ath10kMac: warm reset SI0 begin control=0x%08x mask=0x%08x%s\n",
+    ATH10K_TRACE("Ath10kMac: warm reset SI0 begin control=0x%08x mask=0x%08x%s\n",
           val, Ath10k::kSocResetControlSI0ResetMask,
           Ath10k::kSocResetControlSI0ResetMask == 0 ? " (QCA6174 timing/no-op mask)" : "");
     ok &= _regs.write32(offset, val | Ath10k::kSocResetControlSI0ResetMask);
@@ -3515,7 +3516,7 @@ bool Ath10kPCIDevice::warmResetSI0()
     IOSleep(Ath10k::kWarmResetDelayMs);
 
     _warmResetSI0Succeeded = ok;
-    IOLog("Ath10kMac: warm reset SI0 %s control=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset SI0 %s control=0x%08x\n",
           ok ? "PASS" : "FAIL", flush);
     return ok;
 }
@@ -3533,7 +3534,7 @@ bool Ath10kPCIDevice::warmResetCPU(const char *stage)
 
     const UInt32 requested = val | Ath10k::kSocResetControlCPUWarmMask;
     const bool ok = _regs.write32(resetOffset, requested);
-    IOLog("Ath10kMac: warm reset CPU %s %s FW_IND=0 reset-control 0x%08x -> 0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset CPU %s %s FW_IND=0 reset-control 0x%08x -> 0x%08x\n",
           stage ? stage : "stage", ok ? "asserted" : "FAIL", val, requested);
     return ok;
 }
@@ -3552,7 +3553,7 @@ bool Ath10kPCIDevice::warmResetClearLF()
     _warmResetLFBefore = before;
     _warmResetLFAfter = after;
     _warmResetLFCleared = ok && (after & Ath10k::kSocLFTimerEnableMask) == 0;
-    IOLog("Ath10kMac: warm reset LF timer %s 0x%08x -> 0x%08x enable-mask=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset LF timer %s 0x%08x -> 0x%08x enable-mask=0x%08x\n",
           _warmResetLFCleared ? "PASS" : "FAIL", before, after,
           Ath10k::kSocLFTimerEnableMask);
     return _warmResetLFCleared;
@@ -3565,7 +3566,7 @@ bool Ath10kPCIDevice::warmResetCE()
     if (!_regs.read32(offset, val))
         return false;
 
-    IOLog("Ath10kMac: warm reset CE assert control=0x%08x mask=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset CE assert control=0x%08x mask=0x%08x\n",
           val, Ath10k::kSocResetControlCEResetMask);
     if (!_regs.write32(offset, val | Ath10k::kSocResetControlCEResetMask))
         return false;
@@ -3574,7 +3575,7 @@ bool Ath10kPCIDevice::warmResetCE()
         return false;
 
     _warmResetCESucceeded = true;
-    IOLog("Ath10kMac: warm reset CE deassert requested value=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: warm reset CE deassert requested value=0x%08x\n",
           val & ~Ath10k::kSocResetControlCEResetMask);
     return true;
 }
@@ -3616,7 +3617,7 @@ bool Ath10kPCIDevice::initOneCopyEnginePipe(UInt32 ceId, const char *stage)
         return false;
     const auto &cfg = Ath10k::kCEHostConfig[ceId];
     if (cfg.srcEntries == 0 && cfg.dstEntries == 0) {
-        IOLog("Ath10kMac: CE%u init %s no host ring (%s)\n",
+        ATH10K_TRACE("Ath10kMac: CE%u init %s no host ring (%s)\n",
               ceId, stage ? stage : "pass", cfg.role);
         return true;
     }
@@ -3674,7 +3675,7 @@ bool Ath10kPCIDevice::initOneCopyEnginePipe(UInt32 ceId, const char *stage)
     Ath10k::CESnapshot snap{};
     const bool readOk = Ath10k::readCESnapshot(_regs, ceId, snap);
     const bool verified = ok && readOk && verifyCopyEnginePipe(ceId, snap);
-    IOLog("Ath10kMac: CE%u init %s readback=%s src=%08x/%u dst=%08x/%u ctrl1=%08x src-wm=%08x dst-wm=%08x idx=%u/%u,%u/%u role=%s\n",
+    ATH10K_TRACE("Ath10kMac: CE%u init %s readback=%s src=%08x/%u dst=%08x/%u ctrl1=%08x src-wm=%08x dst-wm=%08x idx=%u/%u,%u/%u role=%s\n",
           ceId, stage ? stage : "pass", verified ? "PASS" : "FAIL",
           snap.srcBase, snap.srcSize, snap.dstBase, snap.dstSize, snap.ctrl1,
           snap.srcWatermark, snap.dstWatermark,
@@ -3688,7 +3689,7 @@ bool Ath10kPCIDevice::initCopyEnginePipes(const char *stage)
     _cePipeInitAttempted = true;
     _cePipeLastVerifiedCount = 0;
     UInt32 configured = 0;
-    IOLog("Ath10kMac: CE init_pipes begin stage=%s transfers=OFF interrupts=MASKED diag-dmax=0x%x\n",
+    ATH10K_TRACE("Ath10kMac: CE init_pipes begin stage=%s transfers=OFF interrupts=MASKED diag-dmax=0x%x\n",
           stage ? stage : "pass", Ath10k::kCEDiagTransferLimit);
 
     for (UInt32 ceId = 0; ceId < Ath10k::kCECount; ++ceId) {
@@ -3709,7 +3710,7 @@ bool Ath10kPCIDevice::initCopyEnginePipes(const char *stage)
     _cePipeInitSucceeded = (_cePipeLastVerifiedCount == configured);
     if (_cePipeInitSucceeded)
         ++_cePipeInitPassCount;
-    IOLog("Ath10kMac: CE init_pipes %s stage=%s verified=%u/%u pass-count=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE init_pipes %s stage=%s verified=%u/%u pass-count=%u\n",
           _cePipeInitSucceeded ? "READY" : "FAILED", stage ? stage : "pass",
           _cePipeLastVerifiedCount, configured, _cePipeInitPassCount);
     return _cePipeInitSucceeded;
@@ -3761,7 +3762,7 @@ bool Ath10kPCIDevice::deinitCopyEnginePipes(const char *stage)
     UInt32 verified = 0;
     UInt32 configured = 0;
     bool allOk = true;
-    IOLog("Ath10kMac: CE deinit_pipes begin stage=%s\n", stage ? stage : "cleanup");
+    ATH10K_TRACE("Ath10kMac: CE deinit_pipes begin stage=%s\n", stage ? stage : "cleanup");
     for (UInt32 ceId = 0; ceId < Ath10k::kCECount; ++ceId) {
         const auto &cfg = Ath10k::kCEHostConfig[ceId];
         if (cfg.srcEntries == 0 && cfg.dstEntries == 0)
@@ -3772,13 +3773,13 @@ bool Ath10kPCIDevice::deinitCopyEnginePipes(const char *stage)
             ++verified;
         else
             allOk = false;
-        IOLog("Ath10kMac: CE%u deinit readback=%s\n", ceId, ok ? "PASS" : "FAIL");
+        ATH10K_TRACE("Ath10kMac: CE%u deinit readback=%s\n", ceId, ok ? "PASS" : "FAIL");
     }
     _cePipeDeinitVerifiedCount = verified;
     _cePipeDeinitSucceeded = allOk && verified == configured;
     if (_cePipeDeinitSucceeded)
         _cePipesProgrammed = false;
-    IOLog("Ath10kMac: CE deinit_pipes %s verified=%u/%u\n",
+    ATH10K_TRACE("Ath10kMac: CE deinit_pipes %s verified=%u/%u\n",
           _cePipeDeinitSucceeded ? "READY" : "FAILED", verified, configured);
     return _cePipeDeinitSucceeded;
 }
@@ -3905,7 +3906,7 @@ bool Ath10kPCIDevice::ce7DiagnosticRead(UInt32 targetAddress,
     ++_ceDiagSyncOutCount;
 
     const UInt32 base = Ath10k::ceBaseAddress(kDiagCE);
-    IOLog("Ath10kMac: CE7 diag READ begin target=0x%08x ce=0x%08x bytes=%u core-ctrl=0x%08x bounce-iovm=0x%08x src-slot=%u dst-slot=%u mapper=%s\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag READ begin target=0x%08x ce=0x%08x bytes=%u core-ctrl=0x%08x bounce-iovm=0x%08x src-slot=%u dst-slot=%u mapper=%s\n",
           targetAddress, ceAddress, nbytes, _ceDiagCoreCtrl,
           static_cast<UInt32>(_ceDiagBounce.dmaAddress()), srcSlot, dstSlot,
           _ceDiagBounce.mapperModeName());
@@ -3944,7 +3945,7 @@ bool Ath10kPCIDevice::ce7DiagnosticRead(UInt32 targetAddress,
         IOLog("Ath10kMac: CE7 diag read ERROR source write-index readback failed; DMA state UNCERTAIN\n");
         return false;
     }
-    IOLog("Ath10kMac: CE7 diag submit readback dst-w=%u/%u src-w=%u/%u mapper=%s sync-out=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag submit readback dst-w=%u/%u src-w=%u/%u mapper=%s sync-out=%u\n",
           _ceDiagLastDstWriteIndex, dstNext, _ceDiagLastSrcWriteIndex, srcNext,
           _ceDiagBounce.mapperModeName(), _ceDiagSyncOutCount);
     if (_ceDiagLastSrcWriteIndex != srcNext) {
@@ -4056,7 +4057,7 @@ bool Ath10kPCIDevice::ce7DiagnosticRead(UInt32 targetAddress,
     if (nbytes >= sizeof(UInt32))
         bcopy(outData, &value, sizeof(value));
 
-    IOLog("Ath10kMac: CE7 diag READ COMPLETE target=0x%08x ce=0x%08x bytes=%u value0=0x%08x waited=%u us src-r=%u dst-r=%u transaction=%u sync-out=%u sync-in=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag READ COMPLETE target=0x%08x ce=0x%08x bytes=%u value0=0x%08x waited=%u us src-r=%u dst-r=%u transaction=%u sync-out=%u sync-in=%u\n",
           targetAddress, ceAddress, completedBytes, value, waitedUs,
           srcRead, dstRead, _ceDiagTransactionCount,
           _ceDiagSyncOutCount, _ceDiagSyncInCount);
@@ -4168,7 +4169,7 @@ bool Ath10kPCIDevice::ce7DiagnosticWrite(UInt32 targetAddress,
     UInt32 value0 = 0;
     if (nbytes >= sizeof(UInt32))
         bcopy(data, &value0, sizeof(value0));
-    IOLog("Ath10kMac: CE7 diag WRITE begin target=0x%08x ce=0x%08x bytes=%u value0=0x%08x bounce-iovm=0x%08x src-slot=%u dst-slot=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag WRITE begin target=0x%08x ce=0x%08x bytes=%u value0=0x%08x bounce-iovm=0x%08x src-slot=%u dst-slot=%u\n",
           targetAddress, ceAddress, nbytes, value0,
           static_cast<UInt32>(_ceDiagBounce.dmaAddress()), srcSlot, dstSlot);
 
@@ -4203,7 +4204,7 @@ bool Ath10kPCIDevice::ce7DiagnosticWrite(UInt32 targetAddress,
         IOLog("Ath10kMac: CE7 diag write ERROR source write-index readback failed; DMA state UNCERTAIN\n");
         return false;
     }
-    IOLog("Ath10kMac: CE7 diag WRITE submit readback dst-w=%u/%u src-w=%u/%u sync-out=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag WRITE submit readback dst-w=%u/%u src-w=%u/%u sync-out=%u\n",
           _ceDiagLastDstWriteIndex, dstNext, _ceDiagLastSrcWriteIndex, srcNext,
           _ceDiagSyncOutCount);
     if (_ceDiagLastSrcWriteIndex != srcNext) {
@@ -4288,7 +4289,7 @@ bool Ath10kPCIDevice::ce7DiagnosticWrite(UInt32 targetAddress,
 
     ++_ceDiagTransactionCount;
     ++_ceDiagWriteTransactionCount;
-    IOLog("Ath10kMac: CE7 diag WRITE COMPLETE target=0x%08x ce=0x%08x bytes=%u value0=0x%08x waited=%u us src-r=%u dst-r=%u transaction=%u write-transaction=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diag WRITE COMPLETE target=0x%08x ce=0x%08x bytes=%u value0=0x%08x waited=%u us src-r=%u dst-r=%u transaction=%u write-transaction=%u\n",
           targetAddress, ceAddress, completedBytes, value0, waitedUs,
           srcRead, dstRead, _ceDiagTransactionCount, _ceDiagWriteTransactionCount);
     return true;
@@ -4376,10 +4377,10 @@ bool Ath10kPCIDevice::runCE7DiagnosticReadTest()
     }
 
     _ceDiagReadSucceeded = true;
-    IOLog("Ath10kMac: CE7 diagnostic READ-ONLY READY transactions=%u pcie-state=0x%08x pipe-cfg=0x%08x svc-map=0x%08x config-flags=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: CE7 diagnostic READ-ONLY READY transactions=%u pcie-state=0x%08x pipe-cfg=0x%08x svc-map=0x%08x config-flags=0x%08x\n",
           _ceDiagTransactionCount, _ceDiagPCIeStateAddress,
           _ceDiagPipeCfgAddress, _ceDiagServiceMapAddress, _ceDiagConfigFlags);
-    IOLog("Ath10kMac: CE7 discovery stage COMPLETE; persistent init_config + wake_target_cpu + BMI_GET_TARGET_INFO follow; firmware remains disabled\n");
+    ATH10K_TRACE("Ath10kMac: CE7 discovery stage COMPLETE; persistent init_config + wake_target_cpu + BMI_GET_TARGET_INFO follow; firmware remains disabled\n");
     return true;
 }
 
@@ -4432,7 +4433,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
     const UInt32 configFlagsAddress =
         _ceDiagPCIeStateAddress + Ath10k::kPCIeStateConfigFlagsOffset;
 
-    IOLog("Ath10kMac: init_config PERSISTENT begin pipe-cfg=0x%08x bytes=%u svc-map=0x%08x bytes=%u config-flags=0x%08x early-alloc=0x%08x option-flag2=0x%08x banks=%u\n",
+    ATH10K_TRACE("Ath10kMac: init_config PERSISTENT begin pipe-cfg=0x%08x bytes=%u svc-map=0x%08x bytes=%u config-flags=0x%08x early-alloc=0x%08x option-flag2=0x%08x banks=%u\n",
           _ceDiagPipeCfgAddress, Ath10k::kQCA6174TargetCEConfigBytes,
           _ceDiagServiceMapAddress, Ath10k::kQCA6174ServiceMapBytes,
           configFlagsAddress, Ath10k::kHostInterestEarlyAllocAddress,
@@ -4458,7 +4459,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
         return false;
     }
     _initConfigNoOpWriteVerified = true;
-    IOLog("Ath10kMac: init_config no-op WRITE/READBACK PASS config-flags=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: init_config no-op WRITE/READBACK PASS config-flags=0x%08x\n",
           _initConfigOriginalConfigFlags);
 
     // Snapshot every target region before making semantic changes.
@@ -4484,7 +4485,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
     _initConfigAppliedOptionFlag2 =
         _initConfigOriginalOptionFlag2 | Ath10k::kHIOptionEarlyCfgDone;
 
-    IOLog("Ath10kMac: init_config snapshot config-flags=0x%08x->0x%08x early-alloc=0x%08x->0x%08x option-flag2=0x%08x->0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: init_config snapshot config-flags=0x%08x->0x%08x early-alloc=0x%08x->0x%08x option-flag2=0x%08x->0x%08x\n",
           _initConfigOriginalConfigFlags, _initConfigAppliedConfigFlags,
           _initConfigOriginalEarlyAlloc, _initConfigAppliedEarlyAlloc,
           _initConfigOriginalOptionFlag2, _initConfigAppliedOptionFlag2);
@@ -4512,7 +4513,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                 ath10kBytesEqual(verifyBuffer, Ath10k::kQCA6174TargetCEConfig,
                                  Ath10k::kQCA6174TargetCEConfigBytes);
             applyOk = _initConfigPipeCfgVerified;
-            IOLog("Ath10kMac: init_config pipe_cfg readback=%s entries=%u bytes=%u CE5=OUT/2048\n",
+            ATH10K_TRACE("Ath10kMac: init_config pipe_cfg readback=%s entries=%u bytes=%u CE5=OUT/2048\n",
                   _initConfigPipeCfgVerified ? "PASS" : "FAIL",
                   Ath10k::kQCA6174TargetCEConfigCount,
                   Ath10k::kQCA6174TargetCEConfigBytes);
@@ -4534,7 +4535,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                 ath10kBytesEqual(verifyBuffer, Ath10k::kQCA6174ServiceMap,
                                  Ath10k::kQCA6174ServiceMapBytes);
             applyOk = _initConfigServiceMapVerified;
-            IOLog("Ath10kMac: init_config svc_to_pipe readback=%s entries=%u bytes=%u HTT-RX=CE1\n",
+            ATH10K_TRACE("Ath10kMac: init_config svc_to_pipe readback=%s entries=%u bytes=%u HTT-RX=CE1\n",
                   _initConfigServiceMapVerified ? "PASS" : "FAIL",
                   Ath10k::kQCA6174ServiceMapCount,
                   Ath10k::kQCA6174ServiceMapBytes);
@@ -4550,7 +4551,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
             ce7DiagnosticRead(configFlagsAddress, &readback, sizeof(UInt32)) &&
             readback == _initConfigAppliedConfigFlags;
         applyOk = _initConfigConfigFlagsVerified;
-        IOLog("Ath10kMac: init_config config_flags readback=%s value=0x%08x (L1 bit cleared)\n",
+        ATH10K_TRACE("Ath10kMac: init_config config_flags readback=%s value=0x%08x (L1 bit cleared)\n",
               _initConfigConfigFlagsVerified ? "PASS" : "FAIL", readback);
     }
 
@@ -4564,7 +4565,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                               &readback, sizeof(UInt32)) &&
             readback == _initConfigAppliedEarlyAlloc;
         applyOk = _initConfigEarlyAllocVerified;
-        IOLog("Ath10kMac: init_config hi_early_alloc readback=%s value=0x%08x magic=0x%04x banks=%u\n",
+        ATH10K_TRACE("Ath10kMac: init_config hi_early_alloc readback=%s value=0x%08x magic=0x%04x banks=%u\n",
               _initConfigEarlyAllocVerified ? "PASS" : "FAIL", readback,
               Ath10k::kHIEarlyAllocMagic, _initConfigTargetNumBanks);
     }
@@ -4579,7 +4580,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                               &readback, sizeof(UInt32)) &&
             readback == _initConfigAppliedOptionFlag2;
         applyOk = _initConfigOptionFlag2Verified;
-        IOLog("Ath10kMac: init_config hi_option_flag2 readback=%s value=0x%08x EARLY_CFG_DONE=%s\n",
+        ATH10K_TRACE("Ath10kMac: init_config hi_option_flag2 readback=%s value=0x%08x EARLY_CFG_DONE=%s\n",
               _initConfigOptionFlag2Verified ? "PASS" : "FAIL", readback,
               (readback & Ath10k::kHIOptionEarlyCfgDone) ? "set" : "clear");
     }
@@ -4593,7 +4594,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
     if (!applyOk && anySemanticWrite && !_ceDiagTransferUncertain) {
         _initConfigRollbackAttempted = true;
         rollbackOk = true;
-        IOLog("Ath10kMac: init_config ROLLBACK begin semantic-apply=%s\n",
+        ATH10K_TRACE("Ath10kMac: init_config ROLLBACK begin semantic-apply=%s\n",
               applyOk ? "complete" : "partial");
 
         if (optionMayBeApplied && !_ceDiagTransferUncertain) {
@@ -4605,7 +4606,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                                               &readback, sizeof(UInt32)) &&
                             readback == _initConfigOriginalOptionFlag2;
             rollbackOk &= ok;
-            IOLog("Ath10kMac: init_config rollback option_flag2=%s value=0x%08x\n",
+            ATH10K_TRACE("Ath10kMac: init_config rollback option_flag2=%s value=0x%08x\n",
                   ok ? "PASS" : "FAIL", readback);
         }
 
@@ -4618,7 +4619,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                                               &readback, sizeof(UInt32)) &&
                             readback == _initConfigOriginalEarlyAlloc;
             rollbackOk &= ok;
-            IOLog("Ath10kMac: init_config rollback early_alloc=%s value=0x%08x\n",
+            ATH10K_TRACE("Ath10kMac: init_config rollback early_alloc=%s value=0x%08x\n",
                   ok ? "PASS" : "FAIL", readback);
         }
 
@@ -4631,7 +4632,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                                               &readback, sizeof(UInt32)) &&
                             readback == _initConfigOriginalConfigFlags;
             rollbackOk &= ok;
-            IOLog("Ath10kMac: init_config rollback config_flags=%s value=0x%08x\n",
+            ATH10K_TRACE("Ath10kMac: init_config rollback config_flags=%s value=0x%08x\n",
                   ok ? "PASS" : "FAIL", readback);
         }
 
@@ -4646,7 +4647,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                             ath10kBytesEqual(verifyBuffer, serviceOriginal,
                                              Ath10k::kQCA6174ServiceMapBytes);
             rollbackOk &= ok;
-            IOLog("Ath10kMac: init_config rollback service_map=%s\n",
+            ATH10K_TRACE("Ath10kMac: init_config rollback service_map=%s\n",
                   ok ? "PASS" : "FAIL");
         }
 
@@ -4661,7 +4662,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
                             ath10kBytesEqual(verifyBuffer, pipeOriginal,
                                              Ath10k::kQCA6174TargetCEConfigBytes);
             rollbackOk &= ok;
-            IOLog("Ath10kMac: init_config rollback pipe_cfg=%s\n",
+            ATH10K_TRACE("Ath10kMac: init_config rollback pipe_cfg=%s\n",
                   ok ? "PASS" : "FAIL");
         }
 
@@ -4674,7 +4675,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
         _initConfigSucceeded = true;
         _ceDiagWriteSucceeded = _initConfigNoOpWriteVerified;
         _ceDiagConfigFlags = _initConfigAppliedConfigFlags;
-        IOLog("Ath10kMac: init_config PERSISTENT APPLIED apply=verified rollback=not-requested target-dirty=no diag-writes=%u total-transactions=%u wake-target-cpu=NEXT\n",
+        ATH10K_TRACE("Ath10kMac: init_config PERSISTENT APPLIED apply=verified rollback=not-requested target-dirty=no diag-writes=%u total-transactions=%u wake-target-cpu=NEXT\n",
               _ceDiagWriteTransactionCount, _ceDiagTransactionCount);
         return true;
     }
@@ -4692,7 +4693,7 @@ bool Ath10kPCIDevice::runCE7InitConfigPersistentTest()
           _ceDiagWriteTransactionCount, _ceDiagTransactionCount);
 
     if (_initConfigTargetDirty && !_ceDiagTransferUncertain)
-        IOLog("Ath10kMac: init_config WARNING target semantic state not fully restored; REBOOT REQUIRED before another test\n");
+        ATH10K_TRACE("Ath10kMac: init_config WARNING target semantic state not fully restored; REBOOT REQUIRED before another test\n");
 
     return false;
 }
@@ -4729,7 +4730,7 @@ bool Ath10kPCIDevice::wakeTargetCPUForBMI()
     IODelay(100);
     _regs.read32(addr, _wakeTargetCPUCoreCtrlAfter); // informational; trigger may self-clear
     _wakeTargetCPUSucceeded = true;
-    IOLog("Ath10kMac: wake_target_cpu PASS CORE_CTRL 0x%08x -> write 0x%08x readback=0x%08x CPU_INTR=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: wake_target_cpu PASS CORE_CTRL 0x%08x -> write 0x%08x readback=0x%08x CPU_INTR=0x%08x\n",
           _wakeTargetCPUCoreCtrlBefore, _wakeTargetCPUCoreCtrlWritten,
           _wakeTargetCPUCoreCtrlAfter, Ath10k::kCoreCtrlCPUIntrMask);
     return true;
@@ -4821,7 +4822,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
     _bmiPipeStructuralValidationSucceeded = structuralTx && structuralRx;
 
     if (!_fwReadbackInProgress)
-        IOLog("Ath10kMac: BMI CE0 post-wake snapshot structural=%s strict=%s "
+        ATH10K_TRACE("Ath10kMac: BMI CE0 post-wake snapshot structural=%s strict=%s "
           "src=%08x/%u dst=%08x/%u ctrl1=%08x hostIE=%08x miscIE=%08x "
           "wm=%08x/%08x idx=%u/%u,%u/%u\n",
           structuralTx ? "PASS" : "FAIL", strictTx ? "PASS" : "MISMATCH",
@@ -4831,7 +4832,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
           txBefore.srcWriteIndex, txBefore.currentSrcRead,
           txBefore.dstWriteIndex, txBefore.currentDstRead);
     if (!_fwReadbackInProgress)
-        IOLog("Ath10kMac: BMI CE1 post-wake snapshot structural=%s strict=%s "
+        ATH10K_TRACE("Ath10kMac: BMI CE1 post-wake snapshot structural=%s strict=%s "
           "src=%08x/%u dst=%08x/%u ctrl1=%08x hostIE=%08x miscIE=%08x "
           "wm=%08x/%08x idx=%u/%u,%u/%u\n",
           structuralRx ? "PASS" : "FAIL", strictRx ? "PASS" : "MISMATCH",
@@ -4846,7 +4847,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
         return false;
     }
     if (_bmiPipeStrictValidationMismatch && !_fwReadbackInProgress) {
-        IOLog("Ath10kMac: BMI CE0/CE1 NOTE strict diagnostic fields changed after target wake; "
+        ATH10K_TRACE("Ath10kMac: BMI CE0/CE1 NOTE strict diagnostic fields changed after target wake; "
               "continuing because DMA-critical structure is intact (Linux-parity policy)\n");
     }
 
@@ -4922,7 +4923,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
 
     const UInt32 txBase = Ath10k::ceBaseAddress(txCE);
     if (!_fwReadbackInProgress)
-        IOLog("Ath10kMac: BMI exchange SUBMIT CE1 dst-slot=%u next=%u resp-iovm=0x%08x; CE0 src-slot=%u next=%u req-iovm=0x%08x req-bytes=%u flags=0x%04x\n",
+        ATH10K_TRACE("Ath10kMac: BMI exchange SUBMIT CE1 dst-slot=%u next=%u resp-iovm=0x%08x; CE0 src-slot=%u next=%u req-iovm=0x%08x req-bytes=%u flags=0x%04x\n",
           rxSlot, rxNext, static_cast<UInt32>(_bmiResponseBuffer.dmaAddress()),
           txSlot, txNext, static_cast<UInt32>(_bmiRequestBuffer.dmaAddress()),
           requestLength, txDesc->flags);
@@ -4935,7 +4936,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
         descEvidence[0]=txDesc->address;descEvidence[1]=txDesc->nbytes;descEvidence[2]=txDesc->flags;
         descEvidence[3]=rxDesc->address;descEvidence[4]=rxDesc->nbytes;descEvidence[5]=rxDesc->flags;
         const auto *wire=static_cast<const UInt8 *>(_bmiRequestBuffer.virtualAddress());
-        IOLog("Ath10kMac: BMI EVIDENCE pre-submit command=%02x %02x %02x %02x TX-desc addr=0x%08x bytes=%u flags=0x%04x RX-desc addr=0x%08x bytes=%u flags=0x%04x\n",
+        ATH10K_TRACE("Ath10kMac: BMI EVIDENCE pre-submit command=%02x %02x %02x %02x TX-desc addr=0x%08x bytes=%u flags=0x%04x RX-desc addr=0x%08x bytes=%u flags=0x%04x\n",
             wire[0],wire[1],wire[2],wire[3],txDesc->address,txDesc->nbytes,txDesc->flags,
             rxDesc->address,rxDesc->nbytes,rxDesc->flags);
         for(UInt32 ce=0;ce<2;++ce){
@@ -4943,7 +4944,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
             UInt32 hostStatus=0xffffffffu;const bool statusRead=_regs.read32(Ath10k::ceBaseAddress(ce)+Ath10k::kCEHostIS,hostStatus);
             _bmiMiscStatus[0][ce]=0xffffffffu;
             _bmiMiscRead[0][ce]=_regs.read32(Ath10k::ceBaseAddress(ce)+Ath10k::kCEMiscIS,_bmiMiscStatus[0][ce]);
-            IOLog("Ath10kMac: BMI CE-fault pre-submit CE%u MISC_IS=0x%08x read=%s\n",ce,_bmiMiscStatus[0][ce],_bmiMiscRead[0][ce]?"yes":"no");
+            ATH10K_TRACE("Ath10kMac: BMI CE-fault pre-submit CE%u MISC_IS=0x%08x read=%s\n",ce,_bmiMiscStatus[0][ce],_bmiMiscRead[0][ce]?"yes":"no");
             UInt32 *ceEvidence=_bmiEvidenceCE[0][ce];
             ceEvidence[0]=valid?1u:0u;
             ceEvidence[1]=statusRead?1u:0u;
@@ -4963,7 +4964,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
             ceEvidence[15]=snap.dstWriteIndex;
             ceEvidence[16]=snap.currentDstRead;
             ceEvidence[17]=0u;
-            IOLog("Ath10kMac: BMI EVIDENCE pre-submit CE%u valid=%s src=0x%08x/%u dst=0x%08x/%u ctrl1=0x%08x swap-src=%u swap-dst=%u command=0x%08x hostIE=0x%08x hostIS=0x%08x status-read=%s miscIE=0x%08x wm=0x%08x/0x%08x idx=%u/%u,%u/%u\n",
+            ATH10K_TRACE("Ath10kMac: BMI EVIDENCE pre-submit CE%u valid=%s src=0x%08x/%u dst=0x%08x/%u ctrl1=0x%08x swap-src=%u swap-dst=%u command=0x%08x hostIE=0x%08x hostIS=0x%08x status-read=%s miscIE=0x%08x wm=0x%08x/0x%08x idx=%u/%u,%u/%u\n",
                 ce,valid?"yes":"no",snap.srcBase,snap.srcSize,snap.dstBase,snap.dstSize,snap.ctrl1,
                 !!(snap.ctrl1&Ath10k::kCECtrl1SrcByteSwapMask),!!(snap.ctrl1&Ath10k::kCECtrl1DstByteSwapMask),
                 snap.command,snap.hostIE,hostStatus,statusRead?"yes":"no",snap.miscIE,snap.srcWatermark,snap.dstWatermark,
@@ -5119,7 +5120,7 @@ bool Ath10kPCIDevice::bmiExchange(const void *request, UInt32 requestLength,
     }
 
     if (!_fwReadbackInProgress)
-        IOLog("Ath10kMac: BMI exchange COMPLETE req=%u resp=%u waited=%u us CE0 src-r=%u CE1 dst-r=%u\n",
+        ATH10K_TRACE("Ath10kMac: BMI exchange COMPLETE req=%u resp=%u waited=%u us CE0 src-r=%u CE1 dst-r=%u\n",
           requestLength, responseLength, waitedUs, srcRead, dstRead);
     return true;
 }
@@ -5158,7 +5159,7 @@ void Ath10kPCIDevice::captureBMIROMEvidence(bool beforeSubmit)
             Ath10k::readCESnapshot(_regs,0,after) && after.dstBase==snap.dstBase && after.dstSize==32 && after.currentDstRead==snap.currentDstRead;
         for(UInt32 i=0;i<3;++i)_bmiROMPreWords[i]=Ath10k::connLE32(words+4*i);
         _bmiROMPreStatus=_bmiROMPreStable?4:5;
-        IOLog("Ath10kMac: BMI ROM pre-submit status=%u desc-cpu=0x%08x buffer-cpu=0x%08x words=%08x/%08x/%08x stable=%s; no BMI submitted yet\n",
+        ATH10K_TRACE("Ath10kMac: BMI ROM pre-submit status=%u desc-cpu=0x%08x buffer-cpu=0x%08x words=%08x/%08x/%08x stable=%s; no BMI submitted yet\n",
             _bmiROMPreStatus,_bmiROMPreDescriptorCPU,_bmiROMPreBufferCPU,_bmiROMPreWords[0],_bmiROMPreWords[1],_bmiROMPreWords[2],_bmiROMPreStable?"yes":"no");
         return;
     }
@@ -5235,12 +5236,12 @@ void Ath10kPCIDevice::captureBMIROMEvidence(bool beforeSubmit)
     }
     _bmiROMStatus=_bmiROMStable?8u:7u;
     const bool matched=_bmiROMPreStable && _bmiROMPreDescriptorCPU==_bmiROMDescriptorCPU && _bmiROMPreBufferCPU==_bmiROMBufferCPU;
-    IOLog("Ath10kMac: BMI ROM before/after comparable=%s changed=%s; response candidate remains diagnostic only\n",
+    ATH10K_TRACE("Ath10kMac: BMI ROM before/after comparable=%s changed=%s; response candidate remains diagnostic only\n",
         matched?"yes":"no",matched && (_bmiROMPreWords[0]!=_bmiROMWord || _bmiROMPreWords[1]!=_bmiROMVersion || _bmiROMPreWords[2]!=_bmiROMType)?"yes":"no");
     IOLog("Ath10kMac: BMI ROM response candidate=%s length=%u version=0x%08x type=%u CE1-slot-cpu=0x%08x addr=0x%08x bytes=%u flags=0x%04x stable=%s; BMI remains failed\n",
         _bmiROMResponseCandidate?"yes":"no",_bmiROMWord,_bmiROMVersion,_bmiROMType,_bmiROMCE1DescriptorCPU,
         _bmiROMCE1Address,_bmiROMCE1Bytes,_bmiROMCE1Flags,_bmiROMCE1Stable?"yes":"no");
-    IOLog("Ath10kMac: BMI ROM evidence status=%u desc-cpu=0x%08x slot=%u buffer-cpu=0x%08x bytes=%u word=0x%08x stable=%s; diagnostic read only\n",
+    ATH10K_TRACE("Ath10kMac: BMI ROM evidence status=%u desc-cpu=0x%08x slot=%u buffer-cpu=0x%08x bytes=%u word=0x%08x stable=%s; diagnostic read only\n",
         _bmiROMStatus,_bmiROMDescriptorCPU,_bmiROMSlot,_bmiROMBufferCPU,
         _bmiROMDescriptorBytes,_bmiROMWord,_bmiROMStable?"yes":"no");
 }
@@ -5311,7 +5312,7 @@ bool Ath10kPCIDevice::runBMIGetTargetInfoTest()
     }
     _bmiGetTargetInfoSucceeded = true;
     _bmiSucceeded = true;
-    IOLog("Ath10kMac: BMI_GET_TARGET_INFO COMPLETE response-bytes=%u target-len=0x%08x version=0x%08x type=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: BMI_GET_TARGET_INFO COMPLETE response-bytes=%u target-len=0x%08x version=0x%08x type=0x%08x\n",
           responseLength, _bmiTargetInfoLength, _bmiTargetVersion, _bmiTargetType);
     return true;
 }
@@ -5348,7 +5349,7 @@ bool Ath10kPCIDevice::bmiWritePLLWord(UInt32 address,UInt32 value)
         reinterpret_cast<const UInt8 *>(&value),sizeof(value),consumed);
     if(bytes!=16 || consumed!=sizeof(value) || !bmiSendOnly(&request,bytes))return false;
     ++_bmiWriteMemoryTransactionCount;
-    IOLog("Ath10kMac: PLL BMI_WRITE_MEMORY complete addr=0x%08x value=0x%08x step=%u\n",address,value,_pll.step);
+    ATH10K_TRACE("Ath10kMac: PLL BMI_WRITE_MEMORY complete addr=0x%08x value=0x%08x step=%u\n",address,value,_pll.step);
     return true;
 }
 bool Ath10kPCIDevice::configureTargetPLL()
@@ -5359,7 +5360,7 @@ bool Ath10kPCIDevice::configureTargetPLL()
         [this](UInt32 a,UInt32 v){return bmiWriteSOCRegister(a,v);},
         [this](UInt32 a,UInt32 v){return bmiWritePLLWord(a,v);},
         [](UInt32 us){IODelay(us);},[]()->UInt64{uint64_t t=0,n=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&n);return n/1000;});
-    IOLog("Ath10kMac: PLL %s profile=%s ref=%u ref-hz=%u step=%u polls=%u\n",
+    ATH10K_TRACE("Ath10kMac: PLL %s profile=%s ref=%u ref-hz=%u step=%u polls=%u\n",
         _pll.status,_selectedHw->targetRevision,_pll.reference,_pll.referenceHz,_pll.step,_pll.polls);
     return ok;
 }
@@ -5390,7 +5391,7 @@ bool Ath10kPCIDevice::bmiReadMemory(UInt32 targetAddress, void *outData, UInt32 
         UInt32 responseLength = chunk;
 
         if (!_fwReadbackInProgress)
-            IOLog("Ath10kMac: BMI_READ_MEMORY begin addr=0x%08x bytes=%u transaction=%u\n",
+            ATH10K_TRACE("Ath10kMac: BMI_READ_MEMORY begin addr=0x%08x bytes=%u transaction=%u\n",
               address, chunk, _bmiReadMemoryTransactionCount + 1u);
         if (!bmiExchange(&request, sizeof(request), response, responseLength)) {
             IOLog("Ath10kMac: BMI_READ_MEMORY ERROR transport addr=0x%08x bytes=%u\n",
@@ -5406,7 +5407,7 @@ bool Ath10kPCIDevice::bmiReadMemory(UInt32 targetAddress, void *outData, UInt32 
         bcopy(response, out, chunk);
         ++_bmiReadMemoryTransactionCount;
         if (!_fwReadbackInProgress)
-            IOLog("Ath10kMac: BMI_READ_MEMORY COMPLETE addr=0x%08x bytes=%u transaction=%u\n",
+            ATH10K_TRACE("Ath10kMac: BMI_READ_MEMORY COMPLETE addr=0x%08x bytes=%u transaction=%u\n",
               address, chunk, _bmiReadMemoryTransactionCount);
 
         address += chunk;
@@ -5539,7 +5540,7 @@ bool Ath10kPCIDevice::bmiWriteMemory(UInt32 targetAddress, const void *data, UIn
             _bmiBoardBytesWritten += consumed;
         offset += consumed;
     }
-    IOLog("Ath10kMac: BMI_WRITE_MEMORY COMPLETE addr=0x%08x bytes=%u\n", targetAddress, length);
+    ATH10K_TRACE("Ath10kMac: BMI_WRITE_MEMORY COMPLETE addr=0x%08x bytes=%u\n", targetAddress, length);
     return true;
 }
 
@@ -5561,9 +5562,9 @@ bool Ath10kPCIDevice::runBMIBoardUploadTest()
     }
     _bmiBoardUploadAttempted = true;
     _bmiBoardUploadStatus = "write-failed";
-    IOLog("Ath10kMac: board upload BEGIN key=%s bytes=%u sha256=%s\n",
+    ATH10K_TRACE("Ath10kMac: board upload BEGIN key=%s bytes=%u sha256=%s\n",
           payload().kBoardKey, payload().kBoardSize, payload().kBoardSHA256);
-    IOLog("Ath10kMac: board selection=%s profile-device=%04x\n", payload().kBoardSelection, payload().device);
+    ATH10K_TRACE("Ath10kMac: board selection=%s profile-device=%04x\n", payload().kBoardSelection, payload().device);
     if (!bmiWriteMemory(_bmiBoardDataAddress, payload().kBoard, payload().kBoardSize))
         return false;
 
@@ -5576,7 +5577,7 @@ bool Ath10kPCIDevice::runBMIBoardUploadTest()
         if (!bmiReadMemory(_bmiBoardDataAddress + offset, buffer, count))
             return false;
         if (memcmp(buffer, payload().kBoard + offset, count) != 0) {
-            IOLog("Ath10kMac: board readback MISMATCH offset=%u bytes=%u\n", offset, count);
+            ATH10K_TRACE("Ath10kMac: board readback MISMATCH offset=%u bytes=%u\n", offset, count);
             return false;
         }
         offset += count;
@@ -5593,7 +5594,7 @@ bool Ath10kPCIDevice::runBMIBoardUploadTest()
     _bmiBoardInitVerified = true;
     _bmiBoardUploadSucceeded = true;
     _bmiBoardUploadStatus = "verified-before-reset";
-    IOLog("Ath10kMac: board upload VERIFIED bytes=%u init=1 writes=%u; OTP stage may now follow\n",
+    ATH10K_TRACE("Ath10kMac: board upload VERIFIED bytes=%u init=1 writes=%u; OTP stage may now follow\n",
           _bmiBoardBytesVerified, _bmiWriteMemoryTransactionCount);
     return true;
 }
@@ -5621,7 +5622,7 @@ bool Ath10kPCIDevice::runBMIBoardPrerequisiteProbe()
     for (UInt32 &word : _bmiBoardFingerprint)
         word = 0xffffffffu;
 
-    IOLog("Ath10kMac: BMI board/cal prerequisite probe begin policy=READ-ONLY no OTP/board/firmware writes\n");
+    ATH10K_TRACE("Ath10kMac: BMI board/cal prerequisite probe begin policy=READ-ONLY no OTP/board/firmware writes\n");
 
     struct Read32Item {
         UInt32 address;
@@ -5646,7 +5647,7 @@ bool Ath10kPCIDevice::runBMIBoardPrerequisiteProbe()
                   item.name, item.address);
             return false;
         }
-        IOLog("Ath10kMac: BMI Host Interest %s @0x%08x = 0x%08x\n",
+        ATH10K_TRACE("Ath10kMac: BMI Host Interest %s @0x%08x = 0x%08x\n",
               item.name, item.address, *item.value);
     }
 
@@ -5663,12 +5664,12 @@ bool Ath10kPCIDevice::runBMIBoardPrerequisiteProbe()
         _bmiBoardDataAddress != 0 && _bmiBoardDataAddress != 0xffffffffu &&
         (_bmiBoardDataAddress & 0x3u) == 0;
 
-    IOLog("Ath10kMac: BMI prerequisites parsed cpu=%u board=0x%08x initialized=%u board-ext=0x%08x ext-config=0x%08x ext-valid=%s ext-size=%u cal=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: BMI prerequisites parsed cpu=%u board=0x%08x initialized=%u board-ext=0x%08x ext-config=0x%08x ext-valid=%s ext-size=%u cal=0x%08x\n",
           _bmiDesiredCPUSpeed, _bmiBoardDataAddress, _bmiBoardDataInitialized,
           _bmiBoardExtDataAddress, _bmiBoardExtDataConfig,
           _bmiBoardExtDataValid ? "yes" : "no", _bmiBoardExtDataSize,
           _bmiCalDataAddress);
-    IOLog("Ath10kMac: BMI prerequisite cross-check interconnect=0x%08x diag-pcie-state=0x%08x match=%s option-flag2=0x%08x EARLY_CFG_DONE=%s board-pointer=%s\n",
+    ATH10K_TRACE("Ath10kMac: BMI prerequisite cross-check interconnect=0x%08x diag-pcie-state=0x%08x match=%s option-flag2=0x%08x EARLY_CFG_DONE=%s board-pointer=%s\n",
           _bmiInterconnectState, _ceDiagPCIeStateAddress,
           _bmiInterconnectMatchesDiag ? "yes" : "no", _bmiOptionFlag2,
           _bmiEarlyCfgDoneSeen ? "yes" : "no",
@@ -5680,16 +5681,16 @@ bool Ath10kPCIDevice::runBMIBoardPrerequisiteProbe()
             IOLog("Ath10kMac: BMI board/cal prerequisite ERROR board target-area fingerprint read failed\n");
             return false;
         }
-        IOLog("Ath10kMac: BMI board target-area fingerprint addr=0x%08x words=%08x %08x %08x %08x\n",
+        ATH10K_TRACE("Ath10kMac: BMI board target-area fingerprint addr=0x%08x words=%08x %08x %08x %08x\n",
               _bmiBoardDataAddress,
               _bmiBoardFingerprint[0], _bmiBoardFingerprint[1],
               _bmiBoardFingerprint[2], _bmiBoardFingerprint[3]);
     }
 
-    IOLog("Ath10kMac: board candidate bus=pci,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x\n",
+    ATH10K_TRACE("Ath10kMac: board candidate bus=pci,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x\n",
           _vendorId, _deviceId, _subsystemVendorId, _subsystemId);
     if (_selectedHw) {
-        IOLog("Ath10kMac: firmware prerequisites profile=%s dir=%s cal-len=%u target-cpu=%u diag-ce=%s board-api2=board-2.bin board-fallback=board.bin\n",
+        ATH10K_TRACE("Ath10kMac: firmware prerequisites profile=%s dir=%s cal-len=%u target-cpu=%u diag-ce=%s board-api2=board-2.bin board-fallback=board.bin\n",
               _selectedHw->targetRevision, _selectedHw->firmwareDirectory,
               _selectedHw->calibrationDataLength, _selectedHw->targetCpuFrequencyHz,
               _selectedHw->firmwareDiagCeDownload ? "yes" : "no");
@@ -5698,7 +5699,7 @@ bool Ath10kPCIDevice::runBMIBoardPrerequisiteProbe()
     const bool ready = _bmiReadMemorySucceeded && _bmiBoardDataPointerValid &&
                        _bmiInterconnectMatchesDiag && _bmiEarlyCfgDoneSeen;
     _bmiBoardPrereqSucceeded = ready;
-    IOLog("Ath10kMac: BMI board/cal prerequisite probe %s reads=%u board=0x%08x board-init=%u interconnect-match=%s early-cfg=%s\n",
+    ATH10K_TRACE("Ath10kMac: BMI board/cal prerequisite probe %s reads=%u board=0x%08x board-init=%u interconnect-match=%s early-cfg=%s\n",
           ready ? "READY" : "INCOMPLETE", _bmiReadMemoryTransactionCount,
           _bmiBoardDataAddress, _bmiBoardDataInitialized,
           _bmiInterconnectMatchesDiag ? "yes" : "no",
@@ -5727,7 +5728,7 @@ bool Ath10kPCIDevice::bmiLZStreamStart(UInt32 address)
         _otpStreamClosed = true;
     else
         _otpStreamStarted = true;
-    IOLog("Ath10kMac: OTP LZ_STREAM_START COMPLETE address=0x%08x flush=%s\n",
+    ATH10K_TRACE("Ath10kMac: OTP LZ_STREAM_START COMPLETE address=0x%08x flush=%s\n",
           address, address == 0 ? "yes" : "no");
     return true;
 }
@@ -5754,7 +5755,7 @@ bool Ath10kPCIDevice::bmiLZData(const UInt8 *data, UInt32 length)
         _otpWireBytesSent += consumed;
         ++_otpLZDataCommands;
     }
-    IOLog("Ath10kMac: OTP LZ_DATA COMPLETE wire-bytes=%u commands=%u\n",
+    ATH10K_TRACE("Ath10kMac: OTP LZ_DATA COMPLETE wire-bytes=%u commands=%u\n",
           _otpWireBytesSent, _otpLZDataCommands);
     return true;
 }
@@ -5773,7 +5774,7 @@ bool Ath10kPCIDevice::runBMIOtpTest()
     }
     _otpAttempted = true;
     _otpStatus = "lz-start-failed";
-    IOLog("Ath10kMac: OTP BEGIN bytes=%u sha256=%s load=0x%08x execute-param=0x%08x ignore-result-feature=%s\n",
+    ATH10K_TRACE("Ath10kMac: OTP BEGIN bytes=%u sha256=%s load=0x%08x execute-param=0x%08x ignore-result-feature=%s\n",
           payload().kOTPSize, payload().kOTPSHA256,
           Ath10k::kQCA6174OTPLoadAddress, Ath10k::kQCA6174OTPExecuteParam,
           payload().kOTPIgnoreResult ? "yes" : "no");
@@ -5804,7 +5805,7 @@ bool Ath10kPCIDevice::runBMIOtpTest()
     UInt32 responseBytes = sizeof(result);
     _otpExecuteAttempted = true;
     _otpStatus = "execute-transport-failed";
-    IOLog("Ath10kMac: OTP BMI_EXECUTE BEGIN addr=0x%08x param=0x%08x\n", request.address, request.parameter);
+    ATH10K_TRACE("Ath10kMac: OTP BMI_EXECUTE BEGIN addr=0x%08x param=0x%08x\n", request.address, request.parameter);
     if (!bmiExchange(&request, sizeof(request), &result, responseBytes))
         return false;
     _otpExecuteResponseBytes = responseBytes;
@@ -5819,7 +5820,7 @@ bool Ath10kPCIDevice::runBMIOtpTest()
     _otpResultIgnored = result != 0 && payload().kOTPIgnoreResult;
     _otpStatus = !_otpResultAccepted ? "otp-result-rejected" :
         (_otpResultIgnored ? "returned-nonzero-accepted-by-firmware" : "returned-zero");
-    IOLog("Ath10kMac: OTP BMI_EXECUTE COMPLETE result=0x%08x accepted=%s nonzero-ignored=%s status=%s\n",
+    ATH10K_TRACE("Ath10kMac: OTP BMI_EXECUTE COMPLETE result=0x%08x accepted=%s nonzero-ignored=%s status=%s\n",
           result, _otpResultAccepted ? "yes" : "no",
           _otpResultIgnored ? "yes" : "no", _otpStatus);
     return _otpResultAccepted;
@@ -5846,7 +5847,7 @@ bool Ath10kPCIDevice::bmiFirmwareLZStart(UInt32 address)
         _fwStreamClosed = true;
     else
         _fwStreamStarted = true;
-    IOLog("Ath10kMac: WLAN LZ_STREAM_START COMPLETE address=0x%08x flush=%s\n",
+    ATH10K_TRACE("Ath10kMac: WLAN LZ_STREAM_START COMPLETE address=0x%08x flush=%s\n",
           address, address == 0 ? "yes" : "no");
     return true;
 }
@@ -5873,10 +5874,10 @@ bool Ath10kPCIDevice::bmiFirmwareLZData(const UInt8 *data, UInt32 length)
         _fwWireBytesSent += consumed;
         ++_fwLZDataCommands;
         if ((_fwLZDataCommands % 256u) == 0)
-            IOLog("Ath10kMac: WLAN LZ progress wire-bytes=%u/%u commands=%u\n",
+            ATH10K_TRACE("Ath10kMac: WLAN LZ progress wire-bytes=%u/%u commands=%u\n",
                   _fwWireBytesSent, paddedSize, _fwLZDataCommands);
     }
-    IOLog("Ath10kMac: WLAN LZ_DATA COMPLETE wire-bytes=%u commands=%u\n",
+    ATH10K_TRACE("Ath10kMac: WLAN LZ_DATA COMPLETE wire-bytes=%u commands=%u\n",
           _fwWireBytesSent, _fwLZDataCommands);
     return true;
 }
@@ -5892,7 +5893,7 @@ bool Ath10kPCIDevice::verifyFirmwareSegments()
             segment.length > payload().kFirmwareSize - segment.offset ||
             static_cast<UInt64>(segment.address) + ((static_cast<UInt64>(segment.length) + 3u) & ~3ull) > 0x100000000ull)
             return false;
-        IOLog("Ath10kMac: WLAN readback BEGIN segment=%u addr=0x%08x bytes=%u\n",
+        ATH10K_TRACE("Ath10kMac: WLAN readback BEGIN segment=%u addr=0x%08x bytes=%u\n",
               index, segment.address, segment.length);
         for (UInt32 offset = 0; offset < segment.length;) {
             UInt8 buffer[Ath10k::kBMIMaxDataSize]{};
@@ -5911,7 +5912,7 @@ bool Ath10kPCIDevice::verifyFirmwareSegments()
                 while (differing < count && buffer[differing] == expected[differing])
                     ++differing;
                 _fwMismatchAddress = segment.address + offset + differing;
-                IOLog("Ath10kMac: WLAN readback MISMATCH segment=%u addr=0x%08x expected=%02x actual=%02x\n",
+                ATH10K_TRACE("Ath10kMac: WLAN readback MISMATCH segment=%u addr=0x%08x expected=%02x actual=%02x\n",
                       index, _fwMismatchAddress, expected[differing], buffer[differing]);
                 return false;
             }
@@ -5919,7 +5920,7 @@ bool Ath10kPCIDevice::verifyFirmwareSegments()
             _fwReadbackBytes += count;
         }
         ++_fwVerifiedSegments;
-        IOLog("Ath10kMac: WLAN readback VERIFIED segment=%u bytes=%u total=%u\n",
+        ATH10K_TRACE("Ath10kMac: WLAN readback VERIFIED segment=%u bytes=%u total=%u\n",
               index, segment.length, _fwReadbackBytes);
     }
     _fwFailedSegment = 0xffffffffu;
@@ -5942,7 +5943,7 @@ bool Ath10kPCIDevice::runBMIFirmwareDownloadTest()
     }
     _fwAttempted = true;
     _fwStatus = "lz-start-failed";
-    IOLog("Ath10kMac: WLAN BEGIN version=%s bytes=%u sha256=%s path=BMI-LZ otp-result=0x%08x otp-ignored=%s\n",
+    ATH10K_TRACE("Ath10kMac: WLAN BEGIN version=%s bytes=%u sha256=%s path=BMI-LZ otp-result=0x%08x otp-ignored=%s\n",
           payload().kFirmwareVersion, payload().kFirmwareSize,
           payload().kFirmwareSHA256, _otpResult, _otpResultIgnored ? "yes" : "no");
     // Linux's core.c also supports BMI LZ on hw3.2 (the fallback used by
@@ -5986,7 +5987,7 @@ bool Ath10kPCIDevice::runBMIFirmwareDownloadTest()
     if (!readbackOK)
         return false;
     _fwStatus = "download-verified-before-reset";
-    IOLog("Ath10kMac: WLAN DOWNLOAD VERIFIED image=%u segment-data=%u segments=%u entry=0x%08x; BMI_DONE not sent\n",
+    ATH10K_TRACE("Ath10kMac: WLAN DOWNLOAD VERIFIED image=%u segment-data=%u segments=%u entry=0x%08x; BMI_DONE not sent\n",
           payload().kFirmwareSize, _fwReadbackBytes, _fwVerifiedSegments,
           payload().kFirmwareEntryAddress);
     return true;
@@ -6039,7 +6040,7 @@ bool Ath10kPCIDevice::verifyBootHIOptionsAfterDownload()
     _boot.optionFinalVerified = true;
     _boot.optionBMICreditLimitAdded = _boot.optionChangedBits == Ath10k::kBootHIOptionBMICreditLimit;
     ++_boot.hiVerified;
-    IOLog("Ath10kMac: BOOT HI OPTION VERIFIED applied=0x%08x observed=0x%08x changed=0x%08x bmi-credit-limit-added=%s; target value preserved\n",
+    ATH10K_TRACE("Ath10kMac: BOOT HI OPTION VERIFIED applied=0x%08x observed=0x%08x changed=0x%08x bmi-credit-limit-added=%s; target value preserved\n",
           _boot.optionApplied, _boot.optionAfterDownload, _boot.optionChangedBits,
           _boot.optionBMICreditLimitAdded ? "yes" : "no");
     return true;
@@ -6065,7 +6066,7 @@ bool Ath10kPCIDevice::writeBootHIWord(UInt32 address, UInt32 value)
     ++_bmiWriteMemoryTransactionCount;
     if (!verifyBootHIWord(address, value))
         return false;
-    IOLog("Ath10kMac: BOOT HI VERIFIED addr=0x%08x value=0x%08x\n", address, value);
+    ATH10K_TRACE("Ath10kMac: BOOT HI VERIFIED addr=0x%08x value=0x%08x\n", address, value);
     return true;
 }
 
@@ -6094,7 +6095,7 @@ bool Ath10kPCIDevice::configureBootHostInterest()
         return false;
     _boot.configSucceeded = true;
     _boot.status = "host-interest-configured";
-    IOLog("Ath10kMac: BOOT HI CONFIGURED protocol=%u option=0x%08x->0x%08x pci-id=0x%04x\n",
+    ATH10K_TRACE("Ath10kMac: BOOT HI CONFIGURED protocol=%u option=0x%08x->0x%08x pci-id=0x%04x\n",
           Ath10k::kBootHTCProtocolVersion, _boot.optionBefore, _boot.optionApplied, _deviceId);
     return true;
 }
@@ -6138,7 +6139,7 @@ bool Ath10kPCIDevice::finishBootHostInterest()
         board != _bmiBoardDataAddress || initialized != 1)
         return false;
     _boot.preDoneHIVerified = true;
-    IOLog("Ath10kMac: BOOT HI FINAL VERIFIED writes=%u checks=%u UART=off board=0x%08x initialized=%u\n",
+    ATH10K_TRACE("Ath10kMac: BOOT HI FINAL VERIFIED writes=%u checks=%u UART=off board=0x%08x initialized=%u\n",
           _boot.hiWrites, _boot.hiVerified, board, initialized);
     return true;
 }
@@ -6192,7 +6193,7 @@ bool Ath10kPCIDevice::prepareHTCReadyReceive()
         !_regs.read32(doorbell, _boot.rxWrite) || _boot.rxWrite != _boot.rxNext)
         return false;
     _boot.rxPosted = true;
-    IOLog("Ath10kMac: HTC READY RX ARMED CE1 slot=%u next=%u bytes=%u iovm=0x%08x fw-indicator=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: HTC READY RX ARMED CE1 slot=%u next=%u bytes=%u iovm=0x%08x fw-indicator=0x%08x\n",
           _boot.rxSlot, _boot.rxNext, Ath10k::kHTCReadyBufferBytes,
           static_cast<UInt32>(_htcReadyBuffer.dmaAddress()), _boot.fwIndicator);
     return true;
@@ -6256,7 +6257,7 @@ bool Ath10kPCIDevice::waitForHTCReady()
         hex[i * 3 + 1] = digits[bytes[i] & 15];
         hex[i * 3 + 2] = ' ';
     }
-    IOLog("Ath10kMac: HTC READY RX bytes=%u waited=%u ms CE1 w/r=%u/%u prefix=%s\n",
+    ATH10K_TRACE("Ath10kMac: HTC READY RX bytes=%u waited=%u ms CE1 w/r=%u/%u prefix=%s\n",
           _boot.rxBytes, _boot.waitMs, _boot.rxWrite, _boot.rxRead, hex);
     const char *error = Ath10k::parseHTCReady(bytes, _boot.rxBytes, _boot.ready);
     if (error) {
@@ -6267,7 +6268,7 @@ bool Ath10kPCIDevice::waitForHTCReady()
     }
     _boot.readyValidated = true;
     _boot.status = "htc-ready-before-reset";
-    IOLog("Ath10kMac: HTC READY VERIFIED credits=%u credit-size=%u endpoints=%u extended=%s version=%u bundle-max=%u alt-credit=%u\n",
+    ATH10K_TRACE("Ath10kMac: HTC READY VERIFIED credits=%u credit-size=%u endpoints=%u extended=%s version=%u bundle-max=%u alt-credit=%u\n",
           _boot.ready.credits, _boot.ready.creditSize, _boot.ready.maxEndpoints,
           _boot.ready.extended ? "yes" : "no", _boot.ready.version,
           _boot.ready.maxBundleMessages, _boot.ready.altDataCreditSize);
@@ -6301,7 +6302,7 @@ bool Ath10kPCIDevice::runFirmwareBootTest()
     IOLog("Ath10kMac: BMI_DONE SUBMIT once; CE1 armed for HTC READY; further BMI commands will be blocked\n");
     if (!bmiSendOnly(&command, sizeof(command)))
         return false;
-    IOLog("Ath10kMac: BMI_DONE CONSUMED by CE0; waiting up to %u ms for HTC READY\n",
+    ATH10K_TRACE("Ath10kMac: BMI_DONE CONSUMED by CE0; waiting up to %u ms for HTC READY\n",
           Ath10k::kHTCReadyTimeoutMs);
     return waitForHTCReady();
 }
@@ -6328,7 +6329,7 @@ bool Ath10kPCIDevice::pulseColdResetForQuiesce()
     UInt32 after = 0xffffffffu;
     const bool readOk = _regs.read32(offset, after);
     const bool verified = readOk && ((after & Ath10k::kSocGlobalResetMask) == 0);
-    IOLog("Ath10kMac: BMI quiesce cold-reset pulse %s before=0x%08x after=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: BMI quiesce cold-reset pulse %s before=0x%08x after=0x%08x\n",
           verified ? "PASS" : "FAIL", before, after);
     return verified;
 }
@@ -6348,7 +6349,7 @@ bool Ath10kPCIDevice::quiesceTargetAfterBMI()
     OSSynchronizeIO();
     IODelay(1000);
     const UInt16 command = _pci->configRead16(kIOPCIConfigCommand);
-    IOLog("Ath10kMac: BMI quiesce PCI bus mastering disabled command=0x%04x\n", command);
+    ATH10K_TRACE("Ath10kMac: BMI quiesce PCI bus mastering disabled command=0x%04x\n", command);
 
     if (command == 0xffffu || (command & 0x0004u) != 0) {
         _dmaQuarantine = true;
@@ -6383,7 +6384,7 @@ bool Ath10kPCIDevice::quiesceTargetAfterBMI()
         _bmiQuiesceSucceeded = true;
         // Keep _initConfigPersistent=true as historical telemetry: it was
         // intentionally kept applied through wake_target_cpu and BMI.
-        IOLog("Ath10kMac: BMI quiesce COMPLETE reset=yes wake=%s ce-deinit=yes DMA-safe=yes\n",
+        ATH10K_TRACE("Ath10kMac: BMI quiesce COMPLETE reset=yes wake=%s ce-deinit=yes DMA-safe=yes\n",
               wakeOk ? "yes" : "no");
         return true;
     }
@@ -6410,7 +6411,7 @@ bool Ath10kPCIDevice::warmResetTarget()
 
     const UInt32 resetOffset = Ath10k::socResetControlOffset(Ath10k::kQca6174RegisterLayout);
     _regs.read32(resetOffset, _warmResetControlBefore);
-    IOLog("Ath10kMac: QCA6174/QCA9377 warm reset begin control=0x%08x (Linux sequence; transfers=OFF)\n",
+    ATH10K_TRACE("Ath10kMac: QCA6174/QCA9377 warm reset begin control=0x%08x (Linux sequence; transfers=OFF)\n",
           _warmResetControlBefore);
 
     if (!maskTargetIRQsForWarmReset())
@@ -6427,7 +6428,7 @@ bool Ath10kPCIDevice::warmResetTarget()
     _warmResetFirstTargetInitSucceeded = waitForTargetInit();
     _warmResetFirstTargetInitMs = _targetInitWaitMs;
     _warmResetFirstFWIndicator = _fwIndicatorAfter;
-    IOLog("Ath10kMac: warm reset first target-init %s indicator=0x%08x elapsed=%u ms (Linux ignores this return)\n",
+    ATH10K_TRACE("Ath10kMac: warm reset first target-init %s indicator=0x%08x elapsed=%u ms (Linux ignores this return)\n",
           _warmResetFirstTargetInitSucceeded ? "READY" : "FAILED",
           _warmResetFirstFWIndicator, _warmResetFirstTargetInitMs);
     if (!warmResetClearLF()) {
@@ -6459,7 +6460,7 @@ bool Ath10kPCIDevice::warmResetTarget()
 
     _warmResetSucceeded = _warmResetSecondTargetInitSucceeded && chipStable &&
                           _cePipeInitPassCount >= 2;
-    IOLog("Ath10kMac: QCA6174/QCA9377 warm reset %s second-target-init=%s indicator=0x%08x elapsed=%u ms post-warm-chip=0x%08x rev=%u control=0x%08x ce-init-passes=%u\n",
+    ATH10K_TRACE("Ath10kMac: QCA6174/QCA9377 warm reset %s second-target-init=%s indicator=0x%08x elapsed=%u ms post-warm-chip=0x%08x rev=%u control=0x%08x ce-init-passes=%u\n",
           _warmResetSucceeded ? "COMPLETE" : "FAILED",
           _warmResetSecondTargetInitSucceeded ? "READY" : "FAILED",
           _warmResetSecondFWIndicator, _warmResetSecondTargetInitMs,
@@ -6488,14 +6489,14 @@ bool Ath10kPCIDevice::validateCE0PostResetProgramming()
     }
     _ceBaselineSnapshots[0] = baseline;
 
-    IOLog("Ath10kMac: CE0 post-reset ring test begin src=16 iovm=0x%08x transfers=OFF interrupts=MASKED\n",
+    ATH10K_TRACE("Ath10kMac: CE0 post-reset ring test begin src=16 iovm=0x%08x transfers=OFF interrupts=MASKED\n",
           _ceSrcRings[0].dmaAddress32());
 
     const bool bothOk = programAndVerifyOneCE(0);
     _ceRingProgramSucceeded = (_ceRingProgramVerifiedCount == 1);
     _ceRingRestoreSucceeded = (_ceRingRestoreVerifiedCount == 1);
 
-    IOLog("Ath10kMac: CE0 post-reset ring test %s programmed=%u/1 restored=%u/1 hardware left deprogrammed\n",
+    ATH10K_TRACE("Ath10kMac: CE0 post-reset ring test %s programmed=%u/1 restored=%u/1 hardware left deprogrammed\n",
           bothOk ? "READY" : "FAILED",
           _ceRingProgramVerifiedCount,
           _ceRingRestoreVerifiedCount);
@@ -6507,8 +6508,8 @@ bool Ath10kPCIDevice::probeTarget()
     clearTargetProbeState();
     _targetProbeAttempted = true;
 
-    IOLog("Ath10kMac: target probe begin (Host Interest + board/OTP/WLAN + BMI_DONE + HTC READY + persistent CE/IRQ runtime)\n");
-    IOLog("Ath10kMac: register layout RTC_SOC=0x%08x SOC_CORE=0x%08x PCIE_LOCAL=0x%08x FW_IND=0x%08x CHIP_ID=+0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: target probe begin (Host Interest + board/OTP/WLAN + BMI_DONE + HTC READY + persistent CE/IRQ runtime)\n");
+    ATH10K_TRACE("Ath10kMac: register layout RTC_SOC=0x%08x SOC_CORE=0x%08x PCIE_LOCAL=0x%08x FW_IND=0x%08x CHIP_ID=+0x%08x\n",
           Ath10k::kQca6174RegisterLayout.rtcSocBaseAddress,
           Ath10k::kQca6174RegisterLayout.socCoreBaseAddress,
           Ath10k::kQca6174RegisterLayout.pcieLocalBaseAddress,
@@ -6565,7 +6566,7 @@ bool Ath10kPCIDevice::probeTarget()
         restorePCIeBringupParity();
         return false;
     }
-    IOLog("Ath10kMac: cold reset readback PASS SOC_GLOBAL_RESET=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: cold reset readback PASS SOC_GLOBAL_RESET=0x%08x\n",
           _socGlobalResetAfter);
 
     _coldTargetInitSucceeded = waitForTargetInit();
@@ -6635,7 +6636,7 @@ bool Ath10kPCIDevice::probeTarget()
             }
             _cePipeLastVerifiedCount = verified;
             finalCEOk = verified == configured;
-            IOLog("Ath10kMac: post-warm CE validation %s verified=%u/%u\n",
+            ATH10K_TRACE("Ath10kMac: post-warm CE validation %s verified=%u/%u\n",
                   finalCEOk ? "PASS" : "FAIL", verified, configured);
         }
 
@@ -6690,12 +6691,12 @@ bool Ath10kPCIDevice::probeTarget()
                     runtimeOk = false;
                 } else {
                     const bool wmiOk = runWMIBootstrap();
-                    IOLog("Ath10kMac: Phase 3 bootstrap %s status=%s; WMI_INIT follows only on success\n",
+                    ATH10K_TRACE("Ath10kMac: Phase 3 bootstrap %s status=%s; WMI_INIT follows only on success\n",
                           wmiOk ? "PASS" : "FAILED", _wmi.status);
                     if (wmiOk) {
                         const bool initOk=runWMIInit();
                         runtimeOk = initOk && prepareWMIRuntime();
-                        IOLog("Ath10kMac: WMI INIT %s status=%s persistent-receiver=%s\n",
+                        ATH10K_TRACE("Ath10kMac: WMI INIT %s status=%s persistent-receiver=%s\n",
                               initOk?"PASS":"FAILED",_wmiInit.status,runtimeOk?"prepared":"failed");
                     } else runtimeOk = false;
                     if (!runtimeOk) stopRuntimeCEIRQ();
@@ -6705,7 +6706,7 @@ bool Ath10kPCIDevice::probeTarget()
         if (runtimeOk) {
             cleanupOk = true;
             _runtimeWakeAsserted = initialWakeAsserted || postColdWakeAsserted;
-            IOLog("Ath10kMac: Phase 3 step 4 transition complete; keeping target awake with CE1/CE2 DMA owned\n");
+            ATH10K_TRACE("Ath10kMac: Phase 3 step 4 transition complete; keeping target awake with CE1/CE2 DMA owned\n");
         } else {
             quiesceOk = quiesceTargetAfterBMI();
             cleanupOk = quiesceOk;
@@ -6728,7 +6729,7 @@ bool Ath10kPCIDevice::probeTarget()
                           !_initConfigTargetDirty && !_dmaQuarantine;
     const char *lifetime = runtimeOk ? "runtime-active" :
                            (quiesceOk ? "safe-reset" : "failed/not-run");
-    IOLog("Ath10kMac: phase2 BMI+PREREQ %s cold-init=%s chip=%s warm=%s final-ce=%s diag-read=%s diag-write=%s init-config=%s wake-cpu=%s bmi-target-info=%s bmi-read-memory=%s board-prereq=%s target-version=0x%08x target-type=0x%08x board=0x%08x cal=0x%08x lifetime=%s ce7-transactions=%u ce7-writes=%u bmi-reads=%u parity-restored=%s\n",
+    ATH10K_TRACE("Ath10kMac: phase2 BMI+PREREQ %s cold-init=%s chip=%s warm=%s final-ce=%s diag-read=%s diag-write=%s init-config=%s wake-cpu=%s bmi-target-info=%s bmi-read-memory=%s board-prereq=%s target-version=0x%08x target-type=0x%08x board=0x%08x cal=0x%08x lifetime=%s ce7-transactions=%u ce7-writes=%u bmi-reads=%u parity-restored=%s\n",
           complete ? "COMPLETE" : "PARTIAL",
           _coldTargetInitSucceeded ? "ready" : "failed",
           _selectedHw ? _selectedHw->targetRevision : "unresolved",
@@ -6748,23 +6749,23 @@ bool Ath10kPCIDevice::probeTarget()
           _bmiReadMemoryTransactionCount,
           _pcieParityRestored ? "yes" : "no");
 
-    IOLog("Ath10kMac: phase2 BOARD %s status=%s written=%u verified=%u bmi-writes-total=%u lifetime=%s\n",
+    ATH10K_TRACE("Ath10kMac: phase2 BOARD %s status=%s written=%u verified=%u bmi-writes-total=%u lifetime=%s\n",
           boardOk ? "COMPLETE" : "PARTIAL", _bmiBoardUploadStatus,
           _bmiBoardBytesWritten, _bmiBoardBytesVerified, _bmiWriteMemoryTransactionCount,
           lifetime);
 
-    IOLog("Ath10kMac: phase2 OTP %s status=%s download=%s wire-bytes=%u lz-data-commands=%u execute=%s result=0x%08x accepted=%s lifetime=%s\n",
+    ATH10K_TRACE("Ath10kMac: phase2 OTP %s status=%s download=%s wire-bytes=%u lz-data-commands=%u execute=%s result=0x%08x accepted=%s lifetime=%s\n",
           otpOk ? "COMPLETE" : "PARTIAL", _otpStatus,
           _otpDownloadSucceeded ? "yes" : "no", _otpWireBytesSent, _otpLZDataCommands,
           _otpExecuteSucceeded ? "yes" : "no", _otpResult,
           _otpResultAccepted ? "yes" : "no", lifetime);
 
-    IOLog("Ath10kMac: phase2 WLAN %s status=%s wire-bytes=%u data-commands=%u readback=%u segments=%u post-bmi=%s lifetime=%s\n",
+    ATH10K_TRACE("Ath10kMac: phase2 WLAN %s status=%s wire-bytes=%u data-commands=%u readback=%u segments=%u post-bmi=%s lifetime=%s\n",
           firmwareOk ? "COMPLETE" : "PARTIAL", _fwStatus, _fwWireBytesSent,
           _fwLZDataCommands, _fwReadbackBytes, _fwVerifiedSegments,
           _fwPostBMIProbeSucceeded ? "yes" : "no", lifetime);
 
-    IOLog("Ath10kMac: phase2 BOOT %s status=%s host-interest=%s done-attempted=%s done-consumed=%s htc-ready=%s rx-bytes=%u waited=%u ms parse=%s fw-indicator=0x%08x lifetime=%s\n",
+    ATH10K_TRACE("Ath10kMac: phase2 BOOT %s status=%s host-interest=%s done-attempted=%s done-consumed=%s htc-ready=%s rx-bytes=%u waited=%u ms parse=%s fw-indicator=0x%08x lifetime=%s\n",
           complete ? "COMPLETE" : "PARTIAL", _boot.status,
           _boot.preDoneHIVerified ? "verified" : "incomplete",
           _boot.doneAttempted ? "yes" : "no", _boot.doneSent ? "yes" : "no",
@@ -6777,15 +6778,15 @@ bool Ath10kPCIDevice::probeTarget()
     else if (_initConfigTargetDirty)
         IOLog("Ath10kMac: NOTE init_config rollback incomplete before CPU wake; reboot before another invasive test\n");
     else if (_wmi.attempted)
-        IOLog("Ath10kMac: WMI bootstrap status=%s service-ready=%s safe-reset=%s; inspect WMIRuntimeActive for live receiver\n",
+        ATH10K_TRACE("Ath10kMac: WMI bootstrap status=%s service-ready=%s safe-reset=%s; inspect WMIRuntimeActive for live receiver\n",
               _wmi.status, _wmi.serviceReady ? "yes" : "no", quiesceOk ? "yes" : "no");
     else if (runtimeOk)
-        IOLog("Ath10kMac: NOTE 0.0.91 Phase 3 step 2 active: HTC reserved control, WMI_CONTROL and HTT_DATA endpoints connected; SETUP_COMPLETE deferred until CE2/WMI RX; data TX disabled\n");
+        ATH10K_TRACE("Ath10kMac: NOTE 0.0.91 Phase 3 step 2 active: HTC reserved control, WMI_CONTROL and HTT_DATA endpoints connected; SETUP_COMPLETE deferred until CE2/WMI RX; data TX disabled\n");
     else if (_htcAttempted && !htcOk)
         IOLog("Ath10kMac: NOTE 0.0.91 HTC service setup incomplete status=%s; target was safely reset=%s\n",
               _htcStatus, quiesceOk ? "yes" : "no");
     else if (complete)
-        IOLog("Ath10kMac: NOTE 0.0.91 received valid HTC READY then safe reset. Firmware is no longer running; HTC service setup/WMI/HTT and Wi-Fi interface are not active\n");
+        ATH10K_TRACE("Ath10kMac: NOTE 0.0.91 received valid HTC READY then safe reset. Firmware is no longer running; HTC service setup/WMI/HTT and Wi-Fi interface are not active\n");
     else
         IOLog("Ath10kMac: NOTE 0.0.91 milestone incomplete; inspect Host Interest, board, OTP, WLAN, BOOT/HTC, CE/IRQ runtime and quiesce telemetry\n");
 
@@ -6808,7 +6809,7 @@ bool Ath10kPCIDevice::inspectCopyEngines()
     _ceInspectionAttempted = true;
 
     const auto &layout = Ath10k::kQca6174RegisterLayout;
-    IOLog("Ath10kMac: CE foundation begin count=%u wrapper=0x%08x stride=0x%03x desc-size=%u align=%u\n",
+    ATH10K_TRACE("Ath10kMac: CE foundation begin count=%u wrapper=0x%08x stride=0x%03x desc-size=%u align=%u\n",
           Ath10k::kCECount, layout.ceWrapperBaseAddress, Ath10k::kCEBaseStride,
           Ath10k::kCEDescriptorSize, Ath10k::kCEDescriptorRingAlign);
 
@@ -6818,7 +6819,7 @@ bool Ath10kPCIDevice::inspectCopyEngines()
         IOLog("Ath10kMac: CE wrapper ERROR cannot read interrupt summary\n");
         return false;
     }
-    IOLog("Ath10kMac: CE wrapper interrupt-summary raw=0x%08x\n",
+    ATH10K_TRACE("Ath10kMac: CE wrapper interrupt-summary raw=0x%08x\n",
           _ceWrapperInterruptSummary);
 
     for (UInt32 i = 0; i < Ath10k::kCECount; ++i) {
@@ -6830,16 +6831,16 @@ bool Ath10kPCIDevice::inspectCopyEngines()
         }
 
         ++_ceValidCount;
-        IOLog("Ath10kMac: CE%u base=0x%08x src-base=%08x src-size=%u dst-base=%08x dst-size=%u\n",
+        ATH10K_TRACE("Ath10kMac: CE%u base=0x%08x src-base=%08x src-size=%u dst-base=%08x dst-size=%u\n",
               i, snap.base, snap.srcBase, snap.srcSize, snap.dstBase, snap.dstSize);
-        IOLog("Ath10kMac: CE%u idx src-w=%u src-r=%u dst-w=%u dst-r=%u ctrl1=%08x src-wm=%08x dst-wm=%08x cmd=%08x host-ie=%08x misc-ie=%08x\n",
+        ATH10K_TRACE("Ath10kMac: CE%u idx src-w=%u src-r=%u dst-w=%u dst-r=%u ctrl1=%08x src-wm=%08x dst-wm=%08x cmd=%08x host-ie=%08x misc-ie=%08x\n",
               i, snap.srcWriteIndex, snap.currentSrcRead, snap.dstWriteIndex,
               snap.currentDstRead, snap.ctrl1, snap.srcWatermark, snap.dstWatermark,
               snap.command, snap.hostIE, snap.miscIE);
     }
 
     _ceInspectionSucceeded = (_ceValidCount == Ath10k::kCECount);
-    IOLog("Ath10kMac: CE foundation %s valid=%u/%u (pre-transaction snapshot)\n",
+    ATH10K_TRACE("Ath10kMac: CE foundation %s valid=%u/%u (pre-transaction snapshot)\n",
           _ceInspectionSucceeded ? "READY" : "PARTIAL",
           _ceValidCount, Ath10k::kCECount);
     return _ceInspectionSucceeded;
@@ -6869,7 +6870,7 @@ bool Ath10kPCIDevice::allocateCERings()
 
     _ceRingSyncOutCount = 0;
     _ceRingSyncOutFailureCount = 0;
-    IOLog("Ath10kMac: CE ring allocation begin descriptor-size=%u align=%u address-bits=32 mapper=%s explicit-sync=yes\n",
+    ATH10K_TRACE("Ath10kMac: CE ring allocation begin descriptor-size=%u align=%u address-bits=32 mapper=%s explicit-sync=yes\n",
           Ath10k::kCEDescriptorSize, Ath10k::kCEDescriptorRingAlign,
           _dmaMapper ? "device-bound" : "default/null");
 
@@ -6895,7 +6896,7 @@ bool Ath10kPCIDevice::allocateCERings()
             }
             ++_ceRingAllocatedCount;
             _ceRingAllocatedBytes += _ceSrcRings[ceId].bytes();
-            IOLog("Ath10kMac: CE%u src ring allocated entries=%u bytes=0x%llx physical=0x%llx iovm=0x%08x role=%s\n",
+            ATH10K_TRACE("Ath10kMac: CE%u src ring allocated entries=%u bytes=0x%llx physical=0x%llx iovm=0x%08x role=%s\n",
                   ceId, cfg.srcEntries,
                   (unsigned long long)_ceSrcRings[ceId].bytes(),
                   (unsigned long long)_ceSrcRings[ceId].physicalAddress(),
@@ -6921,7 +6922,7 @@ bool Ath10kPCIDevice::allocateCERings()
             }
             ++_ceRingAllocatedCount;
             _ceRingAllocatedBytes += _ceDstRings[ceId].bytes();
-            IOLog("Ath10kMac: CE%u dst ring allocated entries=%u bytes=0x%llx physical=0x%llx iovm=0x%08x role=%s\n",
+            ATH10K_TRACE("Ath10kMac: CE%u dst ring allocated entries=%u bytes=0x%llx physical=0x%llx iovm=0x%08x role=%s\n",
                   ceId, cfg.dstEntries,
                   (unsigned long long)_ceDstRings[ceId].bytes(),
                   (unsigned long long)_ceDstRings[ceId].physicalAddress(),
@@ -6931,7 +6932,7 @@ bool Ath10kPCIDevice::allocateCERings()
 
     _ceRingAllocationSucceeded = true;
     _dmaMapperUsedByRings = (_dmaMapper != nullptr);
-    IOLog("Ath10kMac: CE ring allocation READY rings=%u total-bytes=0x%llx mapper=%s initial-sync=done (all descriptors zeroed)\n",
+    ATH10K_TRACE("Ath10kMac: CE ring allocation READY rings=%u total-bytes=0x%llx mapper=%s initial-sync=done (all descriptors zeroed)\n",
           _ceRingAllocatedCount, (unsigned long long)_ceRingAllocatedBytes,
           _dmaMapper ? "device-bound" : "default/null");
     return true;
@@ -7070,7 +7071,7 @@ bool Ath10kPCIDevice::programAndVerifyOneCE(UInt32 ceId)
     const bool programmedOk = writesOk && snapshotOk &&
                               verifyOneCEProgrammed(ceId, programmed);
 
-    IOLog("Ath10kMac: CE%u ring program readback=%s src=%08x/%u dst=%08x/%u src-w=%u dst-w=%u irq=%08x/%08x\n",
+    ATH10K_TRACE("Ath10kMac: CE%u ring program readback=%s src=%08x/%u dst=%08x/%u src-w=%u dst-w=%u irq=%08x/%08x\n",
           ceId, programmedOk ? "PASS" : "FAIL",
           programmed.srcBase, programmed.srcSize,
           programmed.dstBase, programmed.dstSize,
@@ -7084,7 +7085,7 @@ bool Ath10kPCIDevice::programAndVerifyOneCE(UInt32 ceId)
     const bool restoredOk = restoreWritesOk && restoredSnapshotOk &&
                             verifyOneCERestored(ceId, baseline, restored);
 
-    IOLog("Ath10kMac: CE%u ring restore readback=%s src=%08x/%u dst=%08x/%u src-w=%u dst-w=%u irq=%08x/%08x\n",
+    ATH10K_TRACE("Ath10kMac: CE%u ring restore readback=%s src=%08x/%u dst=%08x/%u src-w=%u dst-w=%u irq=%08x/%08x\n",
           ceId, restoredOk ? "PASS" : "FAIL",
           restored.srcBase, restored.srcSize,
           restored.dstBase, restored.dstSize,
@@ -7108,7 +7109,7 @@ bool Ath10kPCIDevice::runDMATest()
     static constexpr UInt64 kTestSize = 4096;
     static constexpr UInt64 kTestAlignment = Ath10k::kCEDescriptorRingAlign;
 
-    IOLog("Ath10kMac: DMA foundation allocate size=%llu align=%llu device-address-bits=32 mapper=%s explicit-sync=yes\n",
+    ATH10K_TRACE("Ath10kMac: DMA foundation allocate size=%llu align=%llu device-address-bits=32 mapper=%s explicit-sync=yes\n",
           (unsigned long long)kTestSize,
           (unsigned long long)kTestAlignment,
           _dmaMapper ? "device-bound" : "default/null");
@@ -7121,14 +7122,14 @@ bool Ath10kPCIDevice::runDMATest()
 
     _dmaTestSucceeded = true;
     _dmaMapperUsedByTest = _dmaTestBuffer.usesExplicitMapper();
-    IOLog("Ath10kMac: DMA foundation READY virtual=%p physical=0x%llx iovm=0x%llx segment=0x%llx length=0x%llx align=%llu\n",
+    ATH10K_TRACE("Ath10kMac: DMA foundation READY virtual=%p physical=0x%llx iovm=0x%llx segment=0x%llx length=0x%llx align=%llu\n",
           _dmaTestBuffer.virtualAddress(),
           (unsigned long long)_dmaTestBuffer.physicalAddress(),
           (unsigned long long)_dmaTestBuffer.dmaAddress(),
           (unsigned long long)_dmaTestBuffer.segmentLength(),
           (unsigned long long)_dmaTestBuffer.length(),
           (unsigned long long)_dmaTestBuffer.alignment());
-    IOLog("Ath10kMac: DMA regression buffer remains host-only; CE rings use separate mapped buffers\n");
+    ATH10K_TRACE("Ath10kMac: DMA regression buffer remains host-only; CE rings use separate mapped buffers\n");
     return true;
 }
 

@@ -92,3 +92,31 @@ failed/completed and a terminal WCL service is queued even with the radio timer
 stopped. The bridge permits this inactive-radio failure notification when a
 scan/join/link needs completion, while suppressing new availability announcements.
 MAC failure wakeups schedule terminal delivery after releasing their wait state.
+
+
+## Repeated watchdog and normal-mode overhead (2026-10-28)
+
+The next hardware run still hung. A second configd watchdog at 03:44:08
+shows a different cycle: IOServiceTerminateThread (111), in
+IO80211APIUserClient::stop +0x125, and thread-call worker 17044, in nested
+IOCommandGate::runAction. WCLTimerSource::serialAction and CCLogPipe are also
+blocked behind it. Matching kernel and IO80211 UUIDs were checked locally;
+raw reports are deliberately excluded because they contain private process data.
+This rules out treating the previous queue order as a complete stability fix.
+
+The native notification bridge now attempts both gates without waiting.
+Contention retains the coalesced pending notification and schedules one delayed
+retry after 10 ms; it never waits for the network gate while holding WCL.
+This removes that blocking edge even when an Apple user-client termination
+holds the network workloop and waits for WCL. Production-method host tests cover
+contention at either gate, delayed retry, successful delivery and stop ordering.
+The stackshot alone does not establish that every observed disconnect has this
+cause; repeat hardware verification is required.
+
+Normal builds now omit 220 detailed bring-up/event console messages while
+keeping error/rejection/quarantine messages. Build with DIAGNOSTICS=1 to restore
+them and the idle whole-pool DMA audit. Per-packet ownership, DMA sync, refill and
+completion checks remain enabled. The full idle audit walked 1023 mappings once
+per second; it is diagnostic work rather than a prerequisite for packet delivery.
+Neither boot-time improvement nor stable reconnection has yet been measured on
+this candidate. WPA3/PMF, Tahoe, AWDL and AirDrop remain incomplete.
