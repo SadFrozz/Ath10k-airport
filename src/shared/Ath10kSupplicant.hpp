@@ -69,6 +69,7 @@ public:
   if(!pairwisePending())return;
   copy(ptk,establishedPTK,48);copy(anonce,establishedANonce,32);copy(snonce,establishedSNonce,32);
   pairRekey=false;state=3;outputLength=0;
+  wipe(output,sizeof(output));wipe(m2,sizeof(m2));m2Length=0;
  }
  ~Supplicant(){reset();}
  void reset(){wipe(this,sizeof(*this));error="none";}

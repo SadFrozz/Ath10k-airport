@@ -109,6 +109,12 @@ public:
     UInt8 reply[160]{},keys[56]{};
     UInt32 replyLength=0;
     UInt64 pairDeadline=0;
+    void cancelPairwiseAttempt(){
+        supplicant.cancelPairwiseAttempt();pairDeadline=0;
+        // Only the candidate M2 is queued while pairwisePending(). Established
+        // keys and the authenticated M3/M4 retry cache remain in the supplicant.
+        AthSecurity::wipe(reply,sizeof(reply));replyLength=0;replyPending=false;
+    }
     void reset(){supplicant.reset();AthSecurity::wipe(reply,sizeof(reply));AthSecurity::wipe(keys,sizeof(keys));
         ready=replyPending=keysPending=authorizePending=false;replyLength=keyOperation=0;pairDeadline=0;}
     ~NativeSecurity(){reset();}
@@ -916,6 +922,12 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
+        // Retire an expired candidate before transmitting its M2 or consuming
+        // another EAPOL frame. A delayed service tick cannot revive that job.
+        if(sec->supplicant.pairwisePending() && sec->pairDeadline && now>=sec->pairDeadline){
+            sec->cancelPairwiseAttempt();
+            s.eapolPause=sec->keysPending || sec->authorizePending;
+        }
         if(sec->authorizePending && !s.txOwned && s.txComplete){
             if(s.txStatus || s.eapolTxFailed){s.error="native-eapol-tx-failed";s.cancelRequested=true;}
             else if(s.securityPhase==3)s.authorizeRequested=true;
@@ -959,7 +971,6 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         if(sec->supplicant.pairwisePending()){
             s.eapolPause=true;if(!sec->pairDeadline)sec->pairDeadline=now+5000;
-            if(now>=sec->pairDeadline){sec->supplicant.cancelPairwiseAttempt();sec->pairDeadline=0;s.eapolPause=false;}
         }else {sec->pairDeadline=0;s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending;}
     }
     serviceNativeNotifications(now);

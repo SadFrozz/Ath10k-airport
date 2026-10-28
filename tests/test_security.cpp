@@ -83,7 +83,12 @@ static void rekeyTests(){
  assert(s.receive(r_pair1,sizeof(r_pair1))==S::Reply);
  changed.assign(r_pair3,r_pair3+sizeof(r_pair3));changed[95]^=1;
  assert(s.receive(changed.data(),changed.size())==S::Ignore && s.pairwisePending());
- s.cancelPairwiseAttempt();assert(!s.pairwisePending());
+ s.cancelPairwiseAttempt();assert(!s.pairwisePending() && !s.outputLength);
+ for(auto byte:s.output)assert(!byte);
+ // Late candidate M3 is retired; established authenticated retries still work.
+ assert(s.receive(r_pair3,sizeof(r_pair3))==S::Ignore);
+ assert(s.receive(v_m3,sizeof(v_m3))==S::Reply);
+ assert(s.outputLength==sizeof(v_m4) && !memcmp(s.output,v_m4,sizeof(v_m4)));
  // Forged M1 timeout restores established keys: an authentic GTK rekey still works.
  assert(s.receive(r_group_new,sizeof(r_group_new))==S::GroupKeys);
  assert(s.receive(r_pair1,sizeof(r_pair1))==S::Reply);

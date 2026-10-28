@@ -29,6 +29,12 @@ int main(){
     security.cachedGeneration=12;
     memset(d._nativeJoin.key,0x7d,sizeof(d._nativeJoin.key));
     memcpy(d._nativeJoin.bssid,s_ap,6);
+    security.cancelPairwiseAttempt();
+    assert(!security.replyPending && !security.replyLength && !security.pairDeadline);
+    for(auto byte:security.reply)assert(!byte);
+    // Cancellation only removes the candidate response, not pending committed
+    // key operations or readiness. Full teardown below still retires everything.
+    assert(security.ready && security.keysPending && security.authorizePending);
     d.discardNativeSecurity();
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> pristine;pristine.reset();
     assert(!memcmp(&security.supplicant,&pristine,sizeof(pristine)));

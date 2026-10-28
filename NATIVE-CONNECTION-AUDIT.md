@@ -605,3 +605,15 @@ workspace allocation, reinforcing outside-gate crypto-worker requirements.
 This establishes symbol availability for this image, not callable context ABI,
 P-256 correctness, actual SAE/PMF or macOS 11–26 support. Those original goal
 requirements remain incomplete. No Apple binary/header/assembly is redistributed.
+
+## Pairwise candidate expiry ordering (2026-10-28)
+
+A delayed native service tick previously submitted an outstanding M2 or consumed
+a queued M3 before checking the pairwise-candidate deadline. Cancellation also
+left the native reply buffer pending. This could send a response belonging to a
+retired candidate. Expiry now runs before transmit/receive progress, restores the
+established supplicant context and clears the candidate response in both queues.
+Authenticated established M3/M4 retry state and committed key operations remain
+intact. Focused production-class and actual supplicant tests exercise clearing
+and a successful authenticated group rekey after candidate cancellation. This
+is a confirmed ordering defect, not proof of the cause of a hardware hang.
