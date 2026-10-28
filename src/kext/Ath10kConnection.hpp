@@ -234,6 +234,10 @@ struct ConnectionState {
     RXSecurityDiagnostics rxSecurity{};
     const char *error="none";
 };
+// Association survives a controlled-port closure during key replacement.
+inline bool connectionAssociated(const ConnectionState &s){
+    return s.stage==LinkStage::Connected && s.disconnect==DisconnectStage::None && !s.cancelRequested;
+}
 inline bool connectionHasError(const ConnectionState &s){
     return s.error && !(s.error[0]=='n' && s.error[1]=='o' && s.error[2]=='n' && s.error[3]=='e' && !s.error[4]);
 }

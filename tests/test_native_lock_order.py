@@ -199,9 +199,15 @@ class NativeLockOrder(unittest.TestCase):
         query=native.split("case N::getWCL_BSS_INFO:",1)[1].split("case N::",1)[0]
         self.assertNotIn("_nativeBSSBytes",query)
         self.assertIn("nativeBSSMessage(s.ap,",query)
-        self.assertIn("LinkStage::Connected",query)
+        helper=native.split("IOReturn Ath10kPCIDevice::nativeCurrentAPInfo(",1)[1].split("IOReturn Ath10kPCIDevice::nativeLinkStateUpdate(",1)[0]
+        self.assertLess(helper.index("connectionAssociated(s)"),helper.index("switch(op)"))
         self.assertIn("s.beaconFrameBytes",query)
         self.assertNotIn("_nativeBeaconSent",query)
+
+    def test_native_link_ready_requires_live_association_and_authorization(self):
+        source=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
+        ready=source.split("case N::setWCL_LINK_UP_DONE:",1)[1].split("case N::",1)[0]
+        self.assertIn("connectionAssociated(s) && s.portAuthorized",ready)
 
     def test_security_progress_does_not_wait_for_notification_allocation(self):
         native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()

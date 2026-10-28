@@ -58,8 +58,8 @@ def main():
         (include/'native_registration_methods.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareRegistrationInfo('):native.index('IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const')])
         (include/'native_security_class.inc').write_text(native[native.index('class Ath10kPCIDevice::NativeSecurity {'):native.index('IO80211WorkQueue *Ath10kPCIDevice::getWorkQueue()')])
         (include/'native_security_discard.inc').write_text(native[native.index('void Ath10kPCIDevice::discardNativeSecurity()'):native.index('IOReturn Ath10kPCIDevice::nativeStopAction(')])
-        request=native[native.index('IOReturn Ath10kPCIDevice::nativeRequest('):native.index('static UInt32 channelFlags(')]
-        prefix=native[native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('):native.index('    auto &s=_connection;using N=AthNativeOp;')]
+        request=native[native.index('IOReturn Ath10kPCIDevice::nativeRequest('):native.index('IOReturn Ath10kPCIDevice::nativeCurrentAPInfo(')]
+        prefix=native[native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('):native.index('    auto &s=_connection;using N=AthNativeOp;',native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('))]
         (include/'native_request_admission.inc').write_text(request+prefix+'    (void)op;(void)data;++accepted;return kIOReturnSuccess;\n}\n')
 
         entry=driver[driver.index('void Ath10kPCIDevice::runDeferredProbe()'):driver.index('    ATH10K_TRACE("Ath10kMac: deferred target probe begin') ]
@@ -80,8 +80,9 @@ def main():
         (include/'native_mac_method.inc').write_text(native[native.index('const char *Ath10kPCIDevice::serviceNativeMAC('):native.index('const char *Ath10kPCIDevice::nativeSelectBSS(')])
         (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
+        (include/'native_link_state.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeCurrentAPInfo('):native.index('static UInt32 channelFlags(')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        names=['connection', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['connection', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         if args.only:
             unknown = sorted(set(args.only) - set(names))

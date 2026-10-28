@@ -72,6 +72,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | P0 | Event delivery errors | Candidate checks enqueue returns, keeps phase/cursors and retries with 10 ms backoff; host injection covers every stage | Verify system behavior during scan, rekey and failures on hardware |
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
+| P0 | Association lifetime in queries/link acknowledgements | Candidate shares association admission across AP queries, notifications and WCL up; host state table executes query/link methods | Hardware rejects stale up/BSS while rekey preserves association |
 | P0 | Data path after authorization | Last boot had authorized port but no DHCP and stalled worker | DHCP, ARP, IPv4, IPv6 and bound HTTPS pass while worker advances |
 | P1 | Scan request semantics | Candidate passes requested physical channel subset to firmware; rejects empty regulatory intersection; pre-submit cancellation completes locally | Hardware confirms subset timing, SSID matching, cancel and completion ordering |
 | P1 | Autojoin | About 32 seconds after login on previous boot | Trace and reduce avoidable retries without router changes |
@@ -552,3 +553,41 @@ It is now named `deauthentication`, with a fixed offset assertion; AP subtype
 0xc0 and local reason-3 fallback set it to 1, subtype 0xa0 sets it to 0.
 These are manually reconstructed observations of the Sequoia binary, not
 recovered Apple C source or a claim for other macOS adapters.
+
+
+## Association lifetime in current-AP queries and WCL link updates (2026-10-28)
+
+A queued WCL LinkUp acknowledgement could previously set the AP/link after
+radio cancellation or disconnect began, provided its BSSID still matched.
+WCL_BSS_INFO also accepted Connected while cancel/disconnect were active, unlike
+BEACON_INFO and EXTENDED_BSS_INFO. ConnectionState::connectionAssociated now
+expresses the common lifetime: Connected, no cancel intent and no disconnect
+stage. It intentionally does not require an authorized controlled port: initial
+key exchange and live rekey must not be confused with loss of association.
+
+The three current-AP queries share one admission method; rejected requests leave
+output untouched. Current BSS is still rebuilt from the associated AP independently
+of scan scratch. WCL LinkUp uses the same admission and requires the current
+BSSID before either interface mutation. LinkUpDone additionally requires port
+authorization. WCL Down remains idempotent during/after teardown, accepts its
+zero BSSID and preserves debounce duration. It is not rejected merely because
+the association is already gone. Power/stop/runtime admission remains in the
+outer radio-gated dispatcher, before these methods. Notification and crypto
+workers now use the same association predicate.
+
+Matching Sequoia WCLNetManager::updateLinkState at 0xffffff8002125516 builds
+a 16-byte command: BSSID bytes 0..5 initially zero, up at 6, flags at 7/8,
+debounce word at 12; the BSSID is populated only on up. cmdIouc at
+0xffffff80021255de receives command 0x1c6 and length 0x10. The local analysis
+uses the already recorded IO80211Family UUID; no Apple binary/assembly is
+exported. These observations do not validate another OS adapter.
+
+The new host test executes production query/link-update methods with real
+ConnectionState and wire builders. Its table covers disabled, scan, association
+in progress, failed, cancel, drain, final disconnect barrier, live rekey and
+authorized connection. It verifies no stale AP mutation/output on rejection,
+correct BSSID after poisoned scan scratch, independent AP/link flags, zero-BSSID
+down with/without debounce, null inputs and absent interface. LinkUpDone's
+association/port combination has a source guard; it is not an execution of that
+full dispatcher branch. Kernel WCL delivery/rekey/disconnect behavior remains
+unverified; this is an offline candidate.

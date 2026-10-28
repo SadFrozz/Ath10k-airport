@@ -580,6 +580,49 @@ IOReturn Ath10kPCIDevice::nativeAction(OSObject *target,void *op,void *data,void
     auto self=OSDynamicCast(Ath10kPCIDevice,target);
     return self?self->nativeRequestGated(static_cast<AthNativeOp>(uintptr_t(op)),data):kIOReturnBadArgument;
 }
+IOReturn Ath10kPCIDevice::nativeCurrentAPInfo(AthNativeOp op,void *data) {
+    if(!data)return kIOReturnBadArgument;
+    auto &s=_connection;using N=AthNativeOp;
+    if(!Ath10k::connectionAssociated(s))return kIOReturnNotReady;
+    switch(op){
+    case N::getWCL_BSS_INFO:{
+        if(!s.beaconFrameBytes)return kIOReturnNotReady;
+        // Background scan notifications reuse the scratch buffer. Rebuild
+        // from the associated AP rather than returning another scan result.
+        const size_t length=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
+        if(!length)return kIOReturnNotReady;
+        bcopy(_nativeBSSMessage,data,length);return kIOReturnSuccess;}
+    case N::getBEACON_INFO:{
+        return nativeBeaconInfo(s.beaconFrame,s.beaconFrameBytes,data,0x808)?kIOReturnSuccess:kIOReturnNotReady;}
+    case N::getWCL_EXTENDED_BSS_INFO:{
+        NativeExtendedBSSInput input{};input.rates=s.ap.rates;input.rateCount=s.ap.rateCount;
+        input.htRates=s.htRates;input.htRateCount=s.htEnabled?s.htRateCount:0;
+        input.vhtMap=s.vhtEnabled?s.vhtTxMap:0xffff;
+        if(s.secure){input.rsn=s.ap.rsn;input.rsnLength=s.ap.rsnLength;}
+        return nativeExtendedBSS(input,data,0x1e0)?kIOReturnSuccess:kIOReturnBadArgument;}
+    default:return kIOReturnUnsupported;
+    }
+}
+IOReturn Ath10kPCIDevice::nativeLinkStateUpdate(void *data) {
+    if(!data)return kIOReturnBadArgument;
+    if(!_nativeInterface)return kIOReturnNotReady;
+    auto bytes=static_cast<const UInt8 *>(data);
+    if(bytes[6]){
+        // A WCL event can outlive the association it describes. Never revive
+        // its AP/link after cancel or teardown; key replacement is still associated.
+        if(!Ath10k::connectionAssociated(_connection))return kIOReturnNotReady;
+        if(!Ath10k::sameMAC(bytes,_connection.bssid))return kIOReturnBadArgument;
+        if(bytes[8])_nativeInterface->setCurrentApAddress(reinterpret_cast<ether_addr *>(data));
+        if(bytes[7])_nativeInterface->setLinkState(kIO80211NetworkLinkUp,0,false,0);
+    }else{
+        // WCL deliberately sends an all-zero BSSID for down. Keep this
+        // idempotent during/after teardown and preserve its debounce interval.
+        _nativeInterface->setCurrentApAddress(nullptr);
+        UInt32 debounce=AirportWCL::read32(bytes+12);
+        _nativeInterface->setLinkState(kIO80211NetworkLinkDown,0,debounce!=0,debounce);
+    }
+    return kIOReturnSuccess;
+}
 static UInt32 channelFlags(UInt32 channel){return (channel<=14?APPLE80211_C_FLAG_2GHZ:APPLE80211_C_FLAG_5GHZ)|APPLE80211_C_FLAG_20MHZ;}
 IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     if(_nativeStopping || powerIOBlocked() || !_wmiLive.active)return kIOReturnNotReady;
@@ -663,25 +706,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             AirportWCL::appendChannel(*d,ch,ch>14,ch>=52 && ch<=144,true,false,false);
         }return kIOReturnSuccess;}
     case N::getWCL_TRAFFIC_COUNTERS:{AirportWCL::TrafficCounters counters{};counters.infraTx=s.txPackets;counters.infraRx=s.rxPackets;counters.timestampNanoseconds=Ath10k::uptimeNS();bcopy(&counters,data,sizeof(counters));return kIOReturnSuccess;}
-    case N::getWCL_BSS_INFO:{
-        if(s.stage!=Ath10k::LinkStage::Connected || !s.beaconFrameBytes)return kIOReturnNotReady;
-        // Background scan notifications reuse the scratch buffer. Rebuild
-        // from the associated AP rather than returning another scan result.
-        const size_t length=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
-        if(!length)return kIOReturnNotReady;
-        bcopy(_nativeBSSMessage,data,length);return kIOReturnSuccess;}
-    case N::getBEACON_INFO:{
-        if(s.stage!=Ath10k::LinkStage::Connected || s.cancelRequested ||
-           s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnNotReady;
-        return nativeBeaconInfo(s.beaconFrame,s.beaconFrameBytes,data,0x808)?kIOReturnSuccess:kIOReturnNotReady;}
-    case N::getWCL_EXTENDED_BSS_INFO:{
-        if(s.stage!=Ath10k::LinkStage::Connected || s.cancelRequested ||
-           s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnNotReady;
-        NativeExtendedBSSInput input{};input.rates=s.ap.rates;input.rateCount=s.ap.rateCount;
-        input.htRates=s.htRates;input.htRateCount=s.htEnabled?s.htRateCount:0;
-        input.vhtMap=s.vhtEnabled?s.vhtTxMap:0xffff;
-        if(s.secure){input.rsn=s.ap.rsn;input.rsnLength=s.ap.rsnLength;}
-        return nativeExtendedBSS(input,data,0x1e0)?kIOReturnSuccess:kIOReturnBadArgument;}
+    case N::getWCL_BSS_INFO:case N::getBEACON_INFO:case N::getWCL_EXTENDED_BSS_INFO:
+        return nativeCurrentAPInfo(op,data);
     case N::setWCL_SCAN_TIMING:{
         UInt32 milliseconds=AirportWCL::read32(static_cast<const UInt8 *>(data));
         _nativeScanDwellMs=nativeScanDwellBudget(milliseconds);
@@ -750,18 +776,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         }
         return kIOReturnSuccess;}
     case N::setCLEAR_PMKSA_CACHE:return kIOReturnSuccess; // No PMKSA cache is retained.
-    case N::setWCL_LINK_UP_DONE:return s.portAuthorized?kIOReturnSuccess:kIOReturnNotReady;
-    case N::setWCL_LINK_STATE_UPDATE:{
-        auto bytes=static_cast<const UInt8 *>(data);
-        if(bytes[6]){
-            if(!Ath10k::sameMAC(bytes,s.bssid))return kIOReturnBadArgument;
-            if(bytes[8])_nativeInterface->setCurrentApAddress(reinterpret_cast<ether_addr *>(data));
-            if(bytes[7])_nativeInterface->setLinkState(kIO80211NetworkLinkUp,0,false,0);
-        }else{
-            _nativeInterface->setCurrentApAddress(nullptr);
-            UInt32 debounce=AirportWCL::read32(bytes+12);
-            _nativeInterface->setLinkState(kIO80211NetworkLinkDown,0,debounce!=0,debounce);
-        }return kIOReturnSuccess;}
+    case N::setWCL_LINK_UP_DONE:return Ath10k::connectionAssociated(s) && s.portAuthorized?kIOReturnSuccess:kIOReturnNotReady;
+    case N::setWCL_LINK_STATE_UPDATE:return nativeLinkStateUpdate(data);
 
     default:return kIOReturnUnsupported;
     }
@@ -833,7 +849,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         for(UInt32 i=0;i<_wmiBSS.count;++i)sec->candidates.add(_wmiBSS.entries[i],now);
         sec->cachedGeneration=_wmiScan.generation;
     }
-    const bool associated=s.stage==Ath10k::LinkStage::Connected && s.disconnect==Ath10k::DisconnectStage::None && !s.cancelRequested;
+    const bool associated=Ath10k::connectionAssociated(s);
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
     if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline) &&
@@ -947,7 +963,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             }
         }
     }
-    const bool associated=s.stage==Ath10k::LinkStage::Connected && s.disconnect==Ath10k::DisconnectStage::None && !s.cancelRequested;
+    const bool associated=Ath10k::connectionAssociated(s);
     const bool joinFailed=_nativeJoinPending && (_nativeJoinFailed || s.cancelRequested ||
         s.stage==Ath10k::LinkStage::Failed || s.disconnect!=Ath10k::DisconnectStage::None || now>=_nativeJoinDeadline);
     if(_nativeJoinPending && !joinFailed && associated && !_nativeAssocSent){

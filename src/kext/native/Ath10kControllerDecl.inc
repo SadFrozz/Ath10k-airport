@@ -26,6 +26,8 @@ public:
     IOReturn nativeRequest(AthNativeOp,void *);
     static IOReturn nativeAction(OSObject *,void *,void *,void *,void *);
     IOReturn nativeRequestGated(AthNativeOp,void *);
+    IOReturn nativeCurrentAPInfo(AthNativeOp,void *);
+    IOReturn nativeLinkStateUpdate(void *);
     bool prepareNativeInterface();
     bool prepareNativeLogs();
     void nativeStartupPhase(const char *);
