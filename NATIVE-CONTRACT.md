@@ -73,10 +73,10 @@ protocol after attachment. This candidate still requires hardware validation.
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
 | P0 | Association lifetime in queries/link acknowledgements | Candidate shares association admission across AP queries, notifications and WCL up; host state table executes query/link methods | Hardware rejects stale up/BSS while rekey preserves association |
-| P0 | Data path after authorization | Last boot had authorized port but no DHCP and stalled worker | DHCP, ARP, IPv4, IPv6 and bound HTTPS pass while worker advances |
+| P0 | Data path after authorization | 5a5d69c: native WPA2/DHCP and en1-bound IPv4/IPv6 HTTPS passed; sustained traffic remains under observation | DHCP, ARP, IPv4, IPv6 and bound HTTPS pass while worker advances |
 | P1 | Scan request semantics | Candidate passes requested physical channel subset to firmware; rejects empty regulatory intersection; pre-submit cancellation completes locally | Hardware confirms subset timing, SSID matching, cancel and completion ordering |
-| P1 | Autojoin | About 32 seconds after login on previous boot | Trace and reduce avoidable retries without router changes |
-| P1 | Visibility | Beacon metadata adjusted; saved profile still has Hidden=true | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
+| P1 | Autojoin | 5a5d69c: user reports first networks in a few seconds; autojoin after manual power toggle passed; cold-login timing still needs separate measurement | Trace and reduce avoidable retries without router changes |
+| P1 | Visibility | Beacon metadata adjusted; latest airportd autojoin lists zero hidden SSIDs; fresh profile/UI consistency still needs explicit verification | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
 | P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences, security cleanup and guarded automatic wake rematch are candidates | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
 | P2 | Queries and capabilities | 190 inline callbacks: 31 forward, 159 reject; source-checked inventory in NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |

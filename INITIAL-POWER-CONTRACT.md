@@ -2,7 +2,8 @@
 
 Status: cached matching and early powered-initialization candidate implemented,
 2026-10-28. Automatic wake recovery is implemented as an offline candidate; kernel/hardware validation remains pending.
-The separately staged e105f82 boot candidate remains frozen pending permission.
+The current hardware-tested boot candidate is 5a5d69c. Initial startup and native
+traffic work; this does not validate system sleep/wake or termination/rematch.
 
 ## Evidence from the matching kernel
 

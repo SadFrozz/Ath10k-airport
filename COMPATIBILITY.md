@@ -8,7 +8,7 @@ components. These are support targets, not a claim of tested compatibility.
 | --- | --- | --- |
 | 11–12 | Planned | Separate legacy IO80211 adapter and hardware validation |
 | 13–14 | Planned | Verify each networking ABI and build an appropriate adapter |
-| 15.2+ | Experimental | Native interface and system scan verified; association in progress |
+| 15.2+ | Experimental | Native scan, WPA2 association and IPv4/IPv6 traffic verified on 15.6.1; stability and sleep/wake pending |
 | 15.0–15.1 | Planned | Separate ABI validation; current adapter rejects these kernels |
 | 26 | Planned | Distinct Tahoe adapter, kernel guards and hardware validation |
 
@@ -19,7 +19,8 @@ MaxKernel; each build also validates the kernel ABI before opening PCI. Multiple
 kexts may eventually ship in one package; this does not promise one universal
 binary or automatic compatibility with an untested macOS update.
 
-First complete Sequoia association, WPA2 keys and traffic. Next implement Tahoe,
+First complete Sequoia stability, key-update and sleep/wake validation. Initial
+WPA2 association and IPv4/IPv6 traffic passed on 15.6.1 with 5a5d69c. Next implement Tahoe,
 then work backward through the older systems. Gate support on cold boot,
 scan/association, DHCP/data transfer, disconnect, sleep/wake and update tests on
 each target. WPA3/SAE/PMF and AWDL remain separate unimplemented features. Never
