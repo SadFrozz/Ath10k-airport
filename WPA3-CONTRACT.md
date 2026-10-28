@@ -21,8 +21,8 @@ AWDL/AirDrop and compatibility expansion. Implement in dependency order:
 Next integration gates, in order (the software primitives below are not hardware
 support):
 
-- Complete native SA Query request/response scheduling and protected management
-  TX retirement, including timeout/cancel/rekey and existing robust-action producers.
+- Native SA Query, Spectrum/TPC and protected TX retirement are source-integrated
+  (see below); validate timeout/cancel/rekey and protected management with firmware.
 - Establish QCA9377 protected RX layout, firmware PMF setup and management TX PN
   ownership before enabling the profile.
 - Finish the credential-to-SAE worker path, then connect authenticated PMK/IGTK
@@ -33,6 +33,19 @@ support):
 Do not advertise SAE or PMF while these dependent stages remain incomplete.
 Roaming preparation stays local and deferred; no need to restart that work
 before the security dependency path is functional.
+
+### Current integration matrix (supersedes earlier incremental status notes)
+
+| Path | Current source/model evidence | Still required for hardware support |
+| --- | --- | --- |
+| Native credentials | Sequoia 64-byte envelope decoded; explicit SAE rejection | Real SAE request binding and complete native admission |
+| SAE group 19/H2E | Independent crypto fixtures, retained jobs and commit/confirm state | Backend kernel/timing validation and native radio exchange |
+| AKM8 / IGTK | Opt-in four-way/EAPOL and IGTK fixtures; retained PMF epochs | Native authenticated key staging and end-to-end port barrier |
+| PMF RX | WMI consumer, bounded inbox, retained verification and authenticated dispatch | Exact QCA9377 RX layout and firmware negotiation |
+| PMF TX | Explicit hardware formatting, shared PN leases and DMA model | Firmware encryption/MIC and autonomous management PN ownership |
+| SA Query | Native requests/responses, retry/deadline, cancellation and priority | AP interoperability and scan/power timing under load |
+| Spectrum/TPC | Verified request to protected report, epoch binding and TX completion | Protected wire capture and physical radio power reporting |
+| Native WPA3 capability | Disabled; native joins create no PMF session | Complete and validate the rows above before enabling |
 
 ### Current exchange composition (2026-10-28, local)
 
@@ -1001,3 +1014,121 @@ unfinished. The primitive query state machine is not sufficient by itself.
 Native credential/SAE integration, authenticated IGTK staging, firmware PMF
 configuration and real WPA3-only AP validation also remain required. SAE/PMF
 capabilities stay disabled until that complete path is ready.
+
+
+### Native SA Query initiation, responses and protected handoff (source-integrated)
+
+Native service now binds the existing SAQueryExchange to the live PMF generation
+and acknowledged PTK epoch. An unprotected unicast reason-6/7 disconnect starts
+a bounded query instead of disconnecting. It draws a fresh two-byte kernel RNG
+ID only when a retry is due, prepares a retained hardware-CCMP job outside driver
+gates and checks the exchange ticket, live key epoch and fixed deadline again
+at actual protected HTT handoff. Only a successful handoff admits that ID for a
+response. Failed handoff burns the PN and the attempt, without admitting its ID
+or immediately terminating an otherwise valid association. Retry/timeout/start
+rate limits remain 201 TU / 1000 TU / ten seconds, as in the referenced SME.
+
+Verified pairwise PMF input is parsed as SA Query before generic management
+dispatch. A matching response to any submitted transaction ends the exchange.
+An unsent, wrong, stale-key, unprotected or replayed response cannot do so.
+Authenticated AP requests get protected responses with the identical two-byte
+ID. A four-entry response queue has bounded lifetime and duplicate suppression;
+no group-authenticated frame can masquerade as a pairwise SA Query response.
+OCV/OCI remains unsupported and is not negotiated by this profile.
+
+One TX job/result is tracked independently of the PMF RX job. A retained TX result
+can wait for firmware ownership while incoming RX is still verified on the same
+worker. Completion collection never consumes an unrelated SAE/PMF user's result.
+Reset releases retained results and clears query/reply state; PTK replacement or
+controlled-port closure invalidates query IDs, replies and old TX handoffs.
+The exchange's original monotonic deadline is checked even while transport is
+busy; timeout closes the controlled port and uses the existing native teardown
+and macOS notification path. A clock regression fails the association closed.
+No additional synchronous wait or timer/workloop is introduced.
+
+A temporary pmfTXPending flag stops new BSD data admission while existing data
+DMA drains. It prevents new ordinary maintenance from overtaking the protected
+frame, suppresses radio power-save entry and requests normal scan cancellation.
+Already active WMI maintenance/scan ownership must still complete its existing
+credit/ECHO/STOP barriers. Clearing the priority flag preserves the deferred BSD
+queue wake. PMF management MAC-ACK failure no longer follows the generic immediate
+MLME-disconnect rule: the query coordinator determines retry/timeout. Other
+management TX policy is unchanged.
+
+Production-source host tests cover a full trigger->hardware preparation->handoff
+->authenticated response, timeout after five distinct transactions/PNs, late and
+unsent response rejection, replay, failed handoff followed by PN2, authenticated
+AP request/response with an independent AESCCM fixture, rekey before handoff,
+radio/power/credit/scan contention, finite response lifetime, bounded replies and
+clock rollback. The actual Connection/CE model checks that failed PMF MAC ACK does
+not cancel the connection and that priority closes data admission; the actual
+scan pre-submission path verifies cancellation without inventing DMA completion.
+ThreadSanitizer passes the native bridge and retained PMF/worker tests. Native
+build/import and compile-only kernel checks pass. The optimized native PMF service
+uses a 712-byte static stack frame on this build, under the 4096-byte compile gate.
+These remain software/model and compile results, not live WPA3 interoperability.
+
+Spectrum/TPC protection is integrated by the next section. Remaining before
+native WPA3 admission: verify actual QCA9377 protected RX layout, firmware PMF setup, autonomous
+management PN ownership, scan/power timing and wire encryption; complete native
+credential-to-SAE integration and authenticated PMK/IGTK/AKM8 EAPOL publication.
+Then test SAE-only/H2E and transition APs, rekey/reconnect, forget-network and
+sleep/stop. No native join currently creates a PMF session or enables its layout
+flag, and no SAE/PMF capability is advertised by this change. Installed EFI is
+unchanged; hardware validation needs a separately authorized later boot.
+
+Primary SME reference (trigger/limits/request ID echo/response matching):
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/wpa_supplicant/sme.c
+
+
+### Protected Spectrum/TPC reports and transport retirement (source-integrated)
+
+Verified PMF receive dispatch now binds any newly queued spectrum report to the
+current connection generation and PTK epoch, with a five-second absolute deadline.
+The ordinary Connected state machine defers required-profile robust reports to
+the native PMF scheduler; it cannot submit them as Plain management. Legacy
+no-PMF spectrum behavior is unchanged.
+
+The scheduler uses the existing bounded report buffer and retained hardware-CCMP
+job path. SA Query responses and due requests take priority; reports use that
+same single pending TX lease and monotonic management PN pool. The original buffer keeps one semantic report owner; immutable worker and DMA
+copies are bounded snapshots.
+Queuing transfers its semantic state from pending to inFlight, preventing a new
+request from replacing the frame while a job/result is retained. Unprepared
+reports also hold the temporary PMF data/scan/power priority while the worker is
+busy. No new workloop, wait or AES/CCMP under the owner gate is introduced.
+
+At hardware handoff, live generation/key epoch, report ownership and the original
+deadline are rechecked. A TPC report's power byte is refreshed using the actual
+applied radio limit at this point: hardware will compute its MIC after handoff.
+The prepared representation is never passed to a software-ciphertext route.
+Successful handoff marks the existing spectrum completion path, even though DMA
+received a copied protected buffer instead of the original report address. Its
+actual MAC completion updates completed/dropped counters and deferred data wake;
+PMF query policy does not consume that report completion.
+
+Failed preparation/handoff, independent worker cancellation, expiry or PTK change
+drop the source report once and retire the retained lease without recycling PN.
+Terminal native cleanup clears unsent pending reports and prepared-but-unhanded
+inFlight reports. An already submitted report remains owned by the transport;
+cleanup must not fabricate its DMA completion or retire that ownership early.
+
+Production native bridge tests cover independent incoming AESCCM TPC and
+measurement requests through verification, report construction and protected
+handoff, including exact IV/body/MIC-slot comparison with independently generated
+fixtures. They cover an applied-power change while queued, failed handoff, key
+rotation, worker cancellation, expiry and shared PN1-query/PN2-report ordering.
+The production Connection/CE model verifies that required-profile reports are
+never submitted raw and that the copied protected report retires through normal
+spectrum completion. Native cleanup tests distinguish an unsent source from
+transport-owned completion. Focused ASan/UBSan and ThreadSanitizer tests pass;
+native build/import checks pass. The optimized PMF service remains a 712-byte
+static stack frame on this build.
+
+This closes source-level routing of the current host-generated spectrum/TPC
+robust action producers. It does not prove autonomous firmware ADDBA/DELBA PMF,
+firmware encryption/MIC correctness, management PN coordination, physical radio
+power accuracy or real WPA3 association. Those hardware requirements, native SAE
+credential/exchange wiring and authenticated IGTK/EAPOL staging remain open.
+No SAE/PMF capability is advertised, installed EFI is unchanged and no live kext
+load/unload or reboot is performed by this source work.

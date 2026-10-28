@@ -44,6 +44,11 @@ int main(){
         assert(!memcmp(&saved,&finished._wmiScan,sizeof(saved)));
 
     }
+    { Ath10kPCIDevice pending;pending._connection.pmfTXPending=true;
+      assert(!pending.serviceWMIScan(100) && pending._wmiScan.completed && pending._wmiScan.cancelRequested && !pending.submissions);
+      Ath10kPCIDevice owned;owned._connection.pmfTXPending=true;
+      owned._wmiScan.attempted=owned._wmiScan.submitted=owned._wmiScan.txOwned=true;
+      assert(!owned.serviceWMIScan(100) && owned._wmiScan.cancelRequested && !owned._wmiScan.completed && owned._wmiScan.txOwned); }
     { Ath10kPCIDevice driver;assert(!driver.serviceWMIScan(100));
       assert(driver.submissions==1 && !driver._wmiScan.cancelRequested); }
 

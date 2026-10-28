@@ -39,7 +39,8 @@ public:
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
     struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
-        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false;} _connection;
+        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false;
+        struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
     void discardIfStopped();
     void discardNativeSecurity();
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
@@ -52,6 +53,19 @@ public:
 #include "native_pmf_firmware_guard.inc"
 #include "native_security_terminal_cleanup.inc"
 int main(){
+    { Ath10kPCIDevice d;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      d._connection.pmfRequired=true;d._connection.spectrum.pending=true;d._connection.spectrum.length=31;
+      d.discardNativeSecurity();assert(!d._connection.spectrum.pending && d._connection.spectrum.dropped==1);
+      d._connection.spectrum.inFlight=true;d._connection.spectrum.length=31;
+      d.discardNativeSecurity();assert(d._connection.spectrum.inFlight && d._connection.spectrum.length==31); // Transport already owns this frame; its completion must retire it.
+      delete d._nativeSecurity; }
+
+    { Ath10kPCIDevice d;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      d._nativeSecurity->pmfTXKind=Ath10kPCIDevice::NativeSecurity::PMFTXKind::Spectrum;
+      d._connection.spectrum.inFlight=true;d._connection.spectrum.length=31;d._connection.pmfTXPending=true;
+      d.discardNativeSecurity();assert(!d._connection.spectrum.inFlight && !d._connection.spectrum.length && d._connection.spectrum.dropped==1 && !d._connection.pmfTXPending);
+      delete d._nativeSecurity; }
+
     { Ath10kPCIDevice d;UInt8 key[16]{};d._connection.pmfRequired=true;
       assert(!d.nativePMFPairwiseAcknowledged(key) && !d.nativePMFPortReady() && d.beforeFirmwareAuthorization(3));
       d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;

@@ -2750,7 +2750,7 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
     if (state.completed) return nullptr;
     // CSA may arrive after native scan admission. Cancel before acquiring
     // firmware ownership; an already submitted scan follows STOP_SCAN below.
-    if(_connection.csa.phase!=Ath10k::ChannelSwitchPhase::Idle)state.cancelRequested=true;
+    if(_connection.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || _connection.pmfTXPending)state.cancelRequested=true;
     // An accepted request cancelled before submission owns no DMA or firmware
     // scan. Finish it locally instead of starting a scan merely to stop it.
     if(!state.attempted && state.cancelRequested){

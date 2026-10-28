@@ -71,3 +71,11 @@ for category in [4, 7, 11, 15, 20, 21, 22, 127]:
     group_vector(f'c_group_nonrobust_{category}', bytes([category, 0, 1]), 10)
 for pn in [1, 2, 3]:
     vector(f'c_txpn{pn}', header(incoming=False), bytes.fromhex('08001234'), pn)
+
+vector('c_query_request', header(), bytes.fromhex('08001234'), 2)
+vector('c_tx_response', header(incoming=False), bytes.fromhex('08011234'), 1)
+
+vector('c_tpc_request', header(), bytes.fromhex('00025a2200'), 3)
+vector('c_measure_request', header(), bytes.fromhex('00006b2603770003'), 4)
+vector('c_tx_tpc', header(incoming=False), bytes.fromhex('00035a23020a00'), 1)
+vector('c_tx_measure', header(incoming=False), bytes.fromhex('00016b2703770203'), 1)

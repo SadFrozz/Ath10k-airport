@@ -85,6 +85,8 @@ public:
   retire(State::Waiting);deadline=now+TimeoutUS;nextRetry=now;lastStart=now;started=true;return true;
  }
  State poll(uint64_t now){clock(now);return phase;}
+ // Avoid drawing randomness under the owner gate when no retry is due.
+ bool needsTX(uint64_t now){return clock(now) && phase==State::Waiting && !pending && now>=nextRetry && attempts<MaxAttempts && serial!=~uint64_t(0);}
  bool reserve(const uint8_t *randomID,uint64_t now,TX &out){
   if(!clock(now) || phase!=State::Waiting || pending || now<nextRetry || attempts==MaxAttempts || !randomID || serial==~uint64_t(0))return false;
   for(unsigned i=0;i<sentCount;++i)if(equal(sent[i],randomID,2))return false;

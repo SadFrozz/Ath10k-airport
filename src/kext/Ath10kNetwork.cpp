@@ -592,6 +592,7 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     // Firmware has 1056 descriptor IDs configured. Rotate IDs even with one
     // packet in flight so a late duplicate cannot complete the next packet.
     _connection.txId=static_cast<UInt16>((_connection.txId+1)%1056);_connection.txComplete=false;_connection.txStatus=0;_connection.txManagement=mgmt;
+    _connection.lastTxPMF=mgmt && protection==AthSecurity::ManagementTX::HardwareCCMP;
     _connection.lastTxSpectrum=mgmt && _connection.spectrum.inFlight && data==_connection.spectrum.frame;
     _connection.lastTxProbe=mgmt && _connection.probe.active && bytes>=24 && Ath10k::htcReadLE16(data)==0x40;
     UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(_packetCommand.virtualAddress()),256,data,bytes,
@@ -628,7 +629,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(s.txStatus){
                 if(s.lastTxEAPOL)s.eapolTxFailed=true;
                 ++s.txErrors;
-                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum){
+                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum && !s.lastTxPMF){
                     const bool mlme=s.stage==LinkStage::Auth || s.stage==LinkStage::Assoc;
                     const bool reply=s.stage==LinkStage::Auth?s.authReply:s.assocReply;
                     if(!mlme || (!reply && s.managementAttempts>=3)){s.error="management-tx-failed";s.cancelRequested=true;}
@@ -704,6 +705,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
     }
     if(s.disconnect!=Ath10k::DisconnectStage::None)return serviceDisconnect(nowMs);
     if(s.stage==LinkStage::Connected && s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle)return serviceChannelSwitch(nowMs);
+    if(s.stage==LinkStage::Connected && s.pmfTXPending && !s.maintenance.step && !s.stats.step)return nullptr;
     if(s.stage==LinkStage::Connected && s.probe.active && !s.cancelRequested){
         if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || _wmi.credits.outstanding || !_wmiScan.completed ||
            s.radio.appliedPS || s.radio.step || s.radio.blocked || s.radio.powerBlocked)return nullptr;
@@ -725,6 +727,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(s.spectrum.pending){
                 auto &r=s.spectrum;if(!r.sinceMs)r.sinceMs=nowMs?nowMs:1;
                 if(nowMs>=r.sinceMs && nowMs-r.sinceMs>=5000){r.pending=false;r.length=0;++r.dropped;s.txWakePending=true;return nullptr;}
+                // Native PMF service owns protection, key epochs and the shared
+                // management PN lease. Never submit this robust report raw.
+                if(s.pmfRequired && s.pairInstalled)return nullptr;
                 if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.eapolPause || s.txPauseMask ||
                    _wmi.credits.outstanding || !_wmiScan.completed || _wmiScan.txOwned || s.radio.appliedPS || s.radio.blocked || s.radio.powerBlocked)return nullptr;
                 Ath10k::htcWriteLE16(r.frame+22,UInt16((s.sequence&4095)<<4));
@@ -977,7 +982,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
         if(s.submitted || s.stats.step || s.maintenance.step || s.csa.submitted || s.csa.phase>Ath10k::ChannelSwitchPhase::Drain ||
            s.disconnect>Ath10k::DisconnectStage::Drain){r.blocked=false;return nullptr;}
         bool desired=r.requestedPS && s.disconnect==Ath10k::DisconnectStage::None && s.ap.timPresent && s.portAuthorized && !s.cancelRequested && !s.rekeyKind && !s.eapolPause &&
-            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
+            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
         UInt8 power=Ath10k::stationOperationalPowerLimit(s);
         if(!power){s.error="ap-power-constraint-forbids-tx";s.cancelRequested=true;r.powerBlocked=true;desired=false;
             if(!r.appliedPS){r.blocked=false;return nullptr;}

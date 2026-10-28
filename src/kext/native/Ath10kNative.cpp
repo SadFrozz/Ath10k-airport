@@ -83,6 +83,28 @@ public:
     bool pmfLayoutVerified=false,pmfRXInFlight=false,pmfQueryTrigger=false;
     UInt64 pmfRXGeneration=0,pmfRXDropped=0,pmfRXVerified=0;
     UInt32 pmfRXChannel=0,pmfRXSnr=0;
+    AthSecurity::SAQueryExchange pmfQuery;
+    AthSecurity::SAQueryExchange::TX pmfQueryTX{};
+    UInt64 pmfQueryGeneration=0,pmfQueryEpoch=0,pmfTXGeneration=0,pmfTXEpoch=0,pmfTXDeadlineUS=0;
+    struct QueryReply {UInt8 id[2]{};UInt64 deadlineUS=0;} pmfReplies[4]{};
+    unsigned pmfReplyRead=0,pmfReplyCount=0;
+    enum class PMFTXKind {None,QueryRequest,QueryResponse,Spectrum};
+    PMFTXKind pmfTXKind=PMFTXKind::None;
+    UInt64 pmfSpectrumGeneration=0,pmfSpectrumEpoch=0,pmfSpectrumDeadlineUS=0;
+    bool pmfTXInFlight=false;
+    Ath10kSAEWorkItem *pmfPendingTX=nullptr;
+    UInt64 pmfTXSubmitted=0,pmfTXDropped=0,pmfQuerySucceeded=0;
+    void clearQueries(){
+        pmfQuery.clear();pmfQueryGeneration=pmfQueryEpoch=0;pmfQueryTrigger=false;
+        AthSecurity::wipe(pmfReplies,sizeof(pmfReplies));pmfReplyRead=pmfReplyCount=0;
+    }
+    void queueQueryReply(const UInt8 *id,UInt64 nowUS){
+        if(!id || pmfReplyCount==4 || nowUS>~UInt64(0)-AthSecurity::SAQueryExchange::TimeoutUS)return;
+        for(unsigned i=0;i<pmfReplyCount;++i)if(AthSecurity::equal(pmfReplies[(pmfReplyRead+i)%4].id,id,2))return;
+        auto &reply=pmfReplies[(pmfReplyRead+pmfReplyCount)%4];
+        AthSecurity::copy(reply.id,id,2);reply.deadlineUS=nowUS+AthSecurity::SAQueryExchange::TimeoutUS;++pmfReplyCount;
+    }
+    void popQueryReply(){if(pmfReplyCount){AthSecurity::wipe(&pmfReplies[pmfReplyRead],sizeof(QueryReply));pmfReplyRead=(pmfReplyRead+1)%4;--pmfReplyCount;}}
     Ath10kSAEWorkItem *saePendingTX=nullptr;
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
     AthNative::CandidateCache candidates;
@@ -107,9 +129,13 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        pmfSpectrumGeneration=pmfSpectrumEpoch=pmfSpectrumDeadlineUS=0;
+        clearQueries();pmfTXInFlight=false;pmfTXKind=PMFTXKind::None;
+        AthSecurity::wipe(&pmfQueryTX,sizeof(pmfQueryTX));pmfTXGeneration=pmfTXEpoch=pmfTXDeadlineUS=0;
         pmfInbox.clear();pmfRXInFlight=pmfLayoutVerified=pmfQueryTrigger=false;
         pmfRXGeneration=0;pmfRXChannel=pmfRXSnr=0;
         if(pmfSession){pmfSession->cancel();pmfSession->release();pmfSession=nullptr;}
+        if(pmfPendingTX){pmfPendingTX->discard();pmfPendingTX->release();pmfPendingTX=nullptr;}
         if(saeSession)saeSession->cancel();
         if(saePendingTX){saePendingTX->discard();saePendingTX->release();saePendingTX=nullptr;}
         if(saeSession){saeSession->release();saeSession=nullptr;}
@@ -499,11 +525,34 @@ bool Ath10kPCIDevice::nativePMFManagement(void *context,const UInt8 *frame,UInt3
     if(!sec->pmfInbox.push(frame,bytes,status,channel,snr,sec->pmfRXLayout))++sec->pmfRXDropped;
     return true;
 }
-void Ath10kPCIDevice::serviceNativePMF(){
-    auto sec=_nativeSecurity;if(!sec || !sec->pmfSession || !sec->saeWorker)return;
-    if(_connection.cancelRequested || _connection.stage==Ath10k::LinkStage::Disabled || _connection.stage==Ath10k::LinkStage::Failed ||
-       _connection.disconnect!=Ath10k::DisconnectStage::None){sec->pmfInbox.clear();return;}
-    auto pmf=sec->pmfSession;const UInt64 generation=pmf->activeGeneration();
+bool Ath10kPCIDevice::nativePMFTransportReady(){
+    const auto &s=_connection;
+    return !powerIOBlocked() && !_dmaQuarantine && _wmiLive.active && s.pmfRequired &&
+        s.stage==Ath10k::LinkStage::Connected && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
+        !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None && !s.eapolPause &&
+        !s.txOwned && !s.dataPending && !s.wmiOwned && !s.submitted && !s.txPauseMask &&
+        !s.maintenance.step && !s.stats.step && !s.radio.step && !s.radio.blocked && !s.radio.powerBlocked &&
+        !s.radio.appliedPS && !s.csa.blocked && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle &&
+        _wmiScan.completed && !_wmiScan.txOwned && !_wmi.credits.outstanding;
+}
+void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || !sec->pmfSession || !sec->saeWorker)return;
+    if(s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
+       s.disconnect!=Ath10k::DisconnectStage::None){sec->pmfInbox.clear();sec->clearQueries();s.pmfTXPending=false;return;}
+    auto pmf=sec->pmfSession;const UInt64 generation=pmf->activeGeneration(),epoch=pmf->pairwiseEpoch();
+    const UInt64 nowUS=nowMs<=~UInt64(0)/1000?nowMs*1000:~UInt64(0);
+    const bool queryAllowed=s.pmfRequired && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
+        s.stage==Ath10k::LinkStage::Connected && generation && epoch;
+    if(!queryAllowed)sec->clearQueries();
+    else if(sec->pmfQueryGeneration!=generation || sec->pmfQueryEpoch!=epoch){
+        // A new PTK invalidates transaction IDs and pending response identities.
+        const bool trigger=sec->pmfQueryTrigger;sec->clearQueries();
+        if(sec->pmfQuery.bind(s.local,s.bssid,generation,epoch,nowUS)){
+            sec->pmfQueryGeneration=generation;sec->pmfQueryEpoch=epoch;sec->pmfQueryTrigger=trigger;
+        }
+    }
+    if(sec->pmfQueryTrigger){sec->pmfQuery.start(nowUS);sec->pmfQueryTrigger=false;}
     if(sec->pmfRXInFlight){
         auto item=sec->saeWorker->takeCompleted();
         if(item){
@@ -512,24 +561,127 @@ void Ath10kPCIDevice::serviceNativePMF(){
             sec->pmfRXInFlight=false;
             if(accepted){
                 ++sec->pmfRXVerified;
-                if(sec->pmfRXSnr<=95)_connection.signalDbm=static_cast<int32_t>(sec->pmfRXSnr)-95;
-                const auto authentication=message.kind==Ath10kPMFSession::Kind::Pairwise?
-                    Ath10k::ManagementAuthentication::Pairwise:Ath10k::ManagementAuthentication::Group;
-                Ath10k::receiveStationManagementAuthenticated(_connection,message.frame,message.bytes,0,sec->pmfRXChannel,authentication);
+                if(sec->pmfRXSnr<=95)s.signalDbm=static_cast<int32_t>(sec->pmfRXSnr)-95;
+                AthSecurity::SAQueryMessage query{};
+                if(queryAllowed && message.kind==Ath10kPMFSession::Kind::Pairwise &&
+                   AthSecurity::parseSAQuery(message.frame,message.bytes,s.local,s.bssid,message.pairwise,generation,epoch,query)){
+                    if(!query.action)sec->queueQueryReply(query.id,nowUS);
+                    else if(sec->pmfQuery.response(message.frame,message.bytes,message.pairwise,nowUS))++sec->pmfQuerySucceeded;
+                }else {
+                    const auto authentication=message.kind==Ath10kPMFSession::Kind::Pairwise?
+                        Ath10k::ManagementAuthentication::Pairwise:Ath10k::ManagementAuthentication::Group;
+                    const bool alreadyPending=s.spectrum.pending;
+                    Ath10k::receiveStationManagementAuthenticated(s,message.frame,message.bytes,0,sec->pmfRXChannel,authentication);
+                    if(!alreadyPending && s.spectrum.pending){
+                        sec->pmfSpectrumGeneration=generation;sec->pmfSpectrumEpoch=epoch;
+                        sec->pmfSpectrumDeadlineUS=nowUS>~UInt64(0)-5000000?~UInt64(0):nowUS+5000000;
+                    }
+                }
             }else ++sec->pmfRXDropped;
             item->release();
-        }else if(sec->saeWorker->available())sec->pmfRXInFlight=false; // Independently cancelled/disposed.
+        }else if(sec->saeWorker->available())sec->pmfRXInFlight=false;
+    }else if(sec->pmfTXInFlight){
+        if(auto item=sec->saeWorker->takeCompleted()){sec->pmfPendingTX=item;sec->pmfTXInFlight=false;}
+        else if(sec->saeWorker->available()){
+            sec->pmfTXInFlight=false;pmf->abandonProtected();
+            if(sec->pmfTXKind==NativeSecurity::PMFTXKind::QueryRequest)sec->pmfQuery.submitted(sec->pmfQueryTX,false,nowUS);
+            if(sec->pmfTXKind==NativeSecurity::PMFTXKind::Spectrum){s.spectrum.inFlight=false;s.spectrum.length=0;++s.spectrum.dropped;s.txWakePending=true;}
+            sec->pmfTXKind=NativeSecurity::PMFTXKind::None;++sec->pmfTXDropped;
+        }
     }
-    if(!generation || _connection.cancelRequested || _connection.disconnect!=Ath10k::DisconnectStage::None){sec->pmfInbox.clear();return;}
-    if(!sec->pmfRXInFlight){
-        const auto frame=sec->pmfInbox.peek();if(!frame)return;
-        const auto result=pmf->queue(sec->saeWorker,frame->bytes,frame->length,frame->status,frame->layout,generation);
-        if(result==Ath10kPMFSession::Submission::Busy)return;
-        if(result==Ath10kPMFSession::Submission::Queued){
-            sec->pmfRXInFlight=true;sec->pmfRXGeneration=generation;sec->pmfRXChannel=frame->channel;sec->pmfRXSnr=frame->snr;
-        }else ++sec->pmfRXDropped;
-        sec->pmfInbox.pop();
+    // The fixed deadline is checked even while DMA/scan/power is busy. A late
+    // response or retained crypto completion must never extend the exchange.
+    const auto queryState=sec->pmfQuery.poll(nowUS);
+    if(queryAllowed && (queryState==AthSecurity::SAQueryExchange::State::TimedOut || queryState==AthSecurity::SAQueryExchange::State::Failed)){
+        s.error=queryState==AthSecurity::SAQueryExchange::State::TimedOut?"pmf-sa-query-timeout":"pmf-sa-query-clock";
+        s.cancelRequested=true;s.portAuthorized=false;
     }
+    if(!generation || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None){
+        sec->pmfInbox.clear();sec->clearQueries();s.pmfTXPending=false;return;
+    }
+    if(sec->pmfPendingTX){
+        auto item=sec->pmfPendingTX;
+        const bool request=sec->pmfTXKind==NativeSecurity::PMFTXKind::QueryRequest;
+        const bool spectrum=sec->pmfTXKind==NativeSecurity::PMFTXKind::Spectrum;
+        const bool current=queryAllowed && sec->pmfTXGeneration==generation && sec->pmfTXEpoch==epoch &&
+            nowUS<sec->pmfTXDeadlineUS && pmf->protectedReady(item,generation) && (!request || sec->pmfQuery.ready(sec->pmfQueryTX,nowUS)) &&
+            (!spectrum || (s.spectrum.inFlight && sec->pmfSpectrumGeneration==generation && sec->pmfSpectrumEpoch==epoch));
+        if(!current || nativePMFTransportReady()){
+            bool submitted=false;
+            if(current){
+                UInt8 frame[512]{};size_t bytes=0;AthSecurity::ManagementTX mode{};
+                if(pmf->copyForTransport(item,frame,sizeof(frame),bytes,mode,generation) && mode==AthSecurity::ManagementTX::HardwareCCMP){
+                    Ath10k::htcWriteLE16(frame+22,UInt16((s.sequence&4095)<<4));
+                    // Hardware computes the MIC after handoff; refresh the TPC
+                    // power field against the actual applied radio limit now.
+                    if(spectrum && bytes==47 && frame[32]==0 && frame[33]==3)frame[37]=s.radio.appliedPower/2;
+                    submitted=submitNetworkPacket(frame,static_cast<UInt32>(bytes),true,nowMs,mode)==nullptr;
+                    if(submitted){++s.sequence;if(spectrum)s.lastTxSpectrum=true;}
+                }
+                AthSecurity::wipe(frame,sizeof(frame));
+            }
+            if(request)sec->pmfQuery.submitted(sec->pmfQueryTX,submitted,nowUS);
+            if(spectrum && !submitted){s.spectrum.inFlight=false;s.spectrum.length=0;++s.spectrum.dropped;s.txWakePending=true;}
+            pmf->retireProtected(item,generation);item->release();sec->pmfPendingTX=nullptr;
+            sec->pmfTXKind=NativeSecurity::PMFTXKind::None;
+            if(submitted)++sec->pmfTXSubmitted;else ++sec->pmfTXDropped;
+        }
+    }
+    if(s.spectrum.pending && (!queryAllowed || sec->pmfSpectrumGeneration!=generation || sec->pmfSpectrumEpoch!=epoch || nowUS>=sec->pmfSpectrumDeadlineUS)){
+        s.spectrum.pending=false;s.spectrum.length=0;++s.spectrum.dropped;s.txWakePending=true;
+    }
+    while(sec->pmfReplyCount && nowUS>=sec->pmfReplies[sec->pmfReplyRead].deadlineUS)sec->popQueryReply();
+    if(queryAllowed && !sec->pmfRXInFlight && !sec->pmfTXInFlight && !sec->pmfPendingTX && sec->saeWorker->available()){
+        UInt8 frame[256]{};size_t frameBytes=28;bool prepare=false,request=false,spectrum=false;UInt64 deadlineUS=0;
+        if(sec->pmfReplyCount){
+            const auto &reply=sec->pmfReplies[sec->pmfReplyRead];deadlineUS=reply.deadlineUS;
+            prepare=AthSecurity::buildSAQuery(1,reply.id,s.local,s.bssid,frame,sizeof(frame));
+        }else {
+            UInt8 id[2]{};
+            if(sec->pmfQuery.needsTX(nowUS) && Ath10kKernelCrypto::random(id,sizeof(id)) &&
+               sec->pmfQuery.reserve(id,nowUS,sec->pmfQueryTX)){
+                AthSecurity::copy(frame,sec->pmfQueryTX.frame,28);prepare=request=true;
+                // The exchange's own ready() enforces its earlier fixed deadline.
+                deadlineUS=nowUS>~UInt64(0)-AthSecurity::SAQueryExchange::TimeoutUS?~UInt64(0):nowUS+AthSecurity::SAQueryExchange::TimeoutUS;
+            }
+            AthSecurity::wipe(id,sizeof(id));
+        }
+        if(!prepare && s.spectrum.pending){
+            auto &report=s.spectrum;
+            if(report.length>=27 && report.length<=sizeof(frame) && report.frame[0]==0xd0 && report.frame[24]==0 && (report.frame[25]==1 || report.frame[25]==3)){
+                AthSecurity::copy(frame,report.frame,report.length);frame[1]|=0x40;frameBytes=report.length;
+                deadlineUS=sec->pmfSpectrumDeadlineUS;prepare=spectrum=true;
+            }else {report.pending=false;report.length=0;++report.dropped;s.txWakePending=true;}
+        }
+        if(prepare){
+            const auto result=pmf->queueProtect(sec->saeWorker,frame,frameBytes,generation,AthSecurity::ManagementTX::HardwareCCMP);
+            if(result==Ath10kPMFSession::Submission::Queued){
+                sec->pmfTXInFlight=true;sec->pmfTXGeneration=generation;sec->pmfTXEpoch=epoch;sec->pmfTXDeadlineUS=deadlineUS;
+                sec->pmfTXKind=spectrum?NativeSecurity::PMFTXKind::Spectrum:(request?NativeSecurity::PMFTXKind::QueryRequest:NativeSecurity::PMFTXKind::QueryResponse);
+                if(spectrum){s.spectrum.pending=false;s.spectrum.inFlight=true;}
+            }else {if(request)sec->pmfQuery.submitted(sec->pmfQueryTX,false,nowUS);++sec->pmfTXDropped;}
+            if(spectrum && result!=Ath10kPMFSession::Submission::Queued){s.spectrum.pending=false;s.spectrum.length=0;++s.spectrum.dropped;s.txWakePending=true;}
+            if(!request && !spectrum)sec->popQueryReply();
+        }
+        AthSecurity::wipe(frame,sizeof(frame));
+    }
+    // A retained prepared TX result does not prevent verifying incoming RX.
+    if(!sec->pmfRXInFlight && !sec->pmfTXInFlight){
+        if(const auto frame=sec->pmfInbox.peek()){
+            const auto result=pmf->queue(sec->saeWorker,frame->bytes,frame->length,frame->status,frame->layout,generation);
+            if(result!=Ath10kPMFSession::Submission::Busy){
+                if(result==Ath10kPMFSession::Submission::Queued){sec->pmfRXInFlight=true;sec->pmfRXGeneration=generation;sec->pmfRXChannel=frame->channel;sec->pmfRXSnr=frame->snr;}
+                else ++sec->pmfRXDropped;
+                sec->pmfInbox.pop();
+            }
+        }
+    }
+    const bool pending=sec->pmfTXInFlight || sec->pmfPendingTX || sec->pmfReplyCount || (s.pmfRequired && s.spectrum.pending);
+    if(s.pmfTXPending && !pending)s.txWakePending=true;
+    s.pmfTXPending=pending;
+    // Drain an existing scan through its normal STOP_SCAN/credit barrier;
+    // neither SA Query nor its priority flag acquires firmware ownership itself.
+    if(pending && !_wmiScan.completed)_wmiScan.cancelRequested=true;
 }
 // Invoked by the radio-gated data-key state machine, only at its actual
 // PTK acknowledgement, before firmware authorization and at the final
@@ -546,7 +698,16 @@ bool Ath10kPCIDevice::nativePMFPortReady(){
 // Radio-gated terminal cleanup. Event metadata and the last BSSID survive
 // until macOS accepts the terminal notifications; cryptographic material does not.
 void Ath10kPCIDevice::discardNativeSecurity() {
-    if(_nativeSecurity)_nativeSecurity->reset();
+    if(_connection.pmfRequired && _connection.spectrum.pending){
+        _connection.spectrum.pending=false;_connection.spectrum.length=0;++_connection.spectrum.dropped;
+    }
+    if(_nativeSecurity){
+        if(_nativeSecurity->pmfTXKind==NativeSecurity::PMFTXKind::Spectrum && _connection.spectrum.inFlight){
+            _connection.spectrum.inFlight=false;_connection.spectrum.length=0;++_connection.spectrum.dropped;
+        }
+        _nativeSecurity->reset();
+    }
+    _connection.pmfTXPending=false;
     AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));
 }
 IOReturn Ath10kPCIDevice::nativeStopAction(OSObject *owner,void *,void *,void *,void *) {
@@ -986,7 +1147,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     _nativePostError=kIOReturnSuccess;
     if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
     auto &s=_connection;auto sec=_nativeSecurity;
-    serviceNativePMF();
+    serviceNativePMF(now);
     if(sec && _wmiScan.completed && !_wmiScan.failed && !_wmiScan.cancelRequested &&
        sec->cachedGeneration!=_wmiScan.generation){
         for(UInt32 i=0;i<_wmiBSS.count;++i)sec->candidates.add(_wmiBSS.entries[i],now);

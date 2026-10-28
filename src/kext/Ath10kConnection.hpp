@@ -129,7 +129,7 @@ struct ConnectionState {
         UInt8 frame[256]{};UInt16 length=0;bool pending=false,inFlight=false;
         UInt64 sinceMs=0;UInt32 received=0,completed=0,dropped=0;
     } spectrum{};
-    bool lastTxSpectrum=false;
+    bool lastTxSpectrum=false,lastTxPMF=false,pmfTXPending=false;
     bool beaconWarning=false;UInt64 beaconWarningSinceMs=0;
     ChannelSwitchState csa{};
     bool htEnabled=false,vhtEnabled=false,wmmConfigured=false;
@@ -240,7 +240,7 @@ struct ConnectionState {
 inline bool dataTXAdmissionOpen(const ConnectionState &s){
     return s.stage==LinkStage::Connected && s.portAuthorized && !s.cancelRequested &&
         s.disconnect==DisconnectStage::None && !s.maintenance.blocked && !s.eapolPause &&
-        !s.spectrum.pending && !s.spectrum.inFlight && !s.probe.active && !s.csa.blocked &&
+        !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && !s.probe.active && !s.csa.blocked &&
         !s.radio.blocked && !s.radio.powerBlocked && !s.txOwned && !s.txPauseMask &&
         s.dataPending<kDataTxSlots;
 }

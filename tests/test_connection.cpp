@@ -929,7 +929,20 @@ static void protectedManagementTransport(){
     assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::SoftwareCCMP));
     assert(!s.txOwned && !submitted);
     assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::HardwareCCMP));
-    assert(submitted && s.txOwned);d.tick(2010);assert(!s.txOwned && !s.cancelRequested);d.releaseWMIRuntime();
+    assert(submitted && s.txOwned && s.lastTxPMF);d.tick(2010);assert(!s.txOwned && !s.cancelRequested);
+    d._regs.tx4Consume=[&](){d.deliver(1,mgmtCompletion(s.txId,1));};
+    assert(AthSecurity::PMFHardwareCCMP::prepare(plain,sizeof(plain),s.local,s.bssid,2,prepared));
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2020,AthSecurity::ManagementTX::HardwareCCMP));
+    d.tick(2030);assert(!s.txOwned && !s.cancelRequested && s.txErrors==1); // Query coordinator, not generic MLME failure, decides retry/timeout.
+    s.pmfTXPending=true;assert(!Ath10k::dataTXAdmissionOpen(s));s.pmfTXPending=false;assert(Ath10k::dataTXAdmissionOpen(s));
+    s.spectrum.pending=true;s.spectrum.length=31;const auto before=s.txId;
+    assert(!d.serviceConnection(2040) && s.txId==before && s.spectrum.pending && !s.txOwned); // Required reports are never submitted raw.
+    s.spectrum.pending=false;s.spectrum.inFlight=true;
+    d._regs.tx4Consume=[&](){d.deliver(1,mgmtCompletion(s.txId));};
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2050,AthSecurity::ManagementTX::HardwareCCMP));
+    s.lastTxSpectrum=true; // Native handoff marks the retained report after the copied payload is accepted.
+    d.tick(2060);assert(!s.txOwned && !s.spectrum.inFlight && s.spectrum.completed==1);
+    d.releaseWMIRuntime();
 }
 int main(){
     protectedManagementTransport();
