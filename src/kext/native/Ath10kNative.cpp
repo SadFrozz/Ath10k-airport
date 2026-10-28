@@ -623,7 +623,38 @@ IOReturn Ath10kPCIDevice::nativeLinkStateUpdate(void *data) {
     }
     return kIOReturnSuccess;
 }
-static UInt32 channelFlags(UInt32 channel){return (channel<=14?APPLE80211_C_FLAG_2GHZ:APPLE80211_C_FLAG_5GHZ)|APPLE80211_C_FLAG_20MHZ;}
+static UInt32 channelFlags(UInt32 channel){return nativeChannelFlags(channel,channel,20);}
+static_assert(sizeof(apple80211_channel_data)==16,"Sequoia channel reply size");
+static_assert(offsetof(apple80211_channel_data,channel)==4,"Sequoia channel reply offset");
+static_assert(APPLE80211_C_FLAG_20MHZ==0x2 && APPLE80211_C_FLAG_40MHZ==0x4 &&
+    APPLE80211_C_FLAG_80MHZ==0x400 && APPLE80211_C_FLAG_EXT_ABV==0x200 &&
+    APPLE80211_C_FLAG_DFS==0x100,"Sequoia channel flags");
+IOReturn Ath10kPCIDevice::nativeLinkMetrics(AthNativeOp op,void *data) {
+    if(!data)return kIOReturnBadArgument;
+    auto &s=_connection;using N=AthNativeOp;
+    if(s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None ||
+       s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed)return kIOReturnNotReady;
+    switch(op){
+    case N::getCHANNEL:{
+        // During join, this is the selected home definition, not instantaneous
+        // off-channel scan RF. Do not advertise a width whose geometry is invalid.
+        const UInt32 flags=nativeChannelFlags(s.operatingChannel,s.centerChannel,s.width);
+        if(!flags)return kIOReturnNotReady;
+        auto d=static_cast<apple80211_channel_data *>(data);bzero(d,sizeof(*d));d->version=1;
+        d->channel.version=1;d->channel.channel=s.operatingChannel;d->channel.flags=flags;
+        return kIOReturnSuccess;}
+    case N::getRSSI:{
+        if(!Ath10k::connectionAssociated(s) || s.signalDbm==INT32_MIN)return kIOReturnNotReady;
+        auto d=static_cast<apple80211_rssi_data *>(data);bzero(d,sizeof(*d));d->version=1;
+        d->num_radios=1;d->rssi_unit=APPLE80211_UNIT_DBM;d->rssi[0]=d->aggregate_rssi=s.signalDbm;
+        return kIOReturnSuccess;}
+    case N::getRATE:{
+        if(!Ath10k::connectionAssociated(s) || !s.fwStats.rateValid || s.fwStats.txKbps<500 || s.fwStats.txKbps>2000000)return kIOReturnNotReady;
+        auto d=static_cast<apple80211_rate_data *>(data);bzero(d,sizeof(*d));d->version=1;
+        d->num_radios=1;d->rate[0]=s.fwStats.txKbps/500;return kIOReturnSuccess;}
+    default:return kIOReturnUnsupported;
+    }
+}
 IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     if(_nativeStopping || powerIOBlocked() || !_wmiLive.active)return kIOReturnNotReady;
     auto &s=_connection;using N=AthNativeOp;
@@ -675,13 +706,10 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         return _regulatory.country && !bcmp(d->cc,_regulatory.country->alpha2,2)?kIOReturnSuccess:kIOReturnUnsupported;}
     case N::getHW_ADDR:{AirportWCL::HardwareAddress address{};
         if(!AirportWCL::copyHardwareAddress(_nativeMACCurrent,address))return kIOReturnNotReady;bcopy(&address,data,sizeof(address));return kIOReturnSuccess;}
-    case N::getCHANNEL:{auto d=static_cast<apple80211_channel_data *>(data);bzero(d,sizeof(*d));d->version=1;
-        d->channel.version=1;d->channel.channel=s.operatingChannel;d->channel.flags=channelFlags(s.operatingChannel);return s.operatingChannel?kIOReturnSuccess:kIOReturnNotReady;}
+    case N::getCHANNEL:case N::getRSSI:case N::getRATE:return nativeLinkMetrics(op,data);
     case N::getOP_MODE:{auto d=static_cast<apple80211_opmode_data *>(data);bzero(d,sizeof(*d));d->version=1;d->op_mode=APPLE80211_M_STA;return kIOReturnSuccess;}
     case N::getNSS:{auto d=static_cast<apple80211_nss_data *>(data);bzero(d,sizeof(*d));d->version=1;d->nss=1;return kIOReturnSuccess;}
-    case N::getRSSI:{if(s.signalDbm==INT32_MIN)return kIOReturnNotReady;auto d=static_cast<apple80211_rssi_data *>(data);bzero(d,sizeof(*d));d->version=1;d->num_radios=1;d->rssi_unit=APPLE80211_UNIT_DBM;d->rssi[0]=d->aggregate_rssi=s.signalDbm;return kIOReturnSuccess;}
     case N::getTXPOWER:{auto d=static_cast<apple80211_txpower_data *>(data);bzero(d,sizeof(*d));d->version=1;d->txpower_unit=APPLE80211_UNIT_DBM;d->txpower=s.txPowerHalfDbm/2;return kIOReturnSuccess;}
-    case N::getRATE:{if(!s.fwStats.rateValid)return kIOReturnNotReady;auto d=static_cast<apple80211_rate_data *>(data);bzero(d,sizeof(*d));d->version=1;d->num_radios=1;d->rate[0]=s.fwStats.txKbps/500;return kIOReturnSuccess;}
     case N::getPOWERSAVE:{auto d=static_cast<apple80211_powersave_data *>(data);bzero(d,sizeof(*d));d->version=1;d->powersave_level=s.radio.appliedPS?1:0;return kIOReturnSuccess;}
     case N::setPOWERSAVE:{auto d=static_cast<apple80211_powersave_data *>(data);if(d->powersave_level>1)return kIOReturnUnsupported;s.radio.requestedPS=d->powersave_level;return kIOReturnSuccess;}
     case N::getSUPPORTED_CHANNELS:case N::getHW_SUPPORTED_CHANNELS:{auto d=static_cast<apple80211_sup_channel_data *>(data);bzero(d,sizeof(*d));d->version=1;

@@ -28,6 +28,7 @@ public:
     IOReturn nativeRequestGated(AthNativeOp,void *);
     IOReturn nativeCurrentAPInfo(AthNativeOp,void *);
     IOReturn nativeLinkStateUpdate(void *);
+    IOReturn nativeLinkMetrics(AthNativeOp,void *);
     bool prepareNativeInterface();
     bool prepareNativeLogs();
     void nativeStartupPhase(const char *);

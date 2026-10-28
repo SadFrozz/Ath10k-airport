@@ -463,3 +463,41 @@ down with/without debounce, null inputs and absent interface. LinkUpDone's
 association/port combination has a source guard; it is not an execution of that
 full dispatcher branch. Kernel WCL delivery/rekey/disconnect behavior remains
 unverified; this is an offline candidate.
+
+
+## Configured channel width and native link metrics (2026-10-28)
+
+getCHANNEL previously always returned a 20MHz width flag even when the configured
+home definition was HT40/VHT80. nativeChannelFlags now validates the existing
+physical channel geometry and emits exactly one width, the correct band,
+extension-above for HT40, and the known primary-channel DFS flag. Supported
+channel entries use the same builder for their 20MHz definitions. Regulatory
+selection remains in the existing policy layer; the flag builder neither adds
+physical channels nor authorizes transmission. Channel 14/6GHz/160/80+80 remain
+outside this adapter's physical/width support.
+
+Local Sequoia channelFlagsFromIEEEOperatingClass at 0xffffff8002135b1e confirms
+the bit assignments: classes 81/82 -> 0x0a, 83 -> 0x20c, 84 -> 0x0c,
+115 -> 0x12, 116 -> 0x214, 117 -> 0x14, 118 -> 0x112, 119 -> 0x314,
+120 -> 0x114 and 128 -> 0x410. The jump table at 0xffffff8002135bb4 was decoded
+against the matching IO80211Family UUID recorded above. Class 128 alone cannot
+identify DFS, so the actual primary-channel DFS property is added explicitly.
+This is manual binary analysis, not recovered Apple C or cross-version proof.
+
+getCHANNEL, getRSSI and getRATE now share lifecycle admission: cancel, disconnect,
+disabled or failed state reject without publishing old data. During join the
+channel is the selected home definition, not a measurement of instantaneous RF
+during a scan. RSSI/rate require a live association, including a rekey whose
+controlled port is temporarily closed. Missing RSSI, missing/zero/unrepresentable
+or out-of-decoder-range firmware rate return NotReady. The existing rate unit
+conversion (kbps/500) is preserved; rates remain the last observed firmware
+measurement, with age diagnostics, not an invented instantaneous MCS/SGI value.
+MCS/guard-interval queries remain unsupported pending suitable evidence/data.
+
+Host tests execute the production query method and actual channel builder.
+Independent expected flags cover 18 valid 20/40/80 definitions across 2.4/5GHz,
+DFS and both HT40 extension directions; 11 invalid definitions are rejected.
+Tests check exact reply flags, write boundary, unchanged output on rejection,
+join versus disconnect/failure/rekey state, measured RSSI, firmware rate units,
+missing/out-of-range rates, null output and unknown operation. Kernel/UI
+channel-width reporting and live performance remain unverified.

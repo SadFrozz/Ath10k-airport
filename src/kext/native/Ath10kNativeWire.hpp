@@ -3,6 +3,18 @@
 #include "../Ath10kScanPlan.hpp"
 #include <WCL.hpp>
 #include <string.h>
+// Confirmed against Sequoia channelFlagsFromIEEEOperatingClass: 83=0x20c,
+// 84=0x0c, 116=0x214, 117=0x14, 119=0x314, 120=0x114, 128=0x410.
+// Add known DFS for the actual primary channel; an 80MHz operating class alone
+// cannot identify DFS. This describes the configured home channel, not a scan hop.
+inline UInt32 nativeChannelFlags(UInt32 primary,UInt32 center,UInt32 width) {
+    if(!Ath10k::channelDefinitionAllowed(primary,center,width,true))return 0;
+    UInt32 flags=primary<=14?0x8u:0x10u;
+    flags|=width==80?0x400u:(width==40?0x4u:0x2u);
+    if(width==40 && center>primary)flags|=0x200u;
+    if(Ath10k::channelNeedsDFS(primary))flags|=0x100u;
+    return flags;
+}
 // Sequoia's BEACON_INFO is a length followed by the actual received 802.11
 // beacon. Keep its TSF intact: rebuilding it from cached IEs would invent
 // freshness and hide a dead association from WCL.
