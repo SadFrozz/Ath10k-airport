@@ -111,6 +111,7 @@ void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
     if(loop)loop->runAction(controlPowerState,this,
         reinterpret_cast<void *>(static_cast<uintptr_t>(event)));
     if(!_deferredProbeStarted && !powerIOBlocked())queueDeferredProbe();
+    else if(powerRestartAllowed())queueWakeRecovery();
     if(_probePowerLock)IOLockUnlock(_probePowerLock);
 }
 IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void *,void *,void *)
@@ -151,7 +152,7 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
         if(self->_systemSuspended)++p.wakes;
         self->_systemSuspended=false;
         // Do not re-arm old CE rings or reuse security state after PCI sleep.
-        // The existing app Restart operation performs full stop/rematch/boot.
+        // Internal recovery performs full stop/rematch/boot outside PM calls.
         // Keep I/O blocked until that new driver instance is ready.
         if(p.needsRestart){
             // A queued sleep/off increments the same atomic word, so its

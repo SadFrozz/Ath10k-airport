@@ -482,3 +482,33 @@ sleep remains unimplemented; kernel delivery and physical startup remain unteste
 The separate e105f82 candidate awaiting install/reboot authorization is unchanged.
 
 Initial-power candidate validation: full portable and ASan/UBSan suites, native and non-native builds/import checks, plus exact-UUID native auxiliary binding passed (`9C3C9AAF-8F26-3259-B2D7-534CE243EC40`). Kernel initial callback delivery, traffic and sleep/wake recovery are not established by these checks.
+
+
+## 2026-10-28: automatic wake recovery candidate
+
+The internal retained ONCE worker prepares retirement under the initialization
+barrier and radio gate, then terminates outside both. A CAS from restart phase 2
+to permanent retirement phase 3 arbitrates with new sleep/off intent. Recovery
+requires verified inactive firmware, released DMA, retired interrupts and restored
+PCIe state. Quarantine or failed verification leaves recovery blocked.
+
+Repeated notifications coalesce. A generation counter preserves an eligible wake
+arriving during an obsolete attempt without polling rejected hardware. The worker
+hands cancellation ownership off before terminate can invoke stop; its final
+self-release permits object destruction without accessing freed context. Rematch
+is suppressed for an inactive PCI provider. The replacement must obtain its own
+PM permission and recreate firmware, queues and keys.
+
+ASPM restoration is idempotent after verified success. Unavailable PCI reads
+(0xffff) cannot count as successful restoration. Stop after sleep/rematch leaves
+verified bus mastering disabled instead of restoring a command after power loss.
+
+Production-method host tests cover cancellation before entry and after dispatch,
+coalescing, wake-tail generation, queued sleep before commit, sleep after commit,
+rejected retirement states, failed terminate, inline stop from terminate and
+destruction on final worker release. The full normal and ASAN/UBSAN suites pass,
+as do native/non-native builds and exact binary inclusion in a local auxiliary
+collection (UUID DC4B47B7-6C93-3FA3-A6E9-767266BB174C). Auxiliary validation uses
+a separate selection-only Info.plist copy; this proves binary binding, not
+OpenCore loading or runtime stability. Hardware sleep/wake is not verified.
+The frozen e105f82 installation candidate has not been replaced or installed.

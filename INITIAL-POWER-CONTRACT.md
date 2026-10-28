@@ -1,7 +1,7 @@
 # Initial power and recovery contract
 
 Status: cached matching and early powered-initialization candidate implemented,
-2026-10-28. Automatic wake recovery and kernel/hardware validation remain pending.
+2026-10-28. Automatic wake recovery is implemented as an offline candidate; kernel/hardware validation remains pending.
 The separately staged e105f82 boot candidate remains frozen pending permission.
 
 ## Evidence from the matching kernel
@@ -67,10 +67,10 @@ wrong vendor/device/subsystem, unsupported ABI and probe-only diagnostics.
 8. Only verified DMA release permits PCI rematch. A fresh instance must obey its
    parent's power domain even if it missed an earlier root sleep notification.
 
-Items 1–6 are implemented as an offline candidate and tested with production
-entry, PCI preparation, scheduler/cancellation and power methods. Items 7–8 still
-need the internal recovery worker and hardware verification. The first remaining
-implementation is guarded recovery/rematch. Kernel callback delivery, initial-off matching,
+Items 1–8 are implemented as an offline candidate and tested with production
+entry, PCI preparation, scheduler/cancellation, power and recovery methods.
+Internal recovery now retires the old instance before asynchronous rematch.
+Kernel callback delivery, initial-off matching,
 sleep cancellation, repeated sleep/wake and traffic restoration require hardware
 validation. macOS 11–26 support is not established by this Sequoia investigation.
 
@@ -108,3 +108,33 @@ Production power tests cover initial Off/On, root sleep/cancel before hardware,
 pending suspend intent and permanent stop. These are models of kernel primitives,
 not executed kernel initial-power transitions. The frozen e105f82 candidate
 awaiting permission has not been replaced by this new build.
+
+
+## 2026-10-28: automatic wake recovery candidate
+
+The internal retained ONCE worker prepares retirement under the initialization
+barrier and radio gate, then terminates outside both. A CAS from restart phase 2
+to permanent retirement phase 3 arbitrates with new sleep/off intent. Recovery
+requires verified inactive firmware, released DMA, retired interrupts and restored
+PCIe state. Quarantine or failed verification leaves recovery blocked.
+
+Repeated notifications coalesce. A generation counter preserves an eligible wake
+arriving during an obsolete attempt without polling rejected hardware. The worker
+hands cancellation ownership off before terminate can invoke stop; its final
+self-release permits object destruction without accessing freed context. Rematch
+is suppressed for an inactive PCI provider. The replacement must obtain its own
+PM permission and recreate firmware, queues and keys.
+
+ASPM restoration is idempotent after verified success. Unavailable PCI reads
+(0xffff) cannot count as successful restoration. Stop after sleep/rematch leaves
+verified bus mastering disabled instead of restoring a command after power loss.
+
+Production-method host tests cover cancellation before entry and after dispatch,
+coalescing, wake-tail generation, queued sleep before commit, sleep after commit,
+rejected retirement states, failed terminate, inline stop from terminate and
+destruction on final worker release. The full normal and ASAN/UBSAN suites pass,
+as do native/non-native builds and exact binary inclusion in a local auxiliary
+collection (UUID DC4B47B7-6C93-3FA3-A6E9-767266BB174C). Auxiliary validation uses
+a separate selection-only Info.plist copy; this proves binary binding, not
+OpenCore loading or runtime stability. Hardware sleep/wake is not verified.
+The frozen e105f82 installation candidate has not been replaced or installed.

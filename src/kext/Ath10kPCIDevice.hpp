@@ -244,10 +244,18 @@ private:
     void queueDeferredProbe();
     void runDeferredProbe();
     void cancelDeferredProbe();
+    void queueWakeRecovery();
+    void cancelWakeRecovery();
+    static void wakeRecoveryCall(thread_call_param_t,thread_call_param_t);
+    static IOReturn prepareWakeRecovery(OSObject *,void *,void *,void *,void *);
+    thread_call_t _wakeRecoveryCall=nullptr;
+    bool _wakeRecoveryPending=false;
+    UInt64 _wakeRecoveryGeneration=0;
     thread_call_t _deferredProbeCall=nullptr;
     IOLock *_deferredProbeLock=nullptr;
     bool _deferredProbePending=false,_deferredProbeStarted=false,_deferredProbeStopping=false;
     bool _pciConfigured=false;
+    void restoreOwnedPCICommand();
     bool wakeTarget(bool &assertedWake);
     void releaseTargetWake(bool assertedWake);
     bool coldResetTarget();

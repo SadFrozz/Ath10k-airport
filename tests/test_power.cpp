@@ -41,6 +41,7 @@ public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
  IOLock probeLock;IOLock *_probePowerLock=&probeLock;
  bool _deferredProbeStarted=true;unsigned probesQueued=0;
+ unsigned recoveryRequests=0;void queueWakeRecovery(){assert(powerRestartAllowed());++recoveryRequests;}
  void queueDeferredProbe(){assert(!powerIOBlocked() && !_deferredProbeStarted);++probesQueued;}
  bool resourcesLive=true;
  Gate *getWorkLoop(){assert(resourcesLive);return &loop;}

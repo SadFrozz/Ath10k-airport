@@ -211,7 +211,9 @@ bool Ath10kPCIDevice::start(IOService *provider)
     _deferredProbeLock=IOLockAlloc();
     if(_deferredProbeLock)_deferredProbeCall=thread_call_allocate_with_options(
         deferredProbeCall,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
-    if(!_probePowerLock || !_deferredProbeLock || !_deferredProbeCall ||
+    if(_deferredProbeLock)_wakeRecoveryCall=thread_call_allocate_with_options(
+        wakeRecoveryCall,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
+    if(!_probePowerLock || !_deferredProbeLock || !_deferredProbeCall || !_wakeRecoveryCall ||
        !getWorkLoop() || !preparePowerNotifications()){
         stop(provider);return false;
     }
@@ -379,6 +381,7 @@ void Ath10kPCIDevice::drainControlWorkers()
     // or cancel that producer before draining the worker it can create.
     blockPowerIOForTermination();
     cancelDeferredProbe();
+    cancelWakeRecovery();
 #ifdef ATH10K_NATIVE
     if(_nativeInterface)_nativeInterface->drainPowerCalls();
     stopNativeRequests();
@@ -441,11 +444,7 @@ void Ath10kPCIDevice::stop(IOService *provider)
     unmapBAR0();
 
     if (_pci) {
-        if(_pciConfigured){
-            if(!_dmaQuarantine)_pci->configWrite16(kIOPCIConfigCommand,_originalCommand);
-            else _pci->setBusMasterEnable(false);
-            _pciConfigured=false;
-        }
+        restoreOwnedPCICommand();
         if (_pci->isOpen(this))
             _pci->close(this);
         _pci = nullptr;
@@ -457,11 +456,12 @@ void Ath10kPCIDevice::stop(IOService *provider)
     if(_networkInterface){IONetworkController::detachInterface(_networkInterface,true);_networkInterface->release();_networkInterface=nullptr;}
     super::stop(provider);
     if(rematch){
-        if(releaseDMA && !_dmaQuarantine) {
+        if(releaseDMA && !_dmaQuarantine && !rematch->isInactive()) {
             ath10kSetRecoveryStatus(rematch, "rematch-queued", "PCI provider registration queued for a new driver instance");
             rematch->registerService(kIOServiceAsynchronous);
         } else {
-            ath10kSetRecoveryStatus(rematch, "rematch-suppressed", "Driver stopped without a safe DMA release");
+            ath10kSetRecoveryStatus(rematch, "rematch-suppressed",rematch->isInactive()?
+                "PCI provider is inactive; rematch suppressed":"Driver stopped without a safe DMA release");
         }
         rematch->release();
     }
@@ -716,6 +716,7 @@ bool Ath10kPCIDevice::disableASPMForBringup()
 
     const UInt8 offset = static_cast<UInt8>(_pcieCapOffset + kPCIeLinkControlOffset);
     _pcieLinkControlBefore = _pci->configRead16(offset);
+    if(_pcieLinkControlBefore==0xffffu)return false;
     const UInt16 aspmBefore = _pcieLinkControlBefore & kPCIeLinkControlASPMMask;
     const UInt16 desired = static_cast<UInt16>(_pcieLinkControlBefore & ~kPCIeLinkControlASPMMask);
 
@@ -735,22 +736,38 @@ bool Ath10kPCIDevice::disableASPMForBringup()
 
 void Ath10kPCIDevice::restoreASPM()
 {
-    if (!_aspmDisableAttempted || !_pci || !_hasPCIe || _pcieCapOffset == 0)
+    if (_aspmRestoreSucceeded || !_aspmDisableAttempted || _pcieLinkControlBefore==0xffffu ||
+        !_pci || !_hasPCIe || _pcieCapOffset == 0)
         return;
 
     const UInt8 offset = static_cast<UInt8>(_pcieCapOffset + kPCIeLinkControlOffset);
     const UInt16 current = _pci->configRead16(offset);
+    if(current==0xffffu)return;
     const UInt16 restored = static_cast<UInt16>((current & ~kPCIeLinkControlASPMMask) |
                                                 (_pcieLinkControlBefore & kPCIeLinkControlASPMMask));
     _pci->configWrite16(offset, restored);
     _pcieLinkControlAfterRestore = _pci->configRead16(offset);
-    _aspmRestoreSucceeded = ((_pcieLinkControlAfterRestore & kPCIeLinkControlASPMMask) ==
+    _aspmRestoreSucceeded = _pcieLinkControlAfterRestore!=0xffffu &&
+                            ((_pcieLinkControlAfterRestore & kPCIeLinkControlASPMMask) ==
                              (_pcieLinkControlBefore & kPCIeLinkControlASPMMask));
 
     ATH10K_TRACE("Ath10kMac: PCIe Link Control restore readback=%s value=0x%04x original-ASPM=0x%x\n",
           _aspmRestoreSucceeded ? "PASS" : "FAIL",
           _pcieLinkControlAfterRestore,
           _pcieLinkControlBefore & kPCIeLinkControlASPMMask);
+}
+
+void Ath10kPCIDevice::restoreOwnedPCICommand()
+{
+    if(!_pci || !_pciConfigured)return;
+    // Rematch/sleep already verified bus mastering off. Leave it off and avoid
+    // configuration transactions if the parent has since dropped power.
+    // The fresh PM-admitted instance enables its own configuration.
+    if(!_reprobeRequested && !_power.needsRestart){
+        if(!_dmaQuarantine)_pci->configWrite16(kIOPCIConfigCommand,_originalCommand);
+        else _pci->setBusMasterEnable(false);
+    }
+    _pciConfigured=false;
 }
 
 void Ath10kPCIDevice::logMSIState(const char *stage)

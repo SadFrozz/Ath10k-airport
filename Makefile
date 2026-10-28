@@ -48,7 +48,7 @@ CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/vendor/itlwm
 NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o
 endif
 
-OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kRecovery.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
 $(OBJS): $(wildcard src/shared/*.hpp)
 ifeq ($(NATIVE),1)
 $(OBJS): $(wildcard src/kext/native/*)
@@ -85,6 +85,9 @@ $(BUILD_DIR)/Ath10kNetwork.o: src/kext/Ath10kNetwork.cpp $(wildcard src/kext/*.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kRuntime.o: src/kext/Ath10kRuntime.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kRecovery.o: src/kext/Ath10kRecovery.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kPower.o: src/kext/Ath10kPower.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)

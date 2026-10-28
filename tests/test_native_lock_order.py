@@ -2,6 +2,24 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_wake_recovery_hands_off_before_termination_and_keeps_sleep_veto(self):
+        root=Path(__file__).resolve().parents[1]
+        recovery=(root/'src/kext/Ath10kRecovery.cpp').read_text()
+        prepare=recovery.split('IOReturn Ath10kPCIDevice::prepareWakeRecovery(',1)[1].split('void Ath10kPCIDevice::wakeRecoveryCall(',1)[0]
+        self.assertIn('OSCompareAndSwap(2,3',prepare)
+        self.assertLess(prepare.index('OSCompareAndSwap(2,3'),prepare.index('_reprobeRequested=true'))
+        callback=recovery.split('void Ath10kPCIDevice::wakeRecoveryCall(',1)[1].split('void Ath10kPCIDevice::cancelWakeRecovery()',1)[0]
+        self.assertLess(callback.index('_wakeRecoveryPending=false'),callback.index('terminate(kIOServiceRequired)'))
+        self.assertLess(callback.index('IOLockUnlock(self->_probePowerLock)'),callback.index('terminate(kIOServiceRequired)'))
+        self.assertIn('generation!=self->_wakeRecoveryGeneration',callback)
+        cancel=recovery.split('void Ath10kPCIDevice::cancelWakeRecovery()',1)[1]
+        self.assertLess(cancel.index('IOLockUnlock'),cancel.index('if(releaseJob)release()'))
+        driver=(root/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        start=driver.split('bool Ath10kPCIDevice::start(IOService *provider)',1)[1].split('bool Ath10kPCIDevice::preparePoweredPCI()',1)[0]
+        self.assertLess(start.index('wakeRecoveryCall,this'),start.index('PMinit()'))
+        self.assertIn('!_wakeRecoveryCall',start)
+        self.assertIn('!rematch->isInactive()',driver)
+
     def test_initial_power_worker_has_no_eager_hardware_fallback(self):
         source=(Path(__file__).resolve().parents[1]/'src/kext/Ath10kPCIDevice.cpp').read_text()
         start=source.split('bool Ath10kPCIDevice::start(IOService *provider)',1)[1].split('bool Ath10kPCIDevice::preparePoweredPCI()',1)[0]
