@@ -122,8 +122,11 @@ inline bool saeGroup19SharedSecret(const P256CoreCryptoCandidate &engine,
  uint8_t *out,size_t capacity,P256CoreCryptoWorkspace &workspace){
  if(!randomScalar || randomBytes!=32 || !peerScalar || scalarBytes!=32 ||
     !pwe || pweBytes!=64 || !peerElement || elementBytes!=64 || !out || capacity<32){workspace.clear();return false;}
- uint8_t high=0;for(unsigned i=0;i<31;++i)high|=peerScalar[i];
- if(!high && peerScalar[31]<=1){workspace.clear();return false;}
+ uint8_t peerHigh=0,randomHigh=0;
+ for(unsigned i=0;i<31;++i){peerHigh|=peerScalar[i];randomHigh|=randomScalar[i];}
+ if((!peerHigh && peerScalar[31]<=1) || (!randomHigh && randomScalar[31]<=1)){
+  workspace.clear();return false;
+ }
  uint8_t points[3][64]{};
  const bool ok=engine.multiply(peerScalar,32,pwe,64,points[0],64,workspace) &&
      engine.add(points[0],64,peerElement,64,points[1],64,workspace) &&
@@ -132,9 +135,9 @@ inline bool saeGroup19SharedSecret(const P256CoreCryptoCandidate &engine,
  wipe(points,sizeof(points));workspace.clear();return ok;
 }
 
-// Fixed-width arithmetic for an SAE commit scalar; no modulo bias reduction
-// of random inputs. RNG sampling/retry is a separate caller responsibility.
-inline bool saeGroup19CommitScalar(const uint8_t *randomScalar,const uint8_t *mask,
+// Sum validated scalars modulo the order. Unlike a transmitted commit scalar,
+// the KDF context may legitimately be 0 or 1.
+inline bool saeGroup19ScalarSum(const uint8_t *randomScalar,const uint8_t *mask,
  size_t bytes,uint8_t *out,size_t capacity){
  if(!randomScalar || !mask || bytes!=32 || !out || capacity<32)return false;
  static constexpr uint8_t order[32]={
@@ -150,11 +153,20 @@ inline bool saeGroup19CommitScalar(const uint8_t *randomScalar,const uint8_t *ma
  for(size_t i=32;i-->0;){const uint32_t v=uint32_t(randomScalar[i])+mask[i]+carry;sum[i+1]=uint8_t(v);carry=v>>8;}
  sum[0]=uint8_t(carry);
  for(size_t i=33;i-->0;){const uint32_t v=uint32_t(sum[i])-(i?order[i-1]:0)-borrow;reduced[i]=uint8_t(v);borrow=v>>31;}
- const uint8_t choose=uint8_t(0u-(1u-borrow));uint32_t high=0;
- for(unsigned i=1;i<33;++i){sum[i]=uint8_t((reduced[i]&choose)|(sum[i]&uint8_t(~choose)));if(i<32)high|=sum[i];}
- const bool ok=high || sum[32]>1;
- if(ok)memcpy(out,sum+1,32);
- wipe(sum,sizeof(sum));wipe(reduced,sizeof(reduced));return ok;
+ const uint8_t choose=uint8_t(0u-(1u-borrow));
+ for(unsigned i=1;i<33;++i)sum[i]=uint8_t((reduced[i]&choose)|(sum[i]&uint8_t(~choose)));
+ memcpy(out,sum+1,32);
+ wipe(sum,sizeof(sum));wipe(reduced,sizeof(reduced));return true;
+}
+// Fixed-width commit arithmetic; RNG sampling/retry is a caller responsibility.
+inline bool saeGroup19CommitScalar(const uint8_t *randomScalar,const uint8_t *mask,
+ size_t bytes,uint8_t *out,size_t capacity){
+ if(!out || capacity<32)return false;
+ uint8_t sum[32]{};bool ok=saeGroup19ScalarSum(randomScalar,mask,bytes,sum,sizeof(sum));
+ uint8_t high=0;for(unsigned i=0;i<31;++i)high|=sum[i];
+ ok=ok && (high || sum[31]>1);
+ if(ok)memcpy(out,sum,32);
+ wipe(sum,sizeof(sum));return ok;
 }
 
 // Produce a group-19 scalar || affine element from a pre-derived PWE.
@@ -172,6 +184,30 @@ inline bool saeGroup19Commit(const P256CoreCryptoCandidate &engine,const uint8_t
      engine.multiply(minusOne,32,masked,64,prepared+32,64,workspace);
  if(ok)memcpy(out,prepared,96);
  wipe(prepared,sizeof(prepared));wipe(masked,sizeof(masked));workspace.clear();return ok;
+}
+
+// Compose the group-19 exchange into candidate keys. They are NOT authenticated
+// until peer confirm succeeds. Caller owns the current session/generation and
+// binds its local commit, random scalar, PWE, mode and rejected-group lists.
+template<class Crypto> inline bool saeGroup19ExchangeCandidate(const P256CoreCryptoCandidate &engine,
+ const uint8_t *randomScalar,size_t randomBytes,const uint8_t *localCommit,size_t localBytes,
+ const uint8_t *peerCommit,size_t peerBytes,const uint8_t *pwe,size_t pweBytes,
+ bool h2e,const uint8_t *localMAC,const uint8_t *peerMAC,
+ const uint8_t *localRejected,size_t localRejectedBytes,const uint8_t *peerRejected,size_t peerRejectedBytes,
+ SAEGroup19Keys &out,P256CoreCryptoWorkspace &workspace){
+ struct Scratch {
+  uint8_t sum[32]{},secret[32]{};P256CoreCryptoWorkspace &w;
+  explicit Scratch(P256CoreCryptoWorkspace &value):w(value){}
+  ~Scratch(){wipe(sum,sizeof(sum));wipe(secret,sizeof(secret));w.clear();}
+ } scratch(workspace);
+ if(!localCommit || localBytes!=96 || !peerCommit || peerBytes!=96 ||
+    equal(localCommit,peerCommit,96))return false; // Reflected commit: discard.
+ if(!saeGroup19ScalarSum(localCommit,peerCommit,32,scratch.sum,32) ||
+    !engine.validate(localCommit+32,64,workspace) ||
+    !saeGroup19SharedSecret(engine,randomScalar,randomBytes,peerCommit,32,pwe,pweBytes,
+       peerCommit+32,64,scratch.secret,32,workspace))return false;
+ return deriveSAEGroup19ExchangeKeys<Crypto>(scratch.secret,32,scratch.sum,32,h2e,localMAC,peerMAC,
+     localRejected,localRejectedBytes,peerRejected,peerRejectedBytes,out);
 }
 
 // Reduce the fixed 48-byte H2E expansion modulo the P-256 field prime.

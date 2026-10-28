@@ -1,5 +1,6 @@
 // Executes only in an ordinary user process. Does not load or call a kernel module.
 #include "../../src/shared/Ath10kP256CoreCrypto.hpp"
+#include "../../src/shared/Ath10kSAE.hpp"
 #include "../../tests/p256_corecrypto_fixtures.hpp"
 #include <dlfcn.h>
 #include <CommonCrypto/CommonHMAC.h>
@@ -63,7 +64,7 @@ int main(){
     LOAD(subtract,"ccec_full_sub");LOAD(readScalar,"ccn_read_uint");LOAD(rng,"ccrng");
 #undef LOAD
     API tracked={curve,importPoint,validatePoint,exportPoint,project,affine,multiply,add,subtract,readScalar,rng};
-    Engine engine(tracked);Workspace w;std::array<uint8_t,80> out{};unsigned faultChecks=0;
+    Engine engine(tracked);Workspace w;std::array<uint8_t,80> out{};unsigned faultChecks=0,exchangeFaultChecks=0;
     const auto g=decode<64>(P256Fixtures::generator);assert(engine.validate(g.data(),64,w));clean(w);
     for(auto &v:P256Fixtures::multiply){auto s=decode<32>(v.scalar);auto p=decode<64>(v.point),expected=decode<64>(v.result);out.fill(0xa5);
         assert(engine.multiply(s.data(),32,p.data(),64,out.data(),out.size(),w));assert(!memcmp(out.data(),expected.data(),64));
@@ -116,12 +117,26 @@ int main(){
       for(auto text:{P256Fixtures::order,P256Fixtures::aboveOrder}){
         peerScalar=decode<32>(text);out.fill(0xa5);assert(!run());unchanged(out);clean(w);
       }
-      peerScalar.fill(0);peerScalar[31]=3;ownRandom.fill(0);out.fill(0xa5);
-      assert(!run());unchanged(out);clean(w);
+      peerScalar.fill(0);peerScalar[31]=3;
+      for(auto text:{"0000000000000000000000000000000000000000000000000000000000000000",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    P256Fixtures::order,P256Fixtures::aboveOrder}){
+        ownRandom=decode<32>(text);calls=0;out.fill(0xa5);memset(&w,0x7d,sizeof(w));
+        assert(!run());unchanged(out);clean(w);
+        if(ownRandom[0]==0)assert(calls==0); // Reject before any provider work.
+      }
+      ownRandom.fill(0);
       ownRandom[31]=7;peerScalar.fill(0);out.fill(0xa5);
       assert(!run());unchanged(out);clean(w);
       failAt=0;peerScalar.fill(0);peerScalar[31]=1;out.fill(0xa5);
       assert(!run());unchanged(out);clean(w);
+    }
+    for(unsigned result=0;result<=1;++result){
+      auto a=decode<32>(result?"ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550":"ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63254f");
+      auto b=decode<32>("0000000000000000000000000000000000000000000000000000000000000002");
+      out.fill(0xa5);assert(AthSecurity::saeGroup19ScalarSum(a.data(),b.data(),32,out.data(),out.size()));
+      for(unsigned j=0;j<31;++j)assert(out[j]==0);assert(out[31]==result);
+      for(size_t j=32;j<out.size();++j)assert(out[j]==0xa5);
     }
     { auto a=decode<32>("0000000000000000000000000000000000000000000000000000000000000002"),b=decode<32>("0000000000000000000000000000000000000000000000000000000000000003");out.fill(0xa5);
       assert(AthSecurity::saeGroup19CommitScalar(a.data(),b.data(),32,out.data(),out.size())==true);
@@ -171,6 +186,31 @@ int main(){
       assert(AthSecurity::saeGroup19SharedSecret(engine,ownRandom.data(),32,peer.data(),32,g.data(),64,peer.data()+32,64,x.data(),32,w));
       assert(AthSecurity::saeGroup19SharedSecret(engine,peerRandom.data(),32,own.data(),32,g.data(),64,own.data()+32,64,y.data(),32,w));
       const auto expected=decode<32>("5821b002dba277251a9d18eb72d5c720f4efe021b38029c017d871340893be7b");assert(x==y && x==expected);clean(w);
+      const uint8_t localMAC[6]={2,0,0,0,0,2},peerMAC[6]={2,0,0,0,0,1};
+      const uint8_t localRejected[4]={20,0,21,0},peerRejected[2]={22,0};
+      AthSecurity::SAEGroup19Keys localKeys{},peerKeys{};
+      auto exchange=[&](){return AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,
+        ownRandom.data(),32,own.data(),96,peer.data(),96,g.data(),64,true,localMAC,peerMAC,
+        localRejected,4,peerRejected,2,localKeys,w);};
+      calls=failAt=0;assert(exchange());clean(w);const unsigned exchangeCalls=calls;
+      const auto expectedKeys=decode<64>("6c0dd6d45193ab0316183e9a3fad48667140bedb98f70cc0703d730726d52eeb3a5a8dcac73f10d07cdcbf5bca8d1fc006579e9d4777d416cb5a858acd57970a");
+      assert(!memcmp(localKeys.kck,expectedKeys.data(),32) && !memcmp(localKeys.pmk,expectedKeys.data()+32,32));
+      for(auto b:localKeys.pmkid)assert(b==0);
+      assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,peerRandom.data(),32,
+        peer.data(),96,own.data(),96,g.data(),64,true,peerMAC,localMAC,peerRejected,2,localRejected,4,peerKeys,w));
+      assert(!memcmp(&localKeys,&peerKeys,sizeof(localKeys)));clean(w);
+      const auto previous=localKeys;
+      for(unsigned n=1;n<=exchangeCalls;++n){calls=0;failAt=n;memset(&w,0x7d,sizeof(w));
+        assert(!exchange());assert(!memcmp(&localKeys,&previous,sizeof(localKeys)));clean(w);++exchangeFaultChecks;}
+      failAt=0;
+      assert(!AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,ownRandom.data(),32,
+        own.data(),96,own.data(),96,g.data(),64,true,localMAC,peerMAC,localRejected,4,peerRejected,2,localKeys,w));
+      assert(!memcmp(&localKeys,&previous,sizeof(localKeys)));clean(w);
+      const auto savedPeer=peer;peer[32]^=0x80;assert(!exchange());
+      assert(!memcmp(&localKeys,&previous,sizeof(localKeys)));clean(w);peer=savedPeer;
+      const auto savedOwn=own;own[32]^=0x80;assert(!exchange());
+      assert(!memcmp(&localKeys,&previous,sizeof(localKeys)));clean(w);own=savedOwn;
+      AthSecurity::wipe(&localKeys,sizeof(localKeys));AthSecurity::wipe(&peerKeys,sizeof(peerKeys));
     }
     { const auto input=decode<48>("000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");const auto expected=decode<32>("0000000000000000000000000000000000000000000000000000000000000000");out.fill(0xa5);
       assert(AthSecurity::saeGroup19ReduceH2EValue(input.data(),48,out.data(),out.size()));assert(!memcmp(out.data(),expected.data(),32));for(size_t j=32;j<80;++j)assert(out[j]==0xa5);
@@ -295,6 +335,60 @@ int main(){
         const auto expectedPWE=decode<64>("8e3a78633b49752947fa2ec5fe4f9ceb7d80763eb62ecbaa468a8b570618f660a4932a75da3118352dfa78c45ed3c039d020c8e1b9f32504a8e725e085b6930d");
         assert(AthSecurity::saeGroup19H2EPWE<H2ETestCrypto>(engine,out.data(),64,a,b,6,pwe,64,w));
         assert(!memcmp(pwe,expectedPWE.data(),64));assert(engine.validate(pwe,64,w));clean(w);
+        // Synthetic end-to-end H2E -> commits -> KCK/PMK -> mutual confirm.
+        uint8_t ra[32]{},rb[32]{},ma[32]{},mb[32]{},ca[96]{},cb[96]{};
+        ra[31]=7;rb[31]=11;ma[31]=3;mb[31]=5;
+        AthSecurity::SAEGroup19Keys ka{},kb{};
+        assert(AthSecurity::saeGroup19Commit(engine,ra,ma,32,pwe,64,ca,96,w));
+        assert(AthSecurity::saeGroup19Commit(engine,rb,mb,32,pwe,64,cb,96,w));
+        assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,ra,32,ca,96,cb,96,pwe,64,true,a,b,nullptr,0,nullptr,0,ka,w));
+        assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,rb,32,cb,96,ca,96,pwe,64,true,b,a,nullptr,0,nullptr,0,kb,w));
+        assert(!memcmp(&ka,&kb,sizeof(ka)));
+        // Independent Python affine multiplication (77*PWE) + hashlib/hmac.
+        const auto expectedKeys=decode<64>("e765264d0f000121e6fd9b6b9f4e570c763caeb50253ad1bf3b431983d81923ef30640025f9b9e5abde7538493d813f21e96ad8d1c410728701e47a15769e500");
+        assert(!memcmp(ka.kck,expectedKeys.data(),32) && !memcmp(ka.pmk,expectedKeys.data()+32,32));
+        uint8_t confirmA[34]{1},confirmB[34]{1};uint16_t acceptedA=0,acceptedB=0;
+        assert(AthSecurity::saeGroup19Confirm<H2ETestCrypto>(ka.kck,32,1,ca,96,cb,96,confirmA+2,32));
+        assert(AthSecurity::saeGroup19Confirm<H2ETestCrypto>(kb.kck,32,1,cb,96,ca,96,confirmB+2,32));
+        assert(AthSecurity::verifySAEGroup19PeerConfirm<H2ETestCrypto>(ka.kck,32,ca,96,cb,96,confirmB,34,false,0,acceptedA));
+        assert(AthSecurity::verifySAEGroup19PeerConfirm<H2ETestCrypto>(kb.kck,32,cb,96,ca,96,confirmA,34,false,0,acceptedB));
+        assert(acceptedA==1 && acceptedB==1);
+        { // Both real candidate keys must pass the asynchronous publication fence.
+          AthSecurity::SAEGroup19Confirmation oa,ob;uint64_t ga=0,gb=0;
+          AthSecurity::SAEGroup19ConfirmWork la,lb,pa,pb;uint8_t pmka[32]{},pmkb[32]{},ida[16]{},idb[16]{};
+          assert(oa.begin(ca,96,cb,96,ga) && ob.begin(cb,96,ca,96,gb));
+          assert(oa.completeKeys(ga,true,ka) && ob.completeKeys(gb,true,kb));
+          assert(!oa.copyPMK(ga,pmka,32,ida,16) && !ob.copyPMK(gb,pmkb,32,idb,16));
+          assert(oa.snapshotLocal(ga,la) && ob.snapshotLocal(gb,lb));
+          assert(la.makeLocal<H2ETestCrypto>(confirmA,34) && lb.makeLocal<H2ETestCrypto>(confirmB,34));
+          assert(oa.completeLocal(la,true) && ob.completeLocal(lb,true));
+          assert(oa.snapshotPeer(ga,pa) && ob.snapshotPeer(gb,pb));
+          assert(pa.verifyPeer<H2ETestCrypto>(confirmB,34) && pb.verifyPeer<H2ETestCrypto>(confirmA,34));
+          assert(!oa.completePeer(pb) && !ob.completePeer(pa)); // Equal generation is not equal owner.
+          assert(oa.completePeer(pa) && ob.completePeer(pb));
+          assert(oa.copyPMK(ga,pmka,32,ida,16) && ob.copyPMK(gb,pmkb,32,idb,16));
+          assert(!memcmp(pmka,pmkb,32) && !memcmp(pmka,expectedKeys.data()+32,32));
+          assert(!memcmp(ida,idb,16));oa.cancel();ob.cancel();
+          assert(!oa.copyPMK(ga,pmka,32,ida,16) && !ob.copyPMK(gb,pmkb,32,idb,16));
+          AthSecurity::wipe(pmka,sizeof(pmka));AthSecurity::wipe(pmkb,sizeof(pmkb));
+        }
+        // A wrong password derives a different PWE; it cannot authenticate.
+        uint8_t wrongPT[64]{},wrongPWE[64]{};const uint8_t wrongPassword[]="test-passwore";
+        assert(AthSecurity::saeGroup19H2EPT<H2ETestCrypto>(field,engine,ssid,9,wrongPassword,13,id,7,wrongPT,64,workspace,w));
+        assert(AthSecurity::saeGroup19H2EPWE<H2ETestCrypto>(engine,wrongPT,64,a,b,6,wrongPWE,64,w));
+        assert(AthSecurity::saeGroup19Commit(engine,rb,mb,32,wrongPWE,64,cb,96,w));
+        assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,ra,32,ca,96,cb,96,pwe,64,true,a,b,nullptr,0,nullptr,0,ka,w));
+        assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,rb,32,cb,96,ca,96,wrongPWE,64,true,b,a,nullptr,0,nullptr,0,kb,w));
+        assert(memcmp(ka.kck,kb.kck,32));
+        assert(AthSecurity::saeGroup19Confirm<H2ETestCrypto>(kb.kck,32,1,cb,96,ca,96,confirmB+2,32));
+        acceptedA=123;
+        assert(!AthSecurity::verifySAEGroup19PeerConfirm<H2ETestCrypto>(ka.kck,32,ca,96,cb,96,confirmB,34,false,0,acceptedA));
+        assert(acceptedA==123);clean(w);
+        AthSecurity::wipe(wrongPT,sizeof(wrongPT));AthSecurity::wipe(wrongPWE,sizeof(wrongPWE));
+        AthSecurity::wipe(&ka,sizeof(ka));AthSecurity::wipe(&kb,sizeof(kb));
+        AthSecurity::wipe(ra,sizeof(ra));AthSecurity::wipe(rb,sizeof(rb));
+        AthSecurity::wipe(ma,sizeof(ma));AthSecurity::wipe(mb,sizeof(mb));
+        AthSecurity::wipe(confirmA,sizeof(confirmA));AthSecurity::wipe(confirmB,sizeof(confirmB));
         AthSecurity::wipe(pwe,sizeof(pwe));
        }
 
@@ -332,6 +426,6 @@ int main(){
     {const auto input=decode<32>("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550"),expected=decode<32>("0000000000000000000000000000000000000000000000000000000000000001");out.fill(0xa5);assert(AthSecurity::saeGroup19H2EScalar(input.data(),32,out.data(),80));assert(!memcmp(out.data(),expected.data(),32));}
     {const auto input=decode<32>("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551"),expected=decode<32>("0000000000000000000000000000000000000000000000000000000000000002");out.fill(0xa5);assert(AthSecurity::saeGroup19H2EScalar(input.data(),32,out.data(),80));assert(!memcmp(out.data(),expected.data(),32));}
     {const auto input=decode<32>("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),expected=decode<32>("00000000ffffffff00000000000000004319055258e8617b0c46353d039cdab0");out.fill(0xa5);assert(AthSecurity::saeGroup19H2EScalar(input.data(),32,out.data(),80));assert(!memcmp(out.data(),expected.data(),32));}
-    printf("{\"userland_corecrypto_uuid\":\"%s\",\"multiplication_vectors\":12,\"add_subtract_vectors\":14,\"injected_failures\":%u,\"workspace_bytes\":%zu,\"kernel_runtime_verified\":false,\"sae_implemented\":false}\n",uuid().c_str(),faultChecks,sizeof(w));
+    printf("{\"userland_corecrypto_uuid\":\"%s\",\"multiplication_vectors\":12,\"add_subtract_vectors\":14,\"baseline_injected_failures\":%u,\"exchange_injected_failures\":%u,\"h2e_synthetic_mutual_confirm\":true,\"wrong_password_confirm_rejected\":true,\"workspace_bytes\":%zu,\"kernel_runtime_verified\":false,\"sae_implemented\":false}\n",uuid().c_str(),faultChecks,exchangeFaultChecks,sizeof(w));
     dlclose(lib);
 }

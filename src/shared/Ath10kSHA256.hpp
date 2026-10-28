@@ -87,6 +87,39 @@ template<class Crypto> inline bool deriveSAEGroup19Keys(const uint8_t *keyseed,s
  wipe(input,sizeof(input));wipe(keys,sizeof(keys));return ok;
 }
 
+// Group-19, AKM 8 only. Rejected-group inputs are the exact, prevalidated LE16
+// list payloads (without IE headers), retained from this exchange. Session/frame
+// validation and authenticated key publication are separate responsibilities.
+template<class Crypto> inline bool deriveSAEGroup19ExchangeKeys(const uint8_t *secret,size_t secretBytes,
+ const uint8_t *scalarSum,size_t sumBytes,bool h2e,const uint8_t *localMAC,const uint8_t *peerMAC,
+ const uint8_t *localRejected,size_t localBytes,const uint8_t *peerRejected,size_t peerBytes,
+ SAEGroup19Keys &out){
+ if(!secret || secretBytes!=32 || !scalarSum || sumBytes!=32 || !localMAC || !peerMAC ||
+    (localMAC[0]&1) || (peerMAC[0]&1) || equal(localMAC,peerMAC,6) ||
+    (!localRejected && localBytes) || (!peerRejected && peerBytes) ||
+    localBytes>254 || peerBytes>254 || (localBytes&1) || (peerBytes&1) ||
+    (!h2e && (localBytes || peerBytes)))return false;
+ uint8_t localNonzero=0,peerNonzero=0;
+ for(unsigned i=0;i<6;++i){localNonzero|=localMAC[i];peerNonzero|=peerMAC[i];}
+ if(!localNonzero || !peerNonzero)return false;
+ uint8_t salt[508]{},seed[32]{};size_t saltBytes=32;
+ if(h2e && (localBytes || peerBytes)){
+  bool localHigher=false;
+  for(unsigned i=0;i<6;++i){if(localMAC[i]==peerMAC[i])continue;localHigher=localMAC[i]>peerMAC[i];break;}
+  if(localHigher){
+   if(localBytes)copy(salt,localRejected,localBytes);
+   if(peerBytes)copy(salt+localBytes,peerRejected,peerBytes);
+  }else{
+   if(peerBytes)copy(salt,peerRejected,peerBytes);
+   if(localBytes)copy(salt+peerBytes,localRejected,localBytes);
+  }
+  saltBytes=localBytes+peerBytes;
+ }
+ const bool ok=Crypto::hmac256(salt,saltBytes,secret,32,seed) &&
+     deriveSAEGroup19Keys<Crypto>(seed,32,scalarSum,32,out);
+ wipe(salt,sizeof(salt));wipe(seed,sizeof(seed));return ok;
+}
+
 // Sender/receiver commits are 32-byte scalar || 64-byte affine X/Y, all BE.
 // Their curve/scalar validity and session binding must already be established.
 template<class Crypto> inline bool saeGroup19Confirm(const uint8_t *kck,size_t keyBytes,uint16_t counter,

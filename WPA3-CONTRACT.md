@@ -22,6 +22,68 @@ Do not advertise SAE or PMF while these dependent stages remain incomplete.
 Roaming preparation stays local and deferred; no need to restart that work
 before the security dependency path is functional.
 
+### Current exchange composition (2026-10-28, local)
+
+`saeGroup19ExchangeCandidate` composes the validated scalar sum, reflection
+rejection, local/peer point checks, shared secret and group-19 AKM 8 key
+derivation. Outputs remain candidate keys until peer confirm succeeds. The
+caller must bind local commit/random/PWE, identities, mode and the exact
+prevalidated rejected-group payloads to one live session/generation.
+
+`deriveSAEGroup19ExchangeKeys` derives keyseed using zero salt without rejected
+groups, or H2E's retained lists in higher-MAC-first order. It bounds each LE16
+list payload to 254 bytes and rejects malformed lengths, missing buffers,
+invalid/equal MAC identities and rejected lists in non-H2E mode. It does not
+parse or authenticate rejected-group IEs. Scalar addition now distinguishes
+transmitted commits (result 0/1 invalid) from KDF context (0/1 valid).
+
+ASan/UBSan tests with actual userland CoreCrypto cover two parties' independent
+commits producing identical keys, independently calculated Python affine/HMAC
+fixtures, each provider failure preserving old output and clearing workspace,
+reflected/invalid points, and H2E salt ordering. A synthetic complete
+password-to-PT-to-PWE-to-commit-to-keys exchange passes mutual confirmation;
+one changed password fails confirmation. Used kernel compile-only entries
+instantiate full H2E and exchange composition, with stack/import checks.
+
+These are ordinary-process tests, not AP/frame interoperability or kernel
+execution. Native credential delivery, retained crypto worker/cancellation,
+full SAE frame/state handling, timing validation, AKM 8 EAPOL and mandatory
+PMF remain incomplete; this work does not advertise or enable WPA3.
+Reference derivation and reflection rules:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/src/common/sae.c
+
+### Confirmation publication fence (local, not wired)
+
+`Ath10kSAE.hpp` separates owner-gate state from worker-owned KCK/commit
+snapshots. Owner methods perform no cryptography. Candidate keys are consumed
+and wiped even on stale/failed completion; PMK/PMKID remain private until a
+local confirm was generated and submitted and the peer confirm verified.
+Snapshots contain no PMK. Both owner identity and monotonic generation must
+match at publication; peer counters are checked again after worker execution.
+Before frame submission, `localReadyToTransmit` must be checked under the
+owner gate, and any additional TX queue must recheck at actual submission.
+
+Cancel wipes retained keys/commits and prevents late local TX admission, peer
+confirmation or PMK export. Generation is retained across reuse, never wrapped.
+Local confirm reservations stop before 0xffff. Invalid replacement and failed
+current key calculation retire the old exchange; stale failures do not cancel
+the new one. Owner/job copying is forbidden and destruction wipes each object.
+
+ASan/UBSan tests cover peer-before-local completion, failed local submission,
+provider failure, late verification/completion after cancel/restart, equal-token
+different-owner rejection, out-of-order concurrently snapshotted peer confirms,
+replay, reservation exhaustion, output bounds and destructor cleanup. The full
+synthetic password-based two-party exchange also passes this publication fence
+and exports the independently calculated PMK only after both confirmations.
+Kernel compile/import/stack checks instantiate the fence and both worker paths.
+
+This is a reusable confirmation fence, not a retained kernel work queue, full
+SAE state machine or proof of race-free live I/O. Native integration must retain
+owner/jobs, serialize every state operation, ensure proper worker handoff/drain,
+bind peer/mode/credentials to the same connection epoch, enforce deadlines,
+and revoke downstream EAPOL keys on leave/sleep/stop. Pending worker snapshots
+are wiped when drained/destroyed, not by concurrently writing into running jobs.
+
 ## Verified Sequoia credential envelope
 
 Matching local IO80211Family UUID: 0D5AC570-04D4-38B6-8577-9F21350CDD50.

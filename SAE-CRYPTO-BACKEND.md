@@ -231,3 +231,13 @@ updated ASan/UBSan userland tests and kernel compile/import checks pass.
 This removes the demonstrated missing-provider-call difference only. Status
 branches, provider arithmetic/allocator timing and complete H2E behavior still
 require side-channel analysis before any native password path is enabled.
+
+The shared-secret helper now rejects local random scalar 1 as well as 0,
+matching commit generation's [2,r-1] requirement. Boundary tests cover local
+0/1/order/above-order, unchanged output and wiped workspace; 0/1 cause no
+provider calls. ASan/UBSan userland checks pass. A compile-only entry now
+instantiates the complete password-to-PT-to-PWE H2E chain with a supplied
+HMAC callback, rather than just individual field operations. Kernel stack and
+import checks pass; this is not kernel execution or timing validation. The
+userland checker now explicitly depends on its SHA256/RSN headers so changes
+to those helpers cannot silently reuse an older test executable.
