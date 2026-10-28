@@ -42,7 +42,7 @@ is implemented and validated. Existing SHA256-PSK support is WPA2, not WPA3.
 | Stage | Required work | Evidence needed |
 | --- | --- | --- |
 | Credential transport | Correct 64-byte Sequoia envelope and no truncation/downgrade | Implemented host decoding/policy tests and native ABI assertions; live SAE credential delivery still unverified |
-| SAE backend | Audit usable kernel crypto exports or an audited portable backend; group/point/scalar validation and constant-time secret operations | Exact kernel binding plus independent cryptographic vectors; not inferred from SDK header presence/absence |
+| SAE backend | P-256 symbol subset binds on the inspected Sequoia CoreCrypto; actual ABI/backend and scalar/point behavior still need validation (SAE-CRYPTO-BACKEND.md) | Independent cryptographic vectors and runtime ABI/lifetime proof; symbol binding alone is insufficient |
 | SAE exchange | Password element derivation (including H2E), commit/confirm, peer validation, anti-clogging/group handling, retransmission/timeouts and PMK output | Independent SAE fixtures and management-frame state tests; no open-system auth substituted for SAE |
 | Queue/lifetime integration | Crypto work outside radio/WCL gates, cancellation/generation checks, retained context and secret retirement across sleep/stop | Production-method race/failure tests and real sleep/stop without deadlock or stale publication |
 | AKM 8 four-way | SAE-derived PMK, correct AKM-specific KDF, descriptor and MIC semantics, replay/reinstall handling | Independent AKM 8 fixtures; do not reuse AKM 6 behavior merely by changing its number |

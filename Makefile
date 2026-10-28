@@ -139,3 +139,25 @@ $(OBJS): src/kext/Ath10kDiagnostics.hpp
 
 # Follow actual transitive project/vendor includes, including ABI-only changes.
 -include $(OBJS:.o=.d)
+
+# Offline symbol availability probe only. It is not part of the driver bundle,
+# has no IOKit personality, never calls crypto, and refuses module start/stop.
+CRYPTO_PROBE_DIR := $(PROJ_ROOT)/build/sae-crypto-link-probe
+CRYPTO_PROBE_KEXT := $(CRYPTO_PROBE_DIR)/Ath10kCryptoLinkProbe.kext
+CRYPTO_PROBE_BIN := $(CRYPTO_PROBE_KEXT)/Contents/MacOS/Ath10kCryptoLinkProbe
+.PHONY: sae-crypto-link-probe
+sae-crypto-link-probe: check-sdk $(CRYPTO_PROBE_BIN)
+	$(PYTHON) scripts/check-kext-symbols.py "$(CRYPTO_PROBE_BIN)"
+
+$(CRYPTO_PROBE_DIR):
+	@mkdir -p $@
+
+$(CRYPTO_PROBE_DIR)/probe.o: tools/sae/corecrypto-link-probe.c Makefile | $(CRYPTO_PROBE_DIR)
+	$(CC) $(KFLAGS) -c $< -o $@
+
+$(CRYPTO_PROBE_BIN): $(CRYPTO_PROBE_DIR)/probe.o tools/sae/CoreCryptoLinkProbe.plist
+	@mkdir -p "$(CRYPTO_PROBE_KEXT)/Contents/MacOS"
+	cp tools/sae/CoreCryptoLinkProbe.plist "$(CRYPTO_PROBE_KEXT)/Contents/Info.plist"
+	$(LD) $(LDFLAGS) -o $@ $(CRYPTO_PROBE_DIR)/probe.o
+
+-include $(CRYPTO_PROBE_DIR)/probe.d

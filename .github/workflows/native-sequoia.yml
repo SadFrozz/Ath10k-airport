@@ -16,6 +16,8 @@ jobs:
         run: python3 scripts/audit-native-callbacks.py --check
       - name: Build native kext and validate imports
         run: make NATIVE=1 kext -j2
+      - name: Build offline crypto symbol probe (never load)
+        run: make sae-crypto-link-probe
       - name: Portable native protocol regressions
         run: python3 tests/run-development-tests.py
       - name: Host regressions with address and undefined-behavior sanitizers

@@ -720,3 +720,16 @@ for an unchanged build, seven after touching only the nested credential header,
 and six in the non-native build. All eight native objects emit .d files, and
 each C++ dependency file contains the credential header. Final native UUID is
 unchanged and is rechecked against the existing local auxiliary collection.
+
+
+## SAE backend symbol availability (2026-10-28)
+
+The separate Sequoia CoreCrypto image contains P-256 entries not visible in the
+earlier kernel-only search. SAE-CRYPTO-BACKEND.md records image UUIDs, twelve
+strong imports, exact auxiliary probe inclusion and a missing-export negative
+control. The isolated make target is built in CI, never loads and does not alter
+the normal Wi-Fi binary. Manual import/validation disassembly identifies heap
+workspace allocation, reinforcing outside-gate crypto-worker requirements.
+This establishes symbol availability for this image, not callable context ABI,
+P-256 correctness, actual SAE/PMF or macOS 11–26 support. Those original goal
+requirements remain incomplete. No Apple binary/header/assembly is redistributed.
