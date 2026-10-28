@@ -3,6 +3,19 @@
 #include "../Ath10kScanPlan.hpp"
 #include <WCL.hpp>
 #include <string.h>
+// Keep wire decoding separate from implemented authentication. In particular,
+// a 64-byte password slot is not a 32-byte PMK and must never be truncated.
+enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256 };
+inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join){
+    if(join.lowerAuth!=1)return NativeJoinAuth::Unsupported;
+    if(!join.upperAuth && !join.keyLength)return NativeJoinAuth::Open;
+    if(join.keyLength!=32 || (join.keyCipher!=6 && join.keyCipher!=7))return NativeJoinAuth::Unsupported;
+    if(join.upperAuth==(1u<<3))return NativeJoinAuth::PSK;
+    if(join.upperAuth==(1u<<10))return NativeJoinAuth::PSKSHA256;
+    // SAE/FT-SAE, enterprise and mixed requests remain unsupported until their
+    // complete authentication/protection paths exist. Never downgrade an AKM.
+    return NativeJoinAuth::Unsupported;
+}
 // Confirmed against Sequoia channelFlagsFromIEEEOperatingClass: 83=0x20c,
 // 84=0x0c, 116=0x214, 117=0x14, 119=0x314, 120=0x114, 128=0x410.
 // Add known DFS for the actual primary channel; an 80MHz operating class alone

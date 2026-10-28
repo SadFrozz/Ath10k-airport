@@ -457,8 +457,9 @@ struct JoinRequest {
     uint8_t ssid[32];
     uint32_t keyLength;
     uint32_t keyCipher;
+    uint16_t keyFlags;
     uint16_t keyIndex;
-    uint8_t key[32];
+    uint8_t key[64]; // Sequoia apple80211_key slot, including password material.
     uint8_t bssid[6];
     uint16_t channelSpec;
     uint16_t rsnLength;
@@ -515,7 +516,7 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     uint32_t keyLength = read32(p + 0x44);
     uint16_t rsnLength = read16(p + 0xd4);
     if (!count || count > 10 || !ssidLength || ssidLength > 32 ||
-        keyLength > 32 || rsnLength > 257 || length < 0x218 + size_t(count) * 18)
+        keyLength > sizeof(out.key) || rsnLength > 257 || length < 0x218 + size_t(count) * 18)
         return false;
     if (p[0x21c] & 1)
         return false;
@@ -531,6 +532,7 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     memcpy(out.ssid, p + 0x20, ssidLength);
     out.keyLength = keyLength;
     out.keyCipher = read32(p + 0x48);
+    out.keyFlags = read16(p + 0x4c);
     out.keyIndex = read16(p + 0x4e);
     memcpy(out.key, p + 0x50, keyLength);
     memcpy(out.bssid, p + 0x21c, 6);

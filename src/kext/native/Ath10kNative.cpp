@@ -655,6 +655,13 @@ IOReturn Ath10kPCIDevice::nativeLinkMetrics(AthNativeOp op,void *data) {
     default:return kIOReturnUnsupported;
     }
 }
+static_assert(sizeof(apple80211_key)==148 && sizeof(((apple80211_key *)nullptr)->key)==64,
+    "Sequoia credential slot must preserve all 64 bytes");
+static_assert(offsetof(apple80211_key,key)==16 && offsetof(apple80211_key,key_rsc_len)==80 &&
+    offsetof(apple80211_key,wowl_kck_len)==100 && offsetof(apple80211_key,wowl_kek_len)==120,
+    "Sequoia key validation/copy offsets");
+static_assert(APPLE80211_AUTHTYPE_WPA2_PSK==(1u<<3) && APPLE80211_AUTHTYPE_SHA256_PSK==(1u<<10),
+    "Native join policy auth selectors");
 static_assert(sizeof(apple80211_ht_capability)==32 && offsetof(apple80211_ht_capability,hc_id)==4,
     "Sequoia HT query contains version and the complete HT IE");
 static_assert(sizeof(apple80211_vht_capability)==20 && offsetof(apple80211_vht_capability,cap)==4,
@@ -795,11 +802,12 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(!AirportWCL::decodeJoin(data,0x2cc,join))return kIOReturnBadArgument;
         setProperty("Ath10kNativeJoinAuth",UInt64(join.upperAuth),32);
         setProperty("Ath10kNativeJoinChannel",UInt64(join.channelSpec&0xff),32);
-        const UInt8 selectedAKM=join.upperAuth==APPLE80211_AUTHTYPE_SHA256_PSK?6:2;
-        bool personal=join.upperAuth==APPLE80211_AUTHTYPE_WPA2_PSK || join.upperAuth==APPLE80211_AUTHTYPE_SHA256_PSK;
-        bool open=join.upperAuth==0 && join.keyLength==0 && join.lowerAuth==1;
-        if((!personal && !open) || (personal && (join.lowerAuth!=1 || join.keyLength!=32 || (join.keyCipher!=6 && join.keyCipher!=7)))){
-            setProperty("Ath10kNativeJoinReason","unsupported-authentication");
+        const auto auth=nativeJoinAuth(join);
+        const UInt8 selectedAKM=auth==NativeJoinAuth::PSKSHA256?6:2;
+        const bool personal=auth==NativeJoinAuth::PSK || auth==NativeJoinAuth::PSKSHA256;
+        if(auth==NativeJoinAuth::Unsupported){
+            setProperty("Ath10kNativeJoinReason",join.upperAuth&((1u<<12)|(1u<<13))?
+                "sae-pmf-not-implemented":"unsupported-authentication");
             AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;}
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
         if(_nativeJoinPending || _nativeScanPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}

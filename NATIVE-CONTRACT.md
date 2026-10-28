@@ -683,3 +683,40 @@ snapshots, unfamiliar/nested bodies and missing enum/dispatch entries are
 rejected. Unsupported callbacks remain explicitly marked as requiring caller
 evidence; this inventory does not prove they are optional. Lifecycle and
 non-inline overrides remain in the separate contract matrix above.
+
+
+## Sequoia credential slot / WPA3 prerequisite (2026-10-28)
+
+WCLJoinRequest's stock validator permits key_len 0..64, not only 32. The native
+key envelope and imported apple80211_key now preserve all 64 bytes while retaining
+the 148-byte key structure and RSC/WoW offsets. Join decoding also retains flags
+and index. A shared native authentication policy keeps decoding separate from
+support: only existing open and exact WPA2-PSK/PSK-SHA256 with 32-byte PMK/PMKSA
+are accepted; password, SAE/FT-SAE/mixed masks and enterprise cannot fall back
+to PSK or truncate a password into a PMK. SAE failure is identified explicitly,
+and the full temporary request is wiped.
+
+Tests execute the actual decoder/policy across 0/1/31/32/33/63/64-byte credentials,
+embedded zeros, PMK/PMKSA/MSK/password ciphers, exact and mixed auth masks, full
+candidate counts, all truncated lengths, >64/overflow lengths, malformed SSID/RSN
+lengths, invalid BSSIDs and null input. Canaries and unchanged output on rejected
+lengths check bounds; existing production security-lifecycle tests now wipe the
+expanded retained key slot. Native compiler assertions check 148-byte ABI, key
+offset 16, RSC length 80 and WoW length offsets 100/120.
+
+WPA3-CONTRACT.md records the matching stock validation/copy addresses and all
+remaining SAE/PMF implementation gates. No SAE/PMF success or capability is
+claimed; live WPA3 credential delivery and hardware security behavior are still
+unverified. The broader native lifecycle/compatibility goal remains open.
+
+
+Build integrity: Makefile now enables compiler-generated -MMD/-MP dependencies
+and includes object .d files, so nested vendor/SDK ABI edits cannot silently
+leave old object layouts. The current candidate already rebuilt all seven
+native C++ objects because a local native header also changed; this does not
+identify stale objects as the cause of any historical freeze. A real incremental
+build test verifies seven C++ compilations after initial Makefile update, zero
+for an unchanged build, seven after touching only the nested credential header,
+and six in the non-native build. All eight native objects emit .d files, and
+each C++ dependency file contains the credential header. Final native UUID is
+unchanged and is rechecked against the existing local auxiliary collection.
