@@ -12,6 +12,23 @@ class NativeLockOrder(unittest.TestCase):
             self.assertLess(body.index("drainControlWorkers();"),body.index("releaseWMIRuntime();"))
             self.assertLess(body.index("drainControlWorkers();"),body.index("stopDMAForRelease();"))
 
+    def test_sleep_interest_precedes_probe_and_barrier_excludes_pm_calls(self):
+        root=Path(__file__).resolve().parents[1]
+        driver=(root/"src/kext/Ath10kPCIDevice.cpp").read_text()
+        start=driver.split("bool Ath10kPCIDevice::start(IOService *provider)",1)[1].split("void Ath10kPCIDevice::deferredProbeCall",1)[0]
+        self.assertLess(start.index("preparePowerNotifications()"),start.index("thread_call_enter(_deferredProbeCall)"))
+        probe=driver.split("void Ath10kPCIDevice::runDeferredProbe()",1)[1].split("void Ath10kPCIDevice::cancelDeferredProbe()",1)[0]
+        self.assertLess(probe.index("IOLockLock(_probePowerLock)"),probe.index("powerIOBlocked()"))
+        self.assertLess(probe.index("powerIOBlocked()"),probe.index("probeTarget()"))
+        self.assertLess(probe.index("prepareNetwork()"),probe.rindex("IOLockUnlock(_probePowerLock)"))
+        self.assertLess(probe.rindex("IOLockUnlock(_probePowerLock)"),probe.index("PMinit()"))
+        free=driver.split("void Ath10kPCIDevice::free()",1)[1].split("\nvoid ",1)[0]
+        self.assertLess(free.index("super::free()"),free.index("IOLockFree(probePowerLock)"))
+        arm=driver.split("IOReturn Ath10kPCIDevice::controlWMIRuntime(",1)[1].split("void Ath10kPCIDevice::",1)[0]
+        self.assertLess(arm.index("powerIOBlocked()"),arm.index("setTimeoutMS(10)"))
+        shutdown=driver.split("void Ath10kPCIDevice::systemWillShutdown(",1)[1].split("void Ath10kPCIDevice::",1)[0]
+        self.assertLess(shutdown.index("requestPowerEvent(Ath10k::PowerEvent::DeviceOff)"),shutdown.index("super::systemWillShutdown"))
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()

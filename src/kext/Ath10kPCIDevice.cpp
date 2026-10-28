@@ -199,6 +199,14 @@ bool Ath10kPCIDevice::start(IOService *provider)
     validateRegisterLayer();
     dumpHardwareCandidates();
 
+    // Register sleep interest before the first firmware/DMA producer starts.
+    // Keep PM registration outside this lock: PM may call setPowerState().
+    _probePowerLock=IOLockAlloc();
+    if (!_probePowerLock || !getWorkLoop() || !preparePowerNotifications()) {
+        stop(provider);
+        return false;
+    }
+
     // Publish the service before the lengthy target/firmware probe. The probe
     // runs on a thread call so IOConfigThread can return and
     // macOS can finish booting while Wi-Fi initialization continues.
@@ -233,6 +241,14 @@ void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_
 
 void Ath10kPCIDevice::runDeferredProbe()
 {
+    // A priority sleep callback blocks new I/O before waiting here. If sleep
+    // won the race, do not start firmware or expose a newly initialized port.
+    IOLockLock(_probePowerLock);
+    if (powerIOBlocked()) {
+        IOLockUnlock(_probePowerLock);
+        ath10kSetRecoveryStatus(_pci, "probe-power-blocked", "Initialization deferred until a clean power recovery");
+        return;
+    }
     ATH10K_TRACE("Ath10kMac: deferred target probe begin\n");
     ath10kSetRecoveryStatus(_pci, "probe-running", "Firmware and runtime initialization are in progress");
     const char *probeFailure = "target-probe-did-not-run";
@@ -263,8 +279,9 @@ void Ath10kPCIDevice::runDeferredProbe()
         _wmiWorkLoop->runAction(controlWMIRuntime,this,const_cast<char *>("network-attach-failed"));
     // No worker runs until probeTarget has transferred its wake/DMA ownership.
     publishDiagnosticProperties();
-    if (_wmiLive.active && _wmiWorkLoop && !preparePowerNotifications())
-        _wmiWorkLoop->runAction(controlWMIRuntime,this,const_cast<char *>("power-notification-registration-failed"));
+    IOLockUnlock(_probePowerLock);
+    // PM registration can enable concurrent callbacks. They must be able to take
+    // the initialization barrier and the radio gate in that order.
     if (_wmiLive.active && _wmiWorkLoop) {
         PMinit();
         _powerManaged = true;
@@ -482,6 +499,8 @@ void Ath10kPCIDevice::free()
 #endif
     // Keep both queues alive through the base controller's timer/gate cleanup.
     // super::free() can destroy this object: use only saved local pointers after it.
+    IOLock *probePowerLock=_probePowerLock;
+    _probePowerLock=nullptr;
     IOWorkLoop *networkLoop=_networkWorkLoop;
     _networkWorkLoop=nullptr;
 #ifdef ATH10K_NATIVE
@@ -493,6 +512,7 @@ void Ath10kPCIDevice::free()
     if(nativeQueue)nativeQueue->release();
 #endif
     if(networkLoop)networkLoop->release();
+    if(probePowerLock)IOLockFree(probePowerLock);
 }
 
 bool Ath10kPCIDevice::prepareDeviceDMAMapper()
@@ -1057,7 +1077,7 @@ IOReturn Ath10kPCIDevice::controlWMIRuntime(OSObject *owner, void *reason,
         self->endWMIRuntime(static_cast<const char *>(reason));
         return kIOReturnSuccess;
     }
-    if (!self->_wmiLive.active || !self->_wmiTimer) return kIOReturnNotReady;
+    if (self->powerIOBlocked() || !self->_wmiLive.active || !self->_wmiTimer) return kIOReturnNotReady;
     if (self->_wmiTimer->setTimeoutMS(10)!=kIOReturnSuccess) {
         self->endWMIRuntime("runtime-timer-failed");
         return kIOReturnError;
@@ -1242,8 +1262,9 @@ IOReturn Ath10kPCIDevice::setPowerState(unsigned long state, IOService *device)
 
 void Ath10kPCIDevice::systemWillShutdown(IOOptionBits specifier)
 {
-    if (_wmiWorkLoop)
-        _wmiWorkLoop->runAction(controlWMIRuntime,this,const_cast<char *>("system-shutdown"));
+    // Shutdown can arrive before deferred firmware initialization finishes.
+    // Use the same producer barrier and immediate I/O block as system sleep.
+    requestPowerEvent(Ath10k::PowerEvent::DeviceOff);
     super::systemWillShutdown(specifier);
 }
 

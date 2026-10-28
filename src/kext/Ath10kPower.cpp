@@ -53,8 +53,13 @@ void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
     // Block new filter/timer/output work before waiting for the hardware gate.
     // The priority root notification does not return until existing work and
     // verified IRQ/reset quiescence finish, while PCI is still powered.
-    if(_wmiWorkLoop)_wmiWorkLoop->runAction(controlPowerState,this,
+    // Firmware initialization is not yet a runtime workloop action. Wait for
+    // it before quiescing DMA, including sleep before _wmiWorkLoop exists.
+    if(_probePowerLock)IOLockLock(_probePowerLock);
+    auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
+    if(loop)loop->runAction(controlPowerState,this,
         reinterpret_cast<void *>(static_cast<uintptr_t>(event)));
+    if(_probePowerLock)IOLockUnlock(_probePowerLock);
 }
 IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void *,void *,void *)
 {
@@ -70,10 +75,15 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
     }else return kIOReturnBadArgument;
     const bool suspended=p.rootSleeping || !p.deviceOn;
     if(suspended){
-        if(!self->_systemSuspended)++p.sleeps;
+        const bool firstSuspend=!self->_systemSuspended;
+        if(firstSuspend)++p.sleeps;
         self->_systemSuspended=true;p.needsRestart=true;
         OSCompareAndSwap(2,1,&self->_powerIOBlock);
         self->endWMIRuntime("suspended-awaiting-wake");
+        // A failed/partial firmware probe may never have made WMI active.
+        // Verify that no outstanding bootstrap DMA survives the first sleep.
+        // Repeated root/device notices must not touch an already powered-off PCI.
+        if(firstSuspend && !self->stopDMAForRelease())self->_dmaQuarantine=true;
         p.status=self->_dmaQuarantine?"suspended-dma-quarantined":"suspended-quiesced";
     }else{
         if(self->_systemSuspended)++p.wakes;
@@ -86,7 +96,10 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
             p.status=self->_dmaQuarantine?"wake-dma-quarantined":"wake-restart-required";
             self->_wmiLive.status=p.status;
         }else{
-            OSCompareAndSwap(1,0,&self->_powerIOBlock);p.status="active";
+            // A sleep/off request may already have raised the atomic block
+            // while waiting for this gate. An unrelated DeviceOn must not
+            // clear that intent before the suspend action records its state.
+            p.status=self->powerIOBlocked()?"suspend-pending":"active";
         }
     }
     self->publishPowerState();self->publishWMIRuntimeProperties();

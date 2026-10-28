@@ -72,6 +72,9 @@ private:
     // Atomic: 0 active, 1 suspending/suspended, 2 awake but clean restart required.
     volatile UInt32 _powerIOBlock=0;
     IONotifier *_powerNotifier=nullptr;
+    // Serializes deferred firmware/attach work with priority sleep quiescence.
+    // Never held across controller PM registration or notifier removal.
+    IOLock *_probePowerLock=nullptr;
     bool preparePowerNotifications();
     void releasePowerNotifications();
     bool powerIOBlocked();

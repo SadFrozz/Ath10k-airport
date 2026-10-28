@@ -1,6 +1,10 @@
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <chrono>
 #include "Ath10kPower.hpp"
 using IOReturn=int;using vm_size_t=unsigned long;
 constexpr int kIOReturnBadArgument=1,kIOReturnSuccess=0;
@@ -9,9 +13,11 @@ class Ath10kPCIDevice;using OSObject=Ath10kPCIDevice;using IOService=Ath10kPCIDe
 #define OSDynamicCast(type,p) (p)
 static void IOLog(const char *,...){}
 static bool OSCompareAndSwap(UInt32 old,UInt32 next,volatile UInt32 *address){
-    if(*address!=old)return false;
-    *address=next;return true;
+    return __sync_bool_compare_and_swap(address,old,next);
 }
+using IOLock=std::mutex;
+static void IOLockLock(IOLock *lock){lock->lock();}
+static void IOLockUnlock(IOLock *lock){lock->unlock();}
 struct IONotifier{bool removed=false;void remove(){removed=true;}};
 static IONotifier notifier;static bool registrationFail=false;static unsigned registrations=0;
 using Handler=IOReturn(*)(void *,void *,UInt32,IOService *,void *,vm_size_t);
@@ -27,9 +33,13 @@ class Ath10kPCIDevice{
  MockPCI mockPCI;MockPCI *_pci=&mockPCI;
 public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
+ IOLock probeLock;IOLock *_probePowerLock=&probeLock;
+ Gate *getWorkLoop(){return &loop;}
  Ath10k::PowerState _power{};volatile UInt32 _powerIOBlock=0;
  IONotifier *_powerNotifier=nullptr;bool _systemSuspended=false,_dmaQuarantine=false;
  struct{bool active=true;const char *status="active";} _wmiLive;
+ unsigned dmaChecks=0;bool dmaSafe=true;
+ bool stopDMAForRelease(){assert(loop.inside && pciPowered);++dmaChecks;return dmaSafe;}
  unsigned resets=0,published=0;bool resetQuarantines=false,pciPowered=true;
  bool preparePowerNotifications();void releasePowerNotifications();bool powerIOBlocked();bool powerRestartAllowed();
  void requestPowerEvent(Ath10k::PowerEvent);void publishPowerState();
@@ -81,6 +91,14 @@ int main(){
  Ath10kPCIDevice cancel;cancel.requestPowerEvent(PowerEvent::SystemSleep);
  cancel.requestPowerEvent(PowerEvent::SleepCancelled);
  assert(!cancel._systemSuspended && cancel._power.needsRestart && cancel.powerIOBlocked());
+ // DeviceOn can win the gate after a sleep callback raised the block but
+ // before that callback recorded rootSleeping. Keep the pending intent.
+ Ath10kPCIDevice pending;pending._powerIOBlock=1;
+ pending.requestPowerEvent(PowerEvent::DeviceOn);
+ assert(pending.powerIOBlocked() && !pending._power.needsRestart && !strcmp(pending._power.status,"suspend-pending"));
+ pending.requestPowerEvent(PowerEvent::SystemSleep);
+ pending.requestPowerEvent(PowerEvent::SystemWake);
+ assert(pending.powerRestartAllowed() && pending.resets==1);
  // Initial DeviceOn and unsolicited wake never stop a running connection.
  Ath10kPCIDevice initial;initial.requestPowerEvent(PowerEvent::DeviceOn);
  initial.requestPowerEvent(PowerEvent::SystemWake);initial.requestPowerEvent(PowerEvent::SleepCancelled);
@@ -89,5 +107,28 @@ int main(){
  Ath10kPCIDevice fail;fail.resetQuarantines=true;fail.requestPowerEvent(PowerEvent::SystemSleep);
  fail.requestPowerEvent(PowerEvent::SystemWake);
  assert(fail._dmaQuarantine && fail.powerIOBlocked() && !strcmp(fail._power.status,"wake-dma-quarantined"));
+
+ // Sleep during bootstrap blocks I/O immediately, then waits for the producer
+ // to relinquish initialization ownership before touching the radio or acking.
+ // There is no WMI workloop yet; the controller loop is the required fallback.
+ Ath10kPCIDevice boot;boot._wmiWorkLoop=nullptr;boot._wmiLive.active=false;
+ boot.probeLock.lock();std::atomic<bool> callbackDone{false};
+ IOPowerStateChangeNotification bootNote;bootNote.powerRef=&boot;acked=nullptr;
+ std::thread sleeper([&]{boot.powerNotification(&boot,nullptr,kIOMessageSystemWillSleep,nullptr,&bootNote,sizeof(bootNote));callbackDone=true;});
+ const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+ while(!boot.powerIOBlocked() && std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+ assert(boot.powerIOBlocked() && !callbackDone && !acked);
+ // This point models the last bootstrap DMA producer leaving the barrier.
+ boot.probeLock.unlock();sleeper.join();
+ assert(callbackDone && acked==&boot && boot.dmaChecks==1 && boot._systemSuspended && !boot.resets);
+ // Partial bootstrap DMA which cannot be verified stays quarantined at wake.
+ Ath10kPCIDevice partial;partial._wmiLive.active=false;partial.dmaSafe=false;
+ partial.requestPowerEvent(PowerEvent::SystemSleep);
+ assert(partial.dmaChecks==1 && partial._dmaQuarantine);
+ partial.pciPowered=false;partial.requestPowerEvent(PowerEvent::DeviceOff);
+ partial.requestPowerEvent(PowerEvent::SystemSleep);assert(partial.dmaChecks==1);
+ partial.pciPowered=true;partial.requestPowerEvent(PowerEvent::DeviceOn);
+ partial.requestPowerEvent(PowerEvent::SystemWake);
+ assert(partial._dmaQuarantine && partial.powerIOBlocked());
  registrationFail=true;Ath10kPCIDevice alloc;assert(!alloc.preparePowerNotifications() && !alloc._powerNotifier);
 }
