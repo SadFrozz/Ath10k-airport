@@ -234,6 +234,15 @@ struct ConnectionState {
     RXSecurityDiagnostics rxSecurity{};
     const char *error="none";
 };
+// Shared by BSD admission, direct data submission and deferred queue wakeup.
+// A wake must remain pending until all temporary admission blockers clear.
+inline bool dataTXAdmissionOpen(const ConnectionState &s){
+    return s.stage==LinkStage::Connected && s.portAuthorized && !s.cancelRequested &&
+        s.disconnect==DisconnectStage::None && !s.maintenance.blocked && !s.eapolPause &&
+        !s.spectrum.pending && !s.spectrum.inFlight && !s.probe.active && !s.csa.blocked &&
+        !s.radio.blocked && !s.radio.powerBlocked && !s.txOwned && !s.txPauseMask &&
+        s.dataPending<kDataTxSlots;
+}
 // Association survives a controlled-port closure during key replacement.
 inline bool connectionAssociated(const ConnectionState &s){
     return s.stage==LinkStage::Connected && s.disconnect==DisconnectStage::None && !s.cancelRequested;

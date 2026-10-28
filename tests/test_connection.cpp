@@ -430,10 +430,10 @@ static void pauseTests(){
     p=captured;p[14]=229;assert(parse(p,s) && !s.txPauseMask);
     p=captured;p.insert(p.end(),captured.begin()+12,captured.end());p[2]=52;assert(parse(p,s) && !s.txPauseMask);
     p=captured;p[1]=2;p[4]=8;p[2]=36;p.insert(p.end(),{1,4,0,0,2,3,0,0});assert(parse(p,s) && !s.txPauseMask);
-    ConnectionDriver d;d.connect();d.deliver(2,captured);d.tick(1800);
+    ConnectionDriver d;d.connect();d.queueEnabled=true;d.deliver(2,captured);d.tick(1800);
     assert(d.networkUp && d._wmiLive.active && d._connection.txPauseMask==2);
     d.deliver(2,pauseEvent(1));d.tick(1810);
-    assert(d.networkUp && d._wmiLive.active && !d._connection.txPauseMask && !d._connection.txWakePending);
+    assert(d.networkUp && d._wmiLive.active && !d._connection.txPauseMask && !d._connection.txWakePending && d.queue.wakes==1);
     d.releaseWMIRuntime();
 }
 static void peerMapTests(){
@@ -889,7 +889,29 @@ static void partialCancelTests(){
 }
 
 #if !defined(ATH10K_CHANNEL_SWITCH_TEST) && !defined(ATH10K_AP_MAINTENANCE_TEST)
+static void deferredDataWakeTests(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;
+    d.queueEnabled=true;d._dataTXStalled=true;
+    s.eapolPause=true;s.txWakePending=true;
+    assert(!d.serviceConnection(1800));
+    assert(!d.queue.wakes && s.txWakePending && d._dataTXStalled);
+    UInt8 frame[64]{};frame[12]=8;
+    assert(d.submitDataPacket(frame,sizeof(frame),1801));
+    assert(!s.dataPending); // Direct submission obeys the same EAPOL hold.
+    s.eapolPause=false;d.queueEnabled=false;
+    assert(!d.serviceConnection(1810));assert(s.txWakePending && d._dataTXStalled);
+    d.queueEnabled=true;
+    assert(!d.serviceConnection(1820));
+    assert(d.queue.wakes==1 && !s.txWakePending && !d._dataTXStalled);
+    // A stalled BSD queue must recover even without a new completion/WAKE event.
+    d._dataTXStalled=true;s.eapolPause=true;
+    assert(!d.serviceConnection(1830));assert(d.queue.wakes==1 && d._dataTXStalled);
+    s.eapolPause=false;
+    assert(!d.serviceConnection(1840));assert(d.queue.wakes==2 && !d._dataTXStalled);
+    d.releaseWMIRuntime();
+}
 int main(){
+    deferredDataWakeTests();
     partialCancelTests();
     blockAckTests();
     htTests();

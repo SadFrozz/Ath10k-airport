@@ -423,7 +423,7 @@ UInt32 Ath10kPCIDevice::outputPacket(mbuf_t packet,void *)
     if(powerIOBlocked() || !_networkLinkUp || !_networkEnabled || !_wmiLive.active || _connection.stage!=Ath10k::LinkStage::Connected){
         freePacket(packet);return kIOReturnOutputDropped;
     }
-    if(!_connection.portAuthorized || _connection.maintenance.blocked || _connection.eapolPause || _connection.spectrum.pending || _connection.spectrum.inFlight || _connection.probe.active || _connection.csa.blocked || _connection.radio.blocked || _connection.radio.powerBlocked || _connection.txOwned || _connection.txPauseMask || _connection.dataPending>=Ath10k::kDataTxSlots){
+    if(!Ath10k::dataTXAdmissionOpen(_connection)){
         _dataTXStalled=true;
         ++_connection.dataStalls;
         if(_connection.txOwned || _connection.eapolPause || !_connection.portAuthorized)++_connection.stallManagement;
@@ -644,9 +644,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(!s.txManagement && getOutputQueue())getOutputQueue()->service(1); // IOBasicOutputQueue::kServiceAsync, avoid recursive output
         }else if(nowMs-s.txSinceMs>=5000)return "packet-completion-timeout";
     }
-    if(s.txWakePending && !s.probe.active && !s.txPauseMask && !s.csa.blocked && !(s.radio.blocked || s.radio.powerBlocked) && !s.txOwned){
-        s.txWakePending=false;
-        if(getOutputQueue())getOutputQueue()->service(1);
+    if((s.txWakePending || _dataTXStalled) && Ath10k::dataTXAdmissionOpen(s) && getOutputQueue()){
+        s.txWakePending=false;_dataTXStalled=false;
+        getOutputQueue()->service(1);
     }
     if(s.stats.step){const char *error=serviceStatsMaintenance(nowMs);if(error)return error;if(s.stats.step)return nullptr;}
     if(s.radio.step){const char *error=serviceRadioMaintenance(nowMs);if(error)return error;if(s.radio.step || s.radio.blocked)return nullptr;}
@@ -1164,8 +1164,7 @@ const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UIn
 {
     auto &s=_connection;
     if(powerIOBlocked() || !data || bytes<14 || bytes>Ath10k::kEthernetFrameMax || !Ath10k::ethernetFrameAllowed(data,bytes) || !_wmiLive.active || _dmaQuarantine ||
-       s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized || s.disconnect!=Ath10k::DisconnectStage::None ||
-       s.txOwned || s.maintenance.blocked || s.spectrum.pending || s.spectrum.inFlight || s.probe.active || s.txPauseMask || s.csa.blocked || (s.radio.blocked || s.radio.powerBlocked) || s.dataPending>=Ath10k::kDataTxSlots)return "data-tx-not-ready";
+       !Ath10k::dataTXAdmissionOpen(s))return "data-tx-not-ready";
     const UInt8 tid=Ath10k::txPriorityTID(s,data,bytes);
     if(tid==255){++s.txAdmissionDropped;return nullptr;}
     UInt32 index=0;while(index<Ath10k::kDataTxSlots && s.dataTX[index].owned)++index;
@@ -1293,8 +1292,8 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
             }
         }
     }
-    if(wake && _dataTXStalled && !s.probe.active && !s.txPauseMask && !s.csa.blocked && !(s.radio.blocked || s.radio.powerBlocked) && !s.txOwned &&
-       s.dataPending<=Ath10k::kDataTxSlots*3/4 && s.disconnect==Ath10k::DisconnectStage::None && getOutputQueue()){
+    if(wake && _dataTXStalled && Ath10k::dataTXAdmissionOpen(s) &&
+       s.dataPending<=Ath10k::kDataTxSlots*3/4 && getOutputQueue()){
         _dataTXStalled=false;++_perf.txWakeups;getOutputQueue()->service(1);
     }
     return nullptr;

@@ -617,3 +617,21 @@ Authenticated established M3/M4 retry state and committed key operations remain
 intact. Focused production-class and actual supplicant tests exercise clearing
 and a successful authenticated group rekey after candidate cancellation. This
 is a confirmed ordering defect, not proof of the cause of a hardware hang.
+
+## Deferred BSD transmit wakeup (2026-10-28)
+
+The output path stalled during EAPOL holds, but serviceConnection consumed a
+firmware WAKE notification without checking that hold or even the presence of
+an output queue. Clearing the hold later did not guarantee another completion
+event. The queue could therefore remain stopped while the association stayed up.
+
+A shared dataTXAdmissionOpen predicate now gates BSD admission, direct data
+submission and deferred wakeup. It includes controlled-port, cancellation,
+EAPOL, management/radio/firmware pause and slot-capacity checks. Service keeps
+wakeup intent until an output queue exists and all blockers clear; an existing
+BSD stall also triggers reconsideration without a new hardware event. Production
+connection tests exercise overlapping EAPOL/WAKE, a temporarily absent queue,
+direct submission during the hold and recovery with no new completion event.
+The development/CI runner now also includes the pre-existing TX watchdog,
+security-disconnect and RX-security diagnostic scenarios. Hardware diagnosis
+remains outstanding; this source-level defect is not proof of a hang cause.
