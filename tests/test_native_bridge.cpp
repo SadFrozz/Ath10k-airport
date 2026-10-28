@@ -21,6 +21,8 @@ struct Gate {
 };
 class Ath10kPCIDevice:public OSObject {
 public:
+ bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
+ bool _nativeStarted=true,_nativeReadyRequested=true,_nativeReadyPublished=false;
  bool _nativeStopping=false,_nativeServicePending=false,_nativeMACWaiting=false;
  IOReturn _nativeMACResult=kIOReturnSuccess;
  void *_nativeServiceCall=this;unsigned services=0;
@@ -45,10 +47,16 @@ int main(){
  d.nativeServiceThread(&d,nullptr);assert(d.services==1 && !d._nativeServicePending);
  d.requestNativeService();assert(scheduled==2);
  Ath10kPCIDevice inactive;inactive._wmiLive.active=false;inactive.requestNativeService();inactive.nativeServiceThread(&inactive,nullptr);assert(!inactive.services);
- Ath10kPCIDevice unattached;unattached._nativeServiceCall=nullptr;unattached.requestNativeService();assert(scheduled==3);
+ inactive._nativeWasUp=true;inactive.requestNativeService();inactive.nativeServiceThread(&inactive,nullptr);assert(inactive.services==1);
+ Ath10kPCIDevice unattached;unattached._nativeServiceCall=nullptr;unattached.requestNativeService();assert(scheduled==4);
  Ath10kPCIDevice stopping;stopping.requestNativeService();stopping._nativeMACWaiting=true;
  stopping.stopNativeRequests();assert(stopping._nativeStopping && !stopping._nativeServiceCall && !stopping._nativeServicePending && stopping._nativeMACResult==kIOReturnAborted && cancelled==1 && freed==1);
  stopping.stopNativeRequests();assert(cancelled==1 && freed==1);
+ Ath10kPCIDevice starting;starting._nativeStarted=false;unsigned before=scheduled;
+ starting.requestNativeService();assert(scheduled==before);
+ starting._nativeStarted=true;starting._nativeReadyRequested=false;
+ starting.requestNativeService();assert(scheduled==before);
+ starting._nativeReadyPublished=true;starting.requestNativeService();assert(scheduled==before+1);
  assert(Ath10kPCIDevice::nativeServiceRadioAction(nullptr,nullptr,nullptr,nullptr,nullptr)==kIOReturnBadArgument);
  assert(Ath10kPCIDevice::nativeServiceWCLAction(nullptr,nullptr,nullptr,nullptr,nullptr)==kIOReturnNotReady);
 }

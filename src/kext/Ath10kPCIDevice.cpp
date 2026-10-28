@@ -1193,6 +1193,12 @@ void Ath10kPCIDevice::endWMIRuntime(const char *reason)
     IOLog("Ath10kMac: WMI RUNTIME STOP reason=%s polls=%u rx=%u irq-stop=%s reset=%s\n",
           reason,_wmiLive.polls,_wmiLive.rxCount,irqOK?"yes":"no",resetOK?"yes":"no");
     publishDiagnosticProperties();
+#ifdef ATH10K_NATIVE
+    // DMA/IRQ are quiesced above. Report failure through WCL even though the
+    // radio timer is now stopped; never leave a native scan/link hanging.
+    if(_nativeScanPending){_wmiScan.failed=true;_wmiScan.completed=true;}
+    requestNativeService();
+#endif
 }
 
 void Ath10kPCIDevice::releaseWMIRuntime()

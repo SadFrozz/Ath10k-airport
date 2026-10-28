@@ -82,3 +82,13 @@ do not treat host tests as proof for those scenarios.
 
 Thread-call cancellation/ONCE semantics checked against Apple's Sequoia-era XNU:
 https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/thread_call.c
+
+Startup guard: do not schedule the WCL bridge until the native protocol has
+started and BSD binding has requested readiness. This prevents the new bridge
+from overlapping the initial synchronous BSD/WCL binding in the opposite order.
+
+Runtime-failure audit: after IRQ/DMA quiescence, a pending native scan is marked
+failed/completed and a terminal WCL service is queued even with the radio timer
+stopped. The bridge permits this inactive-radio failure notification when a
+scan/join/link needs completion, while suppressing new availability announcements.
+MAC failure wakeups schedule terminal delivery after releasing their wait state.

@@ -34,3 +34,9 @@ class NativeLockOrder(unittest.TestCase):
         self.assertNotIn("postMessage(_nativeInterface",before)
         self.assertNotIn("postMessage(_nativeInterface",after)
         self.assertIn("THREAD_CALL_OPTIONS_ONCE",native)
+
+    def test_runtime_failure_schedules_terminal_notifications(self):
+        source=(Path(__file__).resolve().parents[1]/"src/kext/Ath10kPCIDevice.cpp").read_text()
+        end=source.split("void Ath10kPCIDevice::endWMIRuntime(",1)[1].split("void Ath10kPCIDevice::releaseWMIRuntime()",1)[0]
+        self.assertLess(end.index("quiesceTargetAfterBMI()"),end.index("requestNativeService()"))
+        self.assertIn("_wmiScan.failed=true;_wmiScan.completed=true",end)

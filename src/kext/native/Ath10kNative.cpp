@@ -199,7 +199,7 @@ IONetworkInterface *Ath10kPCIDevice::createInterface() {
     OSSafeReleaseNULL(interface);return nullptr;
 }
 bool Ath10kPCIDevice::prepareNativeInterface() {
-    _nativeStopping=false;
+    _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=false;
     _nativeServiceCall=thread_call_allocate_with_options(nativeServiceThread,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
     if(!_nativeServiceCall)return false;
     bcopy(_wmiInit.mac,_nativeMACCurrent,6);_nativeMACValid=true;
@@ -331,7 +331,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             endWMIRuntime("native-mac-transaction-interrupted");
             _nativeMACResult=kIOReturnTimeout;_nativeMACActive=false;
         }
-        _nativeMACWaiting=false;return _nativeMACResult;}
+        _nativeMACWaiting=false;if(!_wmiLive.active)requestNativeService();return _nativeMACResult;}
 
     case N::NativeReady:{
         if(!_nativeStarted || !_nativeInterface || !_networkInterface)return kIOReturnNotReady;
@@ -472,7 +472,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
 // WCL first, then the network gate. PostOffice and interface callbacks therefore
 // use the same WCL -> network order as reportDataPathEvents and native IOCTLs.
 void Ath10kPCIDevice::requestNativeService() {
-    if(_nativeStopping || !_nativeServiceCall || _nativeServicePending)return;
+    if(_nativeStopping || !_nativeStarted || (!_nativeReadyRequested && !_nativeReadyPublished) || !_nativeServiceCall || _nativeServicePending)return;
     _nativeServicePending=true;thread_call_enter(_nativeServiceCall);
 }
 void Ath10kPCIDevice::nativeServiceThread(thread_call_param_t context,thread_call_param_t) {
@@ -488,7 +488,7 @@ IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
     self->_nativeServicePending=false;
-    if(self->_nativeStopping || !self->_wmiLive.active)return kIOReturnNotReady;
+    if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending))return kIOReturnNotReady;
     self->serviceNative(Ath10k::uptimeNS()/1000000u);return kIOReturnSuccess;
 }
 
@@ -501,7 +501,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         sec->cachedGeneration=_wmiScan.generation;
     }
     auto post=[&](UInt32 id,void *payload,size_t bytes){postMessage(_nativeInterface,id,payload,bytes,true);};
-    if(_nativeReadyRequested && !_nativeReadyPublished){
+    if(_nativeReadyRequested && !_nativeReadyPublished && _wmiLive.active){
         UInt32 reset=1;post(AirportWCL::ResetInterface,&reset,sizeof(reset));
         AirportWCL::DriverAvailability ready{};ready.version=3;ready.available=1;ready.reason=0xe0821803;
         post(AirportWCL::DriverAvailable,&ready,sizeof(ready));
