@@ -84,7 +84,8 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
        b.rsnLength>sizeof(b.rsn) || b.countryLength>sizeof(b.country))return 0;
     if(b.rsnLength && !AirportWCL::validIEs(b.rsn,b.rsnLength))return 0;
     if(capacity<sizeof(AirportWCL::BeaconMetadata)+800)return 0;
-    auto m=reinterpret_cast<AirportWCL::BeaconMetadata *>(buffer);bzero(m,sizeof(*m));
+    // The byte buffer may be unaligned inside Connection/Native objects.
+    AirportWCL::BeaconMetadata metadata{};auto m=&metadata;
     unsigned ch=b.advertisedChannel?b.advertisedChannel:b.rxChannel;
     m->channel=ch;m->channelSpec=UInt16(ch|(ch<=14?0x1000:0xd000));
     m->ssidLength=b.ssidLength;bcopy(b.ssid,m->ssid,b.ssidLength);bcopy(b.bssid,m->bssid,6);
@@ -103,7 +104,7 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
     if(b.countryPresent)ie(7,b.country,b.countryLength);
     // Keep the original RSN advertisement intact. Unsupported WPA3/PMF joins
     // are explicitly rejected rather than rewriting the AP's security policy.
-    m->ieLength=bytes;return sizeof(*m)+bytes;
+    m->ieLength=bytes;bcopy(m,buffer,sizeof(*m));return sizeof(*m)+bytes;
 }
 
 // Both WCL channel queries use the same physical plan and regulatory limits.

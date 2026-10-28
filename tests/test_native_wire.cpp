@@ -160,9 +160,18 @@ int main(){
  scan.bssid[0]=2;assert(!nativeScanMatches(scan,b));memcpy(scan.bssid,b.bssid,6);assert(nativeScanMatches(scan,b));
  scan.channelCount=1;scan.channels[6/8]|=1<<(6%8);assert(nativeScanMatches(scan,b));scan.channels[0]=0;assert(!nativeScanMatches(scan,b));
  scan.channelCount=0;scan.ssidLength=4;memcpy(scan.ssid,"nope",4);assert(!nativeScanMatches(scan,b));memcpy(scan.ssid,"test",4);assert(nativeScanMatches(scan,b));
- UInt8 bytes[1700];memset(bytes,0x5a,sizeof(bytes));auto n=nativeBSSMessage(b,bytes,1600);assert(n>sizeof(AirportWCL::BeaconMetadata));
+ alignas(AirportWCL::BeaconMetadata) UInt8 bytes[1700];memset(bytes,0x5a,sizeof(bytes));auto n=nativeBSSMessage(b,bytes,1600);assert(n>sizeof(AirportWCL::BeaconMetadata));
  auto m=reinterpret_cast<AirportWCL::BeaconMetadata *>(bytes);assert(m->channel==6 && m->ssidLength==4 && m->rssi==-55);
  assert(m->flags==AirportWCL::RSSIValid);
+ // The production buffer can have any byte alignment. Compare exact wire
+ // bytes and decode into an aligned object rather than casting that buffer.
+ alignas(AirportWCL::BeaconMetadata) UInt8 unaligned[1704];
+ for(unsigned offset=0;offset<alignof(AirportWCL::BeaconMetadata);++offset){
+  memset(unaligned,0x5a,sizeof(unaligned));assert(nativeBSSMessage(b,unaligned+offset,1600)==n);
+  assert(!memcmp(unaligned+offset,bytes,n));AirportWCL::BeaconMetadata decoded{};
+  memcpy(&decoded,unaligned+offset,sizeof(decoded));assert(decoded.channel==6 && decoded.rssi==-55);
+  assert(unaligned[offset+1600]==0x5a);
+ }
  b.hidden=true;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==(AirportWCL::RSSIValid|AirportWCL::SSIDPresent));
  b.hidden=false;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==AirportWCL::RSSIValid);
  assert(AirportWCL::validIEs(bytes+sizeof(*m),m->ieLength));assert(n==sizeof(*m)+m->ieLength);assert(bytes[1600]==0x5a);

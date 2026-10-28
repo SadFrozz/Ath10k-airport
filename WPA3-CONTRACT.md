@@ -304,7 +304,9 @@ or the receiver's PMF replay state: those still require acknowledged key epochs.
 The key-result fields describe the last successful key result only; callers
 must dispatch on Result first, and honor change bits to avoid installing an
 unchanged key. No M4/group-ack result alone authorizes the controlled port. The
-native adapter does not yet consume the management result/mask or program IGTK.
+native adapter does not yet consume the management result/mask or activate
+software IGTK epochs. Firmware IGTK installation is not presumed necessary;
+the ath10k reference below explicitly handles BIP keys in software.
 RSN/PMKID/RSNX association integration and protected RX/TX/SA Query remain open.
 
 This work reproduced a shared WPA2/SAE bug: M3 copied candidate keys to the
@@ -331,6 +333,142 @@ this is not proof of complete kernel call-stack depth or runtime behavior.
 Reference descriptor/MIC/KDF selection:
 https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/src/common/wpa_common.c
 https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/src/common/defs.h
+
+### PMF transport evidence and bounded SA Query (local, not dispatched)
+
+The Linux v6.12 ath10k set_key path explicitly returns software handling for
+AES-CMAC/BIP keys, before checking the firmware's data-key index limit. Do not
+invent an INSTALL_KEY command for IGTK indices 4/5 or wait for an HTT data-key
+acknowledgement that the reference does not use. Authenticated IGTK delivery
+must instead activate a software PMF key epoch, with retained IPN and stale-job
+checks, coordinated with the data-key transaction before port authorization.
+The existing `PMFKeyEpochs`/BIP disconnect helpers remain unwired to native RX.
+
+The reference WMI path reports protected PMF action/deauth/disassoc frames as
+decrypted but retains their IV/MIC layout for mac80211's subsequent processing.
+It excludes WEP authentication from that assumption. This does not establish
+integrity/replay verification in our current WMI path; simply clearing Protected
+and dispatching the body at offset 24 would be incorrect. Native integration
+must identify the current pairwise key epoch, handle IV/MIC, verify PN/integrity,
+and reject stale crypto completion before using any protected management body.
+Essential management RX is carried via WMI; duplicate HTT copies must not create
+a second state transition. Protected management TX is also still unimplemented.
+Reference paths (mac.c: set_key/peer_assoc_h_crypto; wmi.c: mgmt_rx):
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/mac.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/wmi.c
+
+The reviewed QCA9377 firmware WLAN.TF.2.1-00021-QCARMSWP-1 container has SHA256
+8f8b002fccfe81d42238f27dd1f56d189604f180bd4772c7c8e75ae1fef16f01 and feature IE
+hex c0: feature 12 (MFP_SUPPORT) is not declared. Linux guards its peer PMF flag
+with that feature but advertises MFP_CAPABLE separately. Missing bit 12 alone
+therefore proves neither working PMF nor the need to replace firmware. VDEV/peer
+flags, PMF QoS setup and actual RX/TX layout require verification for this TLV
+profile before native SAE admission can be enabled.
+
+`Ath10kSAQuery.hpp` adds a serialized, allocation-free client coordinator and
+ordinary 28-byte SA Query frame construction/admission. Incoming plaintext must
+be accompanied by caller-verified integrity/replay and matching connection/PTK
+epochs; Protected alone cannot admit it. Frames must have expected unicast
+receiver, AP source/BSSID, action category 8, request/response code, no DS,
+fragment or ordered header. OCV/OCI extensions are explicitly unsupported.
+Outgoing frames are plaintext templates still requiring PTK encryption, sequence
+and PN assignment; setting Protected here does not implement protection.
+
+Unprotected unicast deauth/disassoc reasons 6/7 may trigger a bounded query only
+for an authorized PMF association; they never authorize disconnect themselves.
+Other unprotected robust frames and group triggers are rejected by this helper.
+Native RX must still apply the full PMF drop policy. Each query has a fixed
+1000-TU deadline, 201-TU retry interval and at most five attempts. Repeated
+triggers do not extend it; starts are limited to one per ten seconds per binding.
+Random two-byte IDs are caller supplied, distinct within the submitted set, and
+only admitted after the protected TX path accepts them. An RX response may match
+any submitted ID; reserved/failed TX IDs do not complete the query. Owner/serial,
+connection/key epoch and actual TX-admission checks reject mutated/stale tickets;
+clear/rebind invalidates pending work without resetting the monotonic serial.
+Backward clocks fail the procedure and retry arithmetic cannot overflow.
+
+ASan/UBSan tests cover wire fixtures, authentication/replay/epoch/identity guards,
+protected/header/fragment rules, unchanged outputs on rejection, reason-code
+triggers, TX handoff failures, old and multiple submitted IDs, duplicate IDs,
+fixed deadlines/rate limiting, cancellation/rebind, cross-owner tickets and
+near-UINT64_MAX timestamps. A kernel compile-only entry instantiates receive,
+TX admission/submission and retry paths with arbitrary existing state. No native
+query timer, protected TX, WMI RX normalization or disconnect policy is enabled
+by this software coordinator; PMF/WPA3 hardware interoperability remains open.
+Reference retry/timeout/response semantics:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/wpa_supplicant/sme.c
+
+### Pairwise CCMP-128 management authentication (local, not dispatched)
+
+`Ath10kPMFCCMP.hpp` implements AES-CCM for nonfragmented unicast robust
+management with an ordinary 24-byte header, key index 0 and an 8-byte MIC.
+Its 13-byte nonce is management flag 0x10 || transmitter || big-endian PN.
+AAD retains management subtype/addresses, masks Retry/Power/MoreData and the
+sequence number, and uses the 22-byte header AAD length. Deauth/disassoc and
+robust action bodies are supported; known nonrobust action categories reject.
+DS/fragment/ordered headers, group addresses, wrong local/AP/BSSID binding,
+missing Protected, reserved CCMP bits, other key indices, zero/replayed PN,
+wrong lengths and invalid MIC reject without publishing a plaintext result.
+
+The receive API has two explicit layouts: wire ciphertext, and plaintext body
+with the ORIGINAL encrypted CCMP tag/IV retained. Both independently authenticate
+the body/tag with AES-CCM. The second layout is a software contract, not an
+assertion about this QCA9377 firmware: actual WMI byte layout must be measured
+before selecting it. An already-decrypted body with an absent/rewritten tag or
+IV is not silently trusted. RX normalization must also reject firmware CRC,
+decryption, MIC or key-cache errors before invoking this path.
+
+`protect` constructs complete CCMP ciphertext/tag from a protected plaintext
+header/body and a caller-reserved nonzero 48-bit PN. The transport must preserve
+these bytes without encrypting them again. No TX PN allocator, raw/HTT mode
+selection, hardware management encryption or actual frame submission is supplied
+by this helper. Failed encryption/submission must consume its PN. Extended key
+IDs, fragmentation/reassembly, CCMP-256 and GCMP remain unsupported profiles.
+
+A caller-owned workspace stages plaintext/ciphertext, CBC state and counters;
+it is wiped after every admitted attempt, including provider failure. Publication
+occurs only after the entire authenticated operation succeeds. Input, result and
+workspace must be disjoint; output/workspace alias checks precede workspace use.
+Bounds/layout/alias failures leave the old result intact. AES provider calls
+must run outside driver gates with a retained key snapshot/workspace.
+
+`PMFPairwiseEpoch` supplies a separate management RX replay domain. It activates
+a PTK only after installation acknowledgement, and snapshots key, local/AP,
+connection, monotonic epoch and current PN. Same-key delivery preserves epoch/PN;
+reusing the live key for a different binding rejects. Owner-gated commit checks
+the current epoch/connection and live PN again, then publishes `PMFVerifiedRX`
+for SA Query. Clear/key rotation invalidates old snapshots. The caller must
+commit only after successful CCMP verification with that same immutable snapshot;
+this API is not a security boundary against arbitrary in-process callers.
+Native PTK activation and WMI dispatch do not use it yet.
+
+Independent cryptography AESCCM fixtures cover AP deauth/disassoc/SA Query,
+protected vendor action, 15/16/17-byte and maximum 472-byte bodies, high/max PN
+and station TX. Both explicit RX layouts match the independent plaintext;
+station ciphertext matches independently generated bytes. Tests corrupt header,
+IV, body, key and MIC; reject nonrobust public action, wrong direction, layout,
+reserved bits, fragmentation, replay and input/alias bounds. Per-AES-call fault
+injection preserves output and clears workspace. A composed receive -> current
+key/PN commit -> SA Query response test succeeds; stale rotation/clear, duplicate
+and out-of-order commits reject. ASan/UBSan and kernel compile/import/frame checks
+pass. This is software interoperability with independent AESCCM, not AP/kernel
+runtime or firmware-layout evidence.
+Reference nonce/AAD/header/management replay processing:
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/net/mac80211/wpa.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/include/linux/ieee80211.h
+
+### Sanitizer result correction and scan-metadata alignment
+
+The development runner previously judged child exit status only, while UBSan's
+recovery mode could emit a diagnostic and still exit 0. Reviewing retained logs
+found misaligned `BeaconMetadata` member accesses in native notifications; the
+previous successful full-suite status was therefore insufficient evidence of a
+clean UBSan run. The runner now forces `halt_on_error=1` for UBSan. Before the
+source fix, the focused native-notifications regression exits nonzero under
+this setting. `nativeBSSMessage` now constructs aligned local metadata and copies
+bytes into the possibly unaligned output buffer instead of casting that buffer.
+A wire regression compares exact metadata/IE bytes at all four alignment offsets.
+This is a confirmed C++ alignment defect, not proof of any previous hardware hang.
 
 ## Verified Sequoia credential envelope
 

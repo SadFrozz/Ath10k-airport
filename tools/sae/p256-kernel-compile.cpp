@@ -4,6 +4,52 @@
 #include "../../src/shared/Ath10kSAEWire.hpp"
 #include "../../src/shared/Ath10kSAEExchange.hpp"
 #include "../../src/shared/Ath10kSupplicant.hpp"
+#include "../../src/shared/Ath10kSAQuery.hpp"
+#include "../../src/shared/Ath10kPMFCCMP.hpp"
+// Preserve both layouts and arbitrary acknowledged key epochs in kernel code.
+struct CompileOnlyPMFAES {
+ using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);
+ inline static Block block=nullptr;
+ static bool encrypt(const uint8_t *k,const uint8_t *in,uint8_t *out){return block && block(k,in,out);}
+};
+extern "C" __attribute__((used,noinline)) bool ath10k_pmf_ccmp_compile_check(
+    CompileOnlyPMFAES::Block encrypt,const uint8_t *frame,size_t bytes,const uint8_t *key,
+    const uint8_t *local,const uint8_t *ap,uint64_t pn,uint64_t lastPN,bool decrypted,bool tx,
+    AthSecurity::PMFCCMPResult *out,AthSecurity::PMFCCMPWorkspace *workspace)
+{
+    if(!out || !workspace)return false;
+    using C=AthSecurity::PMFCCMP128<CompileOnlyPMFAES>;CompileOnlyPMFAES::block=encrypt;
+    const bool result=tx?C::protect(frame,bytes,key,local,ap,pn,*out,*workspace):
+        C::receive(frame,bytes,key,local,ap,lastPN,decrypted?C::RXLayout::PlaintextWithEncryptedTag:C::RXLayout::Ciphertext,*out,*workspace);
+    CompileOnlyPMFAES::block=nullptr;return result;
+}
+extern "C" __attribute__((used,noinline)) bool ath10k_pmf_pairwise_epoch_compile_check(
+    AthSecurity::PMFPairwiseEpoch *owner,AthSecurity::PMFPairwiseEpoch::Snapshot *snapshot,
+    AthSecurity::PMFVerifiedRX *verified,uint64_t pn,const uint8_t *key,
+    const uint8_t *local,const uint8_t *ap,uint64_t connection,unsigned operation)
+{
+    if(!owner || !snapshot || !verified)return false;
+    if(operation==0)return owner->activate(key,local,ap,connection);
+    if(operation==1)return owner->snapshot(*snapshot);
+    if(operation==2){owner->clear();return true;}
+    return owner->commit(*snapshot,pn,*verified);
+}
+extern "C" __attribute__((used,noinline)) bool ath10k_saquery_trigger_compile_check(
+    const uint8_t *frame,size_t bytes,bool pmf,bool authorized,const uint8_t *local,const uint8_t *ap)
+{
+    return AthSecurity::saQueryDisconnectTrigger(frame,bytes,pmf,authorized,local,ap);
+}
+extern "C" __attribute__((used,noinline)) bool ath10k_saquery_compile_check(
+    AthSecurity::SAQueryExchange *query,AthSecurity::SAQueryExchange::TX *tx,
+    const AthSecurity::PMFVerifiedRX *verified,const uint8_t *id,
+    const uint8_t *frame,size_t bytes,uint64_t now,bool accepted)
+{
+    if(!query || !tx || !verified)return false;
+    query->poll(now);
+    if(query->ready(*tx,now))query->submitted(*tx,accepted,now);
+    if(query->response(frame,bytes,*verified,now))return true;
+    return query->reserve(id,now,*tx);
+}
 extern "C" __attribute__((used)) bool ath10k_sae_wire_compile_check(
     const AthSecurity::SAEGroup19AuthMessage *message,AthSecurity::SAEGroup19AuthMessage *decoded,
     const uint8_t *frame,size_t frameBytes,const uint8_t *local,const uint8_t *ap,

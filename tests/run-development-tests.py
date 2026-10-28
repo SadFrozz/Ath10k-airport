@@ -20,8 +20,12 @@ def main():
     out = ROOT / 'build/development-tests'
     out.mkdir(parents=True, exist_ok=True)
     passed = []
+    # UBSan otherwise recovers and can leave a successful process exit code.
+    # A sanitizer finding must fail the regression, including in CI.
+    test_env = dict(os.environ)
+    test_env['UBSAN_OPTIONS'] = test_env.get('UBSAN_OPTIONS', '') + ':halt_on_error=1'
     def run(name, command):
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, errors='replace')
+        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, errors='replace', env=test_env)
         (out / (name + '.log')).write_text(result.stdout + result.stderr, encoding='utf-8')
         if result.returncode:
             raise RuntimeError(f'{name} failed; see {out / (name + ".log")}')
@@ -98,8 +102,8 @@ def main():
         session='\n'.join(line for source in session_sources for line in source.read_text().splitlines()
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
-        names=['native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
-        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol'])
+        names=['native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol','pmf_ccmp'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
             if unknown: parser.error('Unknown/unavailable tests: ' + ', '.join(unknown))
