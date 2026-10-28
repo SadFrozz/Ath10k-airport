@@ -6,6 +6,7 @@
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSData.h>
 
 #ifdef ATH10K_NATIVE
 #define super IO80211Controller
@@ -59,14 +60,42 @@ static bool ath10kBytesEqual(const void *lhs, const void *rhs, UInt32 length)
     return true;
 }
 
+// Match against the provider's cached identity. A rematched instance can be
+// probed before its power parent permits configuration/MMIO transactions.
+static bool ath10kRegistryPCIID(IOService *provider,const char *key,UInt16 &value)
+{
+    auto property=provider->copyProperty(key);
+    bool valid=false;UInt64 candidate=0;
+    if(auto data=OSDynamicCast(OSData,property)){
+        if(data->getLength()==4 && data->getBytesNoCopy()){
+            const auto bytes=static_cast<const UInt8 *>(data->getBytesNoCopy());
+            candidate=UInt32(bytes[0])|(UInt32(bytes[1])<<8)|(UInt32(bytes[2])<<16)|(UInt32(bytes[3])<<24);
+            valid=candidate<=0xffffu;
+        }
+    }else if(auto number=OSDynamicCast(OSNumber,property)){
+        candidate=number->unsigned64BitValue();valid=candidate<=0xffffu;
+    }
+    if(property)property->release();
+    if(valid)value=static_cast<UInt16>(candidate);
+    return valid;
+}
+
+#ifdef ATH10K_NATIVE
+static bool ath10kNativePCIIdentity(UInt16 vendor,UInt16 device,UInt16 subsystemVendor,UInt16 subsystem)
+{
+    return vendor==0x168c && device==0x42 && subsystemVendor==0x1a3b && subsystem==0x2b51;
+}
+#endif
+
 IOService *Ath10kPCIDevice::probe(IOService *provider, SInt32 *score)
 {
     IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, provider);
     if (!pci)
         return nullptr;
 
-    const UInt16 vendor = pci->configRead16(kIOPCIConfigVendorID);
-    const UInt16 device = pci->configRead16(kIOPCIConfigDeviceID);
+    UInt16 vendor=0,device=0;
+    if(!ath10kRegistryPCIID(pci,"vendor-id",vendor) ||
+       !ath10kRegistryPCIID(pci,"device-id",device))return nullptr;
 
     ATH10K_TRACE("Ath10kMac: probe vendor=%04x device=%04x\n", vendor, device);
 
@@ -75,9 +104,11 @@ IOService *Ath10kPCIDevice::probe(IOService *provider, SInt32 *score)
 
 #ifdef ATH10K_NATIVE
     // Reject foreign subsystem/OS before opening PCI or starting firmware DMA.
-    if(version_major!=24 || version_minor<2 || vendor!=0x168c || device!=0x42 ||
-       pci->configRead16(kIOPCIConfigSubSystemVendorID)!=0x1a3b ||
-       pci->configRead16(kIOPCIConfigSubSystemID)!=0x2b51)return nullptr;
+    UInt16 subsystemVendor=0,subsystem=0;
+    if(version_major!=24 || version_minor<2 ||
+       !ath10kRegistryPCIID(pci,"subsystem-vendor-id",subsystemVendor) ||
+       !ath10kRegistryPCIID(pci,"subsystem-id",subsystem) ||
+       !ath10kNativePCIIdentity(vendor,device,subsystemVendor,subsystem))return nullptr;
     // OpenCore diagnostic personality: verify matching without entering the
     // controller, CoreCapture, PCI-open or firmware/DMA startup paths.
     if (auto *probeOnly = OSDynamicCast(OSBoolean, getProperty("Ath10kProbeOnly"))) {
@@ -566,7 +597,13 @@ bool Ath10kPCIDevice::identifyDevice()
     _interruptLine = _pci->configRead8(kPCIConfigInterruptLine);
     _interruptPin = _pci->configRead8(kPCIConfigInterruptPin);
 
+#ifdef ATH10K_NATIVE
+    // Cached matching properties can be overridden. Validate the real profile
+    // before enabling bus mastering, mapping BARs or starting target firmware.
+    return ath10kNativePCIIdentity(_vendorId,_deviceId,_subsystemVendorId,_subsystemId);
+#else
     return Ath10k::isSupportedDevice(_vendorId, _deviceId);
+#endif
 }
 
 bool Ath10kPCIDevice::mapBAR0()

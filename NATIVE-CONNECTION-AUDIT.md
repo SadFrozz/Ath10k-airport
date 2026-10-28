@@ -335,3 +335,12 @@ late root sleep acknowledgement remains valid. Threaded host cases cover both
 pre-barrier and executing-body races, powered-off PCI and repeated cleanup.
 Kernel/hardware delivery still requires a boot test; automatic wake recovery
 and the broad native callback/connection audit are not complete.
+
+### Initial power/matching evidence (2026-10-28)
+
+Matching now reads cached PCI IDs; real configuration identity is rechecked before
+any bus-master/BAR enable. XNU's initial-transition path preserves a normal initial
+setPowerState call when the table lacks kIOPMInitialDeviceState; this is not a
+guarantee on allocation failure. Parent current-state polling is invalid during
+child power-up. Early PM registration, first-probe admission/tail races and the
+internal native recovery worker remain pending (INITIAL-POWER-CONTRACT.md).

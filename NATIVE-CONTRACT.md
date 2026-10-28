@@ -444,3 +444,15 @@ A boot/connection stability test of the accumulated fixes is the next hardware
 gate; it requires a fresh explicit reboot authorization.
 
 Current controller-power candidate executable UUID: `8C9FAF40-3A5D-36D8-8D82-F685EDF20FBB`; full portable and ASan/UBSan suites, native build/import check and exact-UUID auxiliary binding passed. Original OpenCore boot and actual hardware termination remain unverified.
+
+## Cached matching and initial PM evidence
+
+`probe` now uses retained cached PCI identity properties, with strict length/type/
+range checking, and does not issue PCI configuration reads. Powered startup still
+revalidates the actual native hardware profile before bus mastering/BAR access.
+The current machine's cached ID encodings were verified read-only. Production
+matching tests use a PCI mock without hardware APIs. INITIAL-POWER-CONTRACT.md
+records the matching XNU initial-callback conditions and the remaining early-PM/
+producer-tail integration. Automatic wake recovery remains incomplete; this
+matching change alone does not make a rematch while powered off safe end to end.
+The e105f82 candidate awaiting explicit boot authorization is unchanged.

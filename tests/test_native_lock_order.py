@@ -2,6 +2,17 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_pci_matching_uses_cached_identity_and_actual_profile_is_rechecked(self):
+        source=(Path(__file__).resolve().parents[1]/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        probe=source.split('IOService *Ath10kPCIDevice::probe(',1)[1].split('bool Ath10kPCIDevice::start(',1)[0]
+        self.assertNotIn('configRead',probe)
+        for name in ['vendor-id','device-id','subsystem-vendor-id','subsystem-id']:
+            self.assertIn('"'+name+'"',probe)
+        self.assertIn('ath10kNativePCIIdentity',probe)
+        identify=source.split('bool Ath10kPCIDevice::identifyDevice()',1)[1].split('bool Ath10kPCIDevice::mapBAR0()',1)[0]
+        self.assertIn('configRead16',identify)
+        self.assertIn('ath10kNativePCIIdentity(_vendorId,_deviceId,_subsystemVendorId,_subsystemId)',identify)
+
     def test_controller_power_quiescence_precedes_terminal_admission_and_resources(self):
         root=Path(__file__).resolve().parents[1]
         power=(root/'src/kext/Ath10kPower.cpp').read_text()
