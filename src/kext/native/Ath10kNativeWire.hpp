@@ -64,7 +64,9 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
     m->channel=ch;m->channelSpec=UInt16(ch|(ch<=14?0x1000:0xd000));
     m->ssidLength=b.ssidLength;bcopy(b.ssid,m->ssid,b.ssidLength);bcopy(b.bssid,m->bssid,6);
     m->rssi=int32_t(b.snr)-95;m->interval=b.beaconInterval;m->capability=b.capabilities;
-    m->flags=AirportWCL::SSIDPresent|AirportWCL::RSSIValid;
+    // Visible names are parsed from the SSID IE. A metadata name override
+    // is reserved for hidden advertisements.
+    m->flags=AirportWCL::RSSIValid|(b.hidden?AirportWCL::SSIDPresent:0);
     UInt8 *out=buffer+sizeof(*m);size_t bytes=0;
     auto ie=[&](UInt8 id,const UInt8 *data,size_t length){out[bytes++]=id;out[bytes++]=length;bcopy(data,out+bytes,length);bytes+=length;};
     ie(0,b.ssid,b.ssidLength);ie(1,b.rates,b.rateCount>8?8:b.rateCount);

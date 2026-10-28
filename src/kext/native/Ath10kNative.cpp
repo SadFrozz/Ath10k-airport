@@ -378,7 +378,13 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             AirportWCL::appendChannel(*d,ch,ch>14,ch>=52 && ch<=144,true,false,false);
         }return kIOReturnSuccess;}
     case N::getWCL_TRAFFIC_COUNTERS:{AirportWCL::TrafficCounters counters{};counters.infraTx=s.txPackets;counters.infraRx=s.rxPackets;counters.timestampNanoseconds=Ath10k::uptimeNS();bcopy(&counters,data,sizeof(counters));return kIOReturnSuccess;}
-    case N::getWCL_BSS_INFO:{if(!_nativeBSSBytes)return kIOReturnNotReady;bcopy(_nativeBSSMessage,data,_nativeBSSBytes);return kIOReturnSuccess;}
+    case N::getWCL_BSS_INFO:{
+        if(s.stage!=Ath10k::LinkStage::Connected || !_nativeBeaconSent)return kIOReturnNotReady;
+        // Background scan notifications reuse the scratch buffer. Rebuild
+        // from the associated AP rather than returning another scan result.
+        const size_t length=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
+        if(!length)return kIOReturnNotReady;
+        bcopy(_nativeBSSMessage,data,length);return kIOReturnSuccess;}
     case N::getBEACON_INFO:{
         if(s.stage!=Ath10k::LinkStage::Connected || s.cancelRequested ||
            s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnNotReady;
@@ -434,6 +440,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
         const char *error=Ath10k::selectOpenBSS(s,_nativeSecurity->candidates.bss);
         if(error){setProperty("Ath10kNativeJoinReason",error);AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
+        s.hiddenSSID=s.ap.hidden;
         if(personal){UInt8 nonce[32]{};Ath10kKernelCrypto::random(nonce,sizeof(nonce));
             bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,selectedAKM);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}

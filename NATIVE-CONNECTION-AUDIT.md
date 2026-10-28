@@ -120,3 +120,30 @@ completion checks remain enabled. The full idle audit walked 1023 mappings once
 per second; it is diagnostic work rather than a prerequisite for packet delivery.
 Neither boot-time improvement nor stable reconnection has yet been measured on
 this candidate. WPA3/PMF, Tahoe, AWDL and AirDrop remain incomplete.
+
+
+## Post-1333 hardware run: background scan disconnect (2026-10-28)
+
+The quieter nonblocking candidate booted; the user reports visibly faster system
+startup and no new configd watchdog was present during this short observation.
+This is not a stability pass: two driver disconnects were recorded. At 04:16:47
+WCL explicitly logged GET WCL_BSS_INFO (433) returning NotReady, updateBss failing,
+and an involuntary leave with reason Update Bss fail. Scan completion had cleared
+_nativeBSSBytes after using the same scratch buffer for unrelated BSS records.
+
+The current-BSS query now rebuilds its reply from the associated connection AP
+while connected, independently of scan buffer lifetime. Visible beacon SSID IEs
+are passed without an unnecessary metadata SSID override; a hidden advertisement
+keeps the override path. The connection hiddenSSID flag now follows the selected
+AP instead of remaining unconditionally true. UI hidden-network classification
+still needs verification after reboot; a previously saved hidden flag can persist.
+
+Measured timeline: kernel boot 04:13:29, interface named 04:13:54, user autojoin
+04:15:02, link active 04:15:33.876, DHCP BOUND 04:15:34.939. The pre-login interval
+must not be attributed entirely to driver connection latency. About 32 seconds
+remain between user autojoin and DHCP; repeated scan failures were observed.
+Scan requests still collect the full regulatory plan before filtering requested
+channels, so optimizing directed/subset scans remains open. No router change is
+required. A 45-packet source-bound gateway test had zero loss (average 3.77 ms),
+and interface-bound direct HTTPS succeeded. An earlier bound-interface ping
+returned routing errors and is not a driver packet-loss measurement.

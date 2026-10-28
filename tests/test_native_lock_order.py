@@ -2,6 +2,13 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_current_bss_is_independent_of_scan_scratch_lifetime(self):
+        native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
+        query=native.split("case N::getWCL_BSS_INFO:",1)[1].split("case N::",1)[0]
+        self.assertNotIn("_nativeBSSBytes",query)
+        self.assertIn("nativeBSSMessage(s.ap,",query)
+        self.assertIn("LinkStage::Connected",query)
+
     def test_radio_worker_uses_queued_wcl_notifications(self):
         source=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
         worker=source.split("void Ath10kPCIDevice::serviceNative(UInt64 now) {",1)[1].split("const char *Ath10kPCIDevice::serviceNativeMAC(",1)[0]
