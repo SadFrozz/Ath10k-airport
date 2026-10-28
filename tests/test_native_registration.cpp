@@ -45,8 +45,10 @@ public:
     virtual ~IO80211InfraProtocol(){assert(!network.fRegistrationInfo && !ethernet.fRegistrationInfo);}
 };
 struct Controller {unsigned interfaceStops=0;void nativeInterfaceWillStop(void *){++interfaceStops;}};
+static void ifnet_release(void *){assert(false);}
 class Ath10kNativeInterface:public IO80211InfraProtocol {
 public:
+    void *_nativeBSDReference=nullptr;
     Controller *controller=nullptr;
     void releaseTerminationNotification(){}
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;

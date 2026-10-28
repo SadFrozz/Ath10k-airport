@@ -196,6 +196,16 @@ bool Ath10kNativeInterface::initWithController(Ath10kPCIDevice *owner) {
         IO80211SkywalkInterface::init(owner,reinterpret_cast<ether_addr *>(&address)) &&
         prepareTerminationNotification();
 }
+IOReturn Ath10kNativeInterface::prepareBSDInterface(ifnet_t interface,unsigned int options) {
+    if(!interface)return kIOReturnBadArgument;
+    // Stock Skywalk stores this borrowed pointer without taking a reference.
+    // Legacy BSD detach/free can precede the native object's final cleanup.
+    // Keep the resource through parent free, including failed preparation.
+    if(_nativeBSDReference)return kIOReturnBusy;
+    if(ifnet_reference(interface)!=0)return kIOReturnError;
+    _nativeBSDReference=interface;
+    return IO80211InfraProtocol::prepareBSDInterface(interface,options);
+}
 bool Ath10kNativeInterface::prepareTerminationNotification() {
     if(_terminationNotifier)return true;
     // A newly initialized entry gets its registry ID only when attached. Use
@@ -255,7 +265,11 @@ void Ath10kNativeInterface::free() {
     // Includes partial initialization and a release without a preceding stop.
     releaseTerminationNotification();
     detachRegistrationLoan();
+    auto interface=_nativeBSDReference;_nativeBSDReference=nullptr;
     IO80211InfraProtocol::free();
+    // Parent free can read the borrowed pointer. Release only after it returns;
+    // never dereference this after the parent has destroyed its storage.
+    if(interface)ifnet_release(interface);
 }
 IOReturn Ath10kNativeInterface::deregisterLogicalLink() {
     detachRegistrationLoan();

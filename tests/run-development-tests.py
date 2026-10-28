@@ -51,6 +51,7 @@ def main():
         (include/'native_termination_power.inc').write_text(power[power.index('void Ath10kPCIDevice::blockPowerIOForTermination()'):power.index('void Ath10kPCIDevice::publishPowerState()')])
         (include/'native_termination_controller.inc').write_text(native[native.index('void Ath10kPCIDevice::prepareNativeInterfaceTermination('):native.index('void Ath10kPCIDevice::stopNativeRequests()')])
         (include/'native_termination_notifier.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareTerminationNotification()'):native.index('bool Ath10kNativeInterface::prepareRegistrationInfo(')])
+        (include/'native_bsd_reference.inc').write_text(native[native.index('IOReturn Ath10kNativeInterface::prepareBSDInterface('):native.index('bool Ath10kNativeInterface::prepareTerminationNotification()')])
         (include/'native_termination_free.inc').write_text(native[native.index('void Ath10kNativeInterface::free()'):native.index('IOReturn Ath10kNativeInterface::deregisterLogicalLink()')])
 
         (include/'native_release_method.inc').write_text(native[native.index('void Ath10kPCIDevice::releaseNativeInterface()'):native.index('IOReturn Ath10kPCIDevice::nativeRequest(')])
@@ -70,7 +71,7 @@ def main():
         (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        names=['native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         if args.only:
             unknown = sorted(set(args.only) - set(names))

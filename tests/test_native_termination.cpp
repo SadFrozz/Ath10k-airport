@@ -51,8 +51,10 @@ struct IO80211InfraProtocol:IOService {
     virtual void free(){++baseFrees;cleanupOrder.push_back(3);}
 };
 class Ath10kPCIDevice;
+static void ifnet_release(void *){assert(false);}
 class Ath10kNativeInterface:public IO80211InfraProtocol {
 public:
+    void *_nativeBSDReference=nullptr;
     Ath10kPCIDevice *controller=nullptr;IONotifier *_terminationNotifier=nullptr;
     bool prepareTerminationNotification();void releaseTerminationNotification();
     static bool willTerminateNotification(void *,void *,IOService *,IONotifier *);

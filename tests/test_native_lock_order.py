@@ -2,6 +2,14 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_bsd_reference_spans_parent_cleanup(self):
+        native=(Path(__file__).resolve().parents[1]/'src/kext/native/Ath10kNative.cpp').read_text()
+        prepare=native.split('IOReturn Ath10kNativeInterface::prepareBSDInterface(',1)[1].split('bool Ath10kNativeInterface::prepareTerminationNotification()',1)[0]
+        self.assertLess(prepare.index('ifnet_reference(interface)'),prepare.index('IO80211InfraProtocol::prepareBSDInterface'))
+        free=native.split('void Ath10kNativeInterface::free()',1)[1].split('IOReturn Ath10kNativeInterface::deregisterLogicalLink()',1)[0]
+        self.assertLess(free.index('IO80211InfraProtocol::free()'),free.index('ifnet_release(interface)'))
+        self.assertNotIn('ifnet_release',free.split('IO80211InfraProtocol::free()',1)[0])
+
     def test_stop_and_partial_free_drain_all_control_work_before_radio_release(self):
         source=(Path(__file__).resolve().parents[1]/"src/kext/Ath10kPCIDevice.cpp").read_text()
         drain=source.split("void Ath10kPCIDevice::drainControlWorkers()",1)[1].split("void Ath10kPCIDevice::stop",1)[0]

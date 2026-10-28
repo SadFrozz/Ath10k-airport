@@ -291,3 +291,12 @@ exact executable UUID inclusion now pass; this is not a hardware stability test.
 The termination notifier is still incomplete because stock PMstop may return
 without all admitted power callbacks exiting. BSD detach also needs a paired,
 properly ordered finalize of the borrowed ifnet binding. Do not install this WIP.
+
+### BSD reference ownership (2026-10-28)
+
+Matching networking detach calls ifnet_detach and waits; final BSD free releases
+its ifnet owner. Native prepare now acquires an independent reference and keeps
+it through inherited native free, including failed preparation. Model tests
+cover legacy release first, parent free ordering, failed acquisition, duplicate
+bind and partial initialization. This protects resource storage only; actual
+PM completion and properly ordered finalize remain required before installation.

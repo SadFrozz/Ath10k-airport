@@ -12,6 +12,7 @@ that an older third-party adapter header describes the complete current ABI.
 | --- | --- | --- |
 | XNU kernel, Sequoia 24G90 | E999BA1A-CC26-3685-A2DB-AB7085F6F12A | IOService provider inheritance and termination |
 | IO80211Family | 0D5AC570-04D4-38B6-8577-9F21350CDD50 | WCL clients, commands, scans, association and messages |
+| IONetworkingFamily | 5D3F11B8-802B-3860-8A36-E9334980A117 | Legacy BSD detach and ifnet ownership |
 | IOSkywalkFamily | 50C44C84-1166-387F-8ECE-02E931E2405B | Interface/data-path integration |
 
 Local images were extracted as analysis containers from BootKernelExtensions.kc.
@@ -145,6 +146,29 @@ matching Skywalk base prepare method stores the ifnet pointer and calls
 detach currently lacks a paired finalize call. Retaining the native interface
 alone therefore does not establish safety of a deferred power callback after BSD
 detach. Resolve ownership and queue ordering before deferring inherited stop.
+
+## Borrowed BSD resource lifetime candidate
+
+Matching IONetworkingFamily detach (`0xffffff8002631eae`) halts output, calls
+`ifnet_detach` and waits for detach completion; it does not call the native
+Skywalk finalize method. Its free (`0xffffff800262f074`, call at
+`0xffffff800262f14d`) releases the ifnet through `ifnet_release`. Skywalk base
+prepare stores the pointer without a direct reference acquisition. The native
+finalize slot `0x858` resolves to `IO80211SkywalkInterface::disable`, which forwards
+to `IOSkywalkNetworkInterface::disable`; the latter can set running state and
+report link status. Finalize therefore must not be treated as a harmless pointer
+clear or added under an unverified gate order.
+
+The native interface now takes its own public `ifnet_reference` before invoking
+stock prepare, retains it even on preparation failure (the parent may already
+have stored it), and releases it only after inherited native free returns. A
+null interface, failed reference acquisition or duplicate binding is rejected
+without pretending preparation succeeded. Host tests execute these production
+methods with legacy BSD release occurring first, then verify parent free still
+sees a live resource and the final reference is released exactly once afterward.
+This prevents reclamation of the borrowed ifnet storage; it does not preserve
+attachment, make arbitrary operations on a detached interface valid, synchronize
+power callbacks, or finish the pending finalize/PM ordering repair.
 
 ## Delivery gates
 
