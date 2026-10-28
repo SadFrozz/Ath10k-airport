@@ -3,6 +3,7 @@
 #include <vector>
 #include <algorithm>
 static std::vector<unsigned> events;
+static void IOLockFree(void *){assert(false);}
 #define OSSafeReleaseNULL(p) do{if(p){(p)->release();(p)=nullptr;}}while(0)
 namespace AthSecurity {static void wipe(void *p,unsigned n){auto *b=static_cast<volatile uint8_t *>(p);while(n--)*b++=0;}}
 struct Native {
@@ -31,7 +32,7 @@ static unsigned securityDeletes=0;
 struct Security {~Security(){++securityDeletes;events.push_back(7);}};
 class Ath10kPCIDevice:public IO80211Controller,public IONetworkController {
 public:
-    unsigned drains=0;
+    unsigned drains=0;void *_nativeServiceLock=nullptr;
     bool _nativeStarted=false,_nativeAttached=false,_nativeControllerAttached=false,_nativeReadyPublished=true;
     Native *_nativeInterface=nullptr;BSD *_networkInterface=nullptr;Security *_nativeSecurity=nullptr;
     uint8_t _nativeJoin[48]{};

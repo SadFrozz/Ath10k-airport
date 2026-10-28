@@ -81,6 +81,7 @@ private:
     bool powerRestartAllowed();
     void beginPowerSuspend();
     void finishPowerSuspend();
+    void blockPowerIOForTermination();
     void requestPowerEvent(Ath10k::PowerEvent);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);

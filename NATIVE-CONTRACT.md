@@ -67,7 +67,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | Priority | Path | Evidence/status | Completion condition |
 | --- | --- | --- | --- |
 | P0 | Registration ownership | Candidate uses the stock typed factory, a borrowed Network prefix and cleanup hooks; host ownership and parent-vtable checks pass | Hardware stop/recovery retains one owner and no stale borrower |
-| P0 | Framework leaf termination | Candidate retires radio before inherited stop and avoids repeat stop/detach; PM-callout drain ordering still under audit | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
+| P0 | Framework leaf termination | Candidate retires radio and requests PMstop outside workloop gates; actual callout-completion/lifetime protection remains pending | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
 | P0 | Event delivery errors | Candidate checks enqueue returns, keeps phase/cursors and retries with 10 ms backoff; host injection covers every stage | Verify system behavior during scan, rekey and failures on hardware |
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
@@ -88,6 +88,63 @@ permitted state, action ownership, result/error semantics, event ordering,
 timeout/cancellation, teardown dependencies, and independent test evidence.
 An Unsupported response is not automatically a bug; a Success response without
 the promised operation is not an acceptable replacement.
+
+## Offline validation correction (2026-10-28)
+
+Several prior `kmutil create -n boot ... -p candidate` runs returned success
+but generated a collection containing only `com.apple.kernel`. Their metadata
+`offline_kernel_link=true` does **not** prove candidate inclusion or successful
+symbol binding. Preserve the historical packages and attach a correction;
+do not silently replace their verified manifests. An older local
+`native-validation.kc` does include Ath10k, but that alone does not identify it
+as the current candidate.
+
+Every future link check must additionally run
+`scripts/verify-kernel-collection.py COLLECTION KEXT_EXECUTABLE` and match both
+bundle identifier and executable UUID. This is necessary, not sufficient, for
+hardware correctness. The verifier rejects missing/duplicate entries, stale
+UUIDs and malformed command bounds.
+
+A separate explicit auxiliary-collection experiment reached actual symbol
+binding and rejected `_thread_call_cancel_wait` as an unavailable kext export.
+That experiment used a separate validation copy with `OSBundleRequired` removed;
+it does not prove the original OpenCore-injected bundle cannot boot and is not
+proof that this import caused the hardware hang. Replace this private API with
+public cancellation plus independently tracked queued/running callback lifetime.
+The unchanged candidate auxiliary control run was rejected before linking
+("No binaries or codeless kexts were provided"); it is not a passing control.
+No OS collection, EFI driver or active network was changed by these checks.
+
+## Public thread-call drain candidate
+
+The event bridge now owns a short bookkeeping lock and separate queued/running
+flags. Scheduling and delayed retries publish queued ownership before entering
+the kernel. Callback entry transfers it to running ownership; callback exit
+publishes completion, wakes drainers and never dereferences the controller again.
+Controller stop closes admission, calls public `thread_call_cancel` and sleeps
+outside WCL/radio while either flag remains set. A false cancel cannot erase an
+already dispatched callback's queued ownership. Repeated stop preserves the lock
+until final cleanup; allocation failures also take the same partial cleanup path.
+`THREAD_CALL_OPTIONS_ONCE` prevents overlapping invocations. The SDK explicitly
+allows freeing a thread call from its own callback, so kernel return bookkeeping
+after the last driver access does not require the private wait export.
+
+Production-method host tests cover cancellation before dispatch, dispatch before
+callback entry, an executing callback, gate contention, allocation retry and
+repeated stop. Native build and an explicit auxiliary link now pass; the linked
+entry's UUID matches `CFD4467C-3B91-3855-92DD-C60872675CB2`. This experiment used
+a separate copy with `OSBundleRequired` removed only for auxiliary inclusion;
+the actual executable was unchanged. It validates binary binding against this
+local kernel, not the original bundle's OpenCore load or hardware stability.
+
+The outside-gate termination notifier remains preparatory work: `PMstop` returning
+does not prove all stock power callbacks exited. **Not ready for installation.**
+A completion/lifetime guard and BSD binding cleanup are still required. The
+matching Skywalk base prepare method stores the ifnet pointer and calls
+`ifnet_set_mtu`, not `ifnet_reference`; finalize clears that pointer. Our BSD
+detach currently lacks a paired finalize call. Retaining the native interface
+alone therefore does not establish safety of a deferred power callback after BSD
+detach. Resolve ownership and queue ordering before deferring inherited stop.
 
 ## Delivery gates
 
@@ -231,8 +288,23 @@ Address normalization correction: the matching standalone kernel and the kernel 
 
 The matching [XNU IOService implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/iokit/Kernel/IOService.cpp) defers a terminated service's stop until its leaf clients are finalized, invokes client stop on the provider workloop, and then detaches it. The driver's cached `_nativeStarted`/`_nativeAttached` flags could therefore remain true even after the framework had already stopped and detached the native interface. Controller cleanup previously called stop/detach again unconditionally from those flags. It now checks that the native interface still names this controller as its provider before performing the manual fallback. Controller-primary bookkeeping and the driver's retained reference are still released.
 
-There was also a lifetime interval between framework interface stop and later controller stop where the native event worker could still address the interface's managers. Ath10kNativeInterface::stop now retires the matching controller-side protocol before detaching registration metadata or invoking inherited stop. A radio-gated action marks native requests stopped, clears `_nativeStarted`, wipes pending software security and ends WMI runtime. Already accepted WCL/radio work completes before that action takes the radio gate; later requests and event callbacks cannot use the retired interface. Identity checking prevents an unrelated interface from stopping the current one. The stop hook does not cancel/wait for the service thread while IOService may hold the radio gate. Controller stop/free later perform the existing outside-gate drain. Interface construction installs the native gate before creating the interface; a gate-less partial teardown only marks protocol state and avoids hardware calls.
+There was also a lifetime interval between framework interface stop and later controller stop where the native event worker could still address the interface's managers. Ath10kNativeInterface::stop now retires the matching controller-side protocol before detaching registration metadata or invoking inherited stop. A radio-gated action marks native requests stopped, clears `_nativeStarted`, wipes pending software security and ends WMI runtime. An executing radio action cannot overlap retirement; accepted waiters are woken or aborted by the existing stop/runtime path. Later requests and event callbacks cannot use the retired interface. Identity checking prevents an unrelated interface from stopping the current one. The stop hook does not cancel/wait for the service thread while IOService may hold the radio gate. Controller stop/free later perform the existing outside-gate drain. Interface construction installs the native gate before creating the interface; a gate-less partial teardown only marks protocol state and avoids hardware calls.
 
 The production controller-release method is executed with framework-already-stopped/detached, manually owned started, attached-but-unstarted, unattached partial, foreign-provider and repeated-cleanup states. The seam rejects a second child stop. It verifies BSD detachment first, retained references/security release and interface release before gate removal. Bridge tests execute the production leaf-stop hook to check radio-gated retirement without thread-call waits, suppression of subsequent services, deferred controller drain, identity rejection and the partial fallback. Registration tests execute the production interface stop wrapper including its controller hook. These are host lifetime/ordering seams, not execution of XNU's termination worker or proof that every stock stop routine is idempotent.
 
 Remaining PM stop audit: stock IO80211InfraInterface::setPowerState (ffffff80022dbfe8) synchronously enters its WCL queue through IOWorkLoop::runActionBlock (linked kernel ffffff8000afb580); stock IO80211SkywalkInterface::stop calls PMstop. XNU PMstop waits for outstanding driver callouts. Native leaf stop can run under its controller/provider radio loop, so PM callout/WCL/radio ordering must be resolved before automatic terminate/rematch is enabled. This candidate does not yet implement that deferred PM-callout drain or automatic wake recovery. IOSkywalkInterface::didTerminate (ffffff8002973036) delegates through the base termination callbacks rather than providing such a PM drain.
+
+
+### Pre-stop PM drain outside WCL/radio gates (2026-10-28)
+
+This candidate moves the PMstop request outside driver workloop gates; explicit proof/guarding of callout completion is still incomplete. Native interface initialization installs a supported gIOWillTerminateNotification handler before attachment/start. The matching dictionary names Ath10kNativeInterface and the callback checks the exact target object; other instances do nothing. Using an entry-ID dictionary before attachment would be wrong: the ordinary IORegistryEntry dictionary-init path has not assigned that ID yet. The [matching XNU registry implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/iokit/Kernel/IORegistryEntry.cpp) assigns it when attached. Class matching plus identity filtering avoids that pre-attachment gap. Failure to allocate the matching dictionary/notifier fails setup; the caller still owns and releases its dictionary reference.
+
+In the matching [XNU service implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/iokit/Kernel/IOService.cpp), this notification type has no immediate existing-object delivery at installation. terminateWorker invokes it outside service workloop actions, after dropping its job/arbitration locks. invokeNotifier drops the global notification lock before invoking the handler, and records the invocation so remove synchronizes against outstanding callbacks. The running kernel reports xnu-11417.140.69~1, matching the inspected release source; cache symbol addresses are normalized separately as recorded above.
+
+The handler first asks the matching controller to make I/O permanently blocked (atomic low phase 3), waits for the firmware/interface-construction barrier outside workloop gates, and retires protocol/radio through the existing hardware-gated stop action. It releases the construction barrier and radio gate before PMstop, allowing outstanding WCL PM callouts to finish. Later inherited interface stop sees PMstop already requested. The platform implementation uses a 15-second deadline per wait and can return while a callback is still running; this requires an additional completion/lifetime guard before cleanup can be considered safe. The notification is removed synchronously before final base free. Runtime-owned controller and workqueue references retained by stock interface start remain in force; no new controller/interface retain cycle is added. Diagnostic properties mark draining-power and pm-stop-returned without claiming verified completion or adding console log traffic.
+
+The production notifier/setup/removal, controller preparation and atomic termination-block methods are executed in a threaded host seam. It holds the construction barrier to prove immediate I/O exclusion before waiting, then models a PM callout blocked on WCL which subsequently needs radio. PMstop asserts that construction/radio locks are released, waits for that callout, and completes after WCL is released. Tests also cover operation before registry ID assignment, other instances/wrong targets, missing controller, both allocation failures, notifier removal before base free, and permanent blocking with pending suspend intents. Existing bridge, registration, release, power, notification and crypto suites remain enabled. The seam models queue/PM primitives; it does not execute the kernel's notifier delivery or establish hardware freeze freedom.
+
+Automatic wake recovery remains incomplete. The next integration step is early controller PM scheduling so a fresh rematched instance boots firmware only when its parent permits it, followed by a retained recovery worker outside all driver/framework gates. A terminated native instance remains fail-closed rather than reusing old rings/keys. Physical notification delivery, restart, sleep/wake and sustained traffic require explicit-authorized hardware tests.
+
+The final timeout seam models PMstop returning with an unfinished callout; it verifies that diagnostics do not call this drained. This does not fix the remaining cleanup race. The next required P0 step is an admitted/in-flight PM wrapper plus delayed base cleanup with retained resource lifetime until all admitted calls have actually exited. In particular, inspect the borrowed BSD ifnet/manager lifetime before detaching the legacy interface; simply retaining the native object is not a sufficient general proof. This candidate remains unsuitable for a boot test until that completion/lifetime guard is finished.

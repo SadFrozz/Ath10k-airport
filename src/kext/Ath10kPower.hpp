@@ -4,7 +4,8 @@ namespace Ath10k {
 enum class PowerEvent : UInt32 { DeviceOff, DeviceOn, SystemSleep, SystemWake, SleepCancelled };
 // Low two bits: 0 active, 1 suspended/pending, 2 clean restart allowed.
 // Upper bits count suspend requests which raised the block but have not yet
-// recorded their root/device state under the radio gate. 3 is fail-closed.
+// recorded their root/device state under the radio gate. 3 is permanently blocked.
+inline UInt32 terminatePowerIO(UInt32 word) { return word|3u; }
 inline UInt32 queuePowerSuspend(UInt32 word) {
     if((word&3u)==3u || (word&~3u)==0xfffffffcu)return 0xffffffffu;
     return ((word&~3u)+4u)|1u;

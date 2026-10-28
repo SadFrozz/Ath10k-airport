@@ -9,6 +9,7 @@
 #include <kern/clock.h>
 #include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IONotifier.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
 #include <sys/random.h>
@@ -192,7 +193,37 @@ IOReturn Ath10kPCIDevice::setCOUNTRY_CODE(IO80211SkywalkInterface *,apple80211_c
 bool Ath10kNativeInterface::initWithController(Ath10kPCIDevice *owner) {
     controller=owner;IOEthernetAddress address{};
     return IO80211InfraInterface::init() && owner->getHardwareAddress(&address)==kIOReturnSuccess &&
-        IO80211SkywalkInterface::init(owner,reinterpret_cast<ether_addr *>(&address));
+        IO80211SkywalkInterface::init(owner,reinterpret_cast<ether_addr *>(&address)) &&
+        prepareTerminationNotification();
+}
+bool Ath10kNativeInterface::prepareTerminationNotification() {
+    if(_terminationNotifier)return true;
+    // A newly initialized entry gets its registry ID only when attached. Use
+    // the class match before attachment, and filter this exact object below.
+    auto *matching=IOService::serviceMatching("Ath10kNativeInterface");
+    if(!matching)return false;
+    _terminationNotifier=IOService::addMatchingNotification(gIOWillTerminateNotification,matching,
+        willTerminateNotification,this);
+    matching->release();
+    return _terminationNotifier!=nullptr;
+}
+void Ath10kNativeInterface::releaseTerminationNotification() {
+    // remove synchronizes with outstanding handlers. The termination worker
+    // retains its victim through notification delivery; free is not the handler.
+    if(_terminationNotifier){_terminationNotifier->remove();_terminationNotifier=nullptr;}
+}
+bool Ath10kNativeInterface::willTerminateNotification(void *target,void *,IOService *service,IONotifier *) {
+    auto *self=static_cast<Ath10kNativeInterface *>(target);
+    if(!self || service!=self)return true;
+    // XNU invokes this identity-filtered notification outside workloop gates
+    // and the global notification lock, before leaf/provider stop is queued.
+    if(self->controller)self->controller->prepareNativeInterfaceTermination(self);
+    self->setProperty("Ath10kNativeTerminationPhase","draining-power");
+    self->PMstop();
+    // PMstop has a bounded platform wait; return is not proof that every
+    // callback has exited. Explicit completion/lifetime guarding is still needed.
+    self->setProperty("Ath10kNativeTerminationPhase","pm-stop-returned");
+    return true;
 }
 bool Ath10kNativeInterface::prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &registration) {
     if(!mExpansionData || !mExpansionData2 || _registrationLoan ||
@@ -222,6 +253,7 @@ void Ath10kNativeInterface::stop(IOService *provider) {
 }
 void Ath10kNativeInterface::free() {
     // Includes partial initialization and a release without a preceding stop.
+    releaseTerminationNotification();
     detachRegistrationLoan();
     IO80211InfraProtocol::free();
 }
@@ -251,6 +283,9 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     _nativeWasUp=_nativeDeauthSent=_nativeJoinFailed=false;
     _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativePostError=kIOReturnSuccess;
     bzero(_nativeLastBSSID,sizeof(_nativeLastBSSID));
+    _nativeServiceLock=IOLockAlloc();
+    if(!_nativeServiceLock)return false;
+    _nativeServiceStopping=false;_nativeServiceQueued=_nativeServiceRunning=false;
     _nativeServiceCall=thread_call_allocate_with_options(nativeServiceThread,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
     if(!_nativeServiceCall)return false;
     bcopy(_wmiInit.mac,_nativeMACCurrent,6);_nativeMACValid=true;
@@ -316,14 +351,34 @@ void Ath10kPCIDevice::nativeInterfaceWillStop(Ath10kNativeInterface *interface) 
     // Do not wait for the service thread here: IOService may hold the radio
     // gate. Controller stop/free later drain it outside that gate.
 }
+void Ath10kPCIDevice::prepareNativeInterfaceTermination(Ath10kNativeInterface *interface) {
+    if(!interface || _nativeInterface!=interface)return;
+    // This entry is only called from the outside-gate will-terminate notifier.
+    // Block new work before waiting for a probe which can still construct/start
+    // the interface. Never take this barrier from the provider-gated stop hook.
+    blockPowerIOForTermination();
+    if(_probePowerLock)IOLockLock(_probePowerLock);
+    nativeInterfaceWillStop(interface);
+    if(_probePowerLock)IOLockUnlock(_probePowerLock);
+    // Return with both initialization and radio gates released before PMstop.
+}
 void Ath10kPCIDevice::stopNativeRequests() {
     if(_nativeGate && _nativeGate->getWorkLoop())_nativeGate->runAction(nativeStopAction);
     else _nativeStopping=true;
     // stop/free call this outside both workloop gates. The stop flag prevents
     // new scheduling; wait before removing gates, interface or radio resources.
-    if(_nativeServiceCall){
-        thread_call_cancel_wait(_nativeServiceCall);
-        thread_call_free(_nativeServiceCall);_nativeServiceCall=nullptr;
+    if(_nativeServiceLock){
+        IOLockLock(_nativeServiceLock);
+        _nativeServiceStopping=true;
+        if(_nativeServiceCall && thread_call_cancel(_nativeServiceCall))_nativeServiceQueued=false;
+        // A false cancel may mean dispatch has begun before callback entry.
+        // Keep queued true until that callback claims it under this lock.
+        while(_nativeServiceQueued || _nativeServiceRunning)
+            IOLockSleep(_nativeServiceLock,&_nativeServiceRunning,THREAD_UNINT);
+        auto call=_nativeServiceCall;_nativeServiceCall=nullptr;
+        IOLockUnlock(_nativeServiceLock);
+        if(call)thread_call_free(call);
+        // Keep the lock until final interface cleanup: repeated stop is valid.
     }
     _nativeServicePending=false;
 }
@@ -345,6 +400,7 @@ void Ath10kPCIDevice::releaseNativeInterface() {
         OSSafeReleaseNULL(_nativeInterface);
     }
     _nativeStarted=_nativeAttached=_nativeControllerAttached=_nativeReadyPublished=false;
+    if(_nativeServiceLock){IOLockFree(_nativeServiceLock);_nativeServiceLock=nullptr;}
     if(_nativeSecurity){delete _nativeSecurity;_nativeSecurity=nullptr;}
     AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
     if(_nativeGate){getWorkLoop()->removeEventSource(_nativeGate);OSSafeReleaseNULL(_nativeGate);}
@@ -563,19 +619,37 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
 // WCL first, then the network gate. PostOffice and interface callbacks therefore
 // use the same WCL -> network order as reportDataPathEvents and native IOCTLs.
 void Ath10kPCIDevice::requestNativeService() {
-    if(_nativeStopping || !_nativeStarted || (!_nativeReadyRequested && !_nativeReadyPublished) || !_nativeServiceCall || _nativeServicePending)return;
-    _nativeServicePending=true;thread_call_enter(_nativeServiceCall);
+    // Callers hold radio. Never wait for a callback while holding that gate.
+    if(_nativeStopping || !_nativeStarted || (!_nativeReadyRequested && !_nativeReadyPublished) || !_nativeServiceLock || _nativeServicePending)return;
+    IOLockLock(_nativeServiceLock);
+    if(!_nativeServiceStopping && _nativeServiceCall){
+        _nativeServicePending=true;
+        if(!_nativeServiceQueued){_nativeServiceQueued=true;thread_call_enter(_nativeServiceCall);}
+    }
+    IOLockUnlock(_nativeServiceLock);
 }
 void Ath10kPCIDevice::nativeServiceThread(thread_call_param_t context,thread_call_param_t) {
     auto self=static_cast<Ath10kPCIDevice *>(context);
-    // IOService termination can hold the network workloop while stopping an
-    // Apple user client on WCL. Never wait for either gate in this bridge.
-    if(!self->_nativeBSDGate)return;
-    const IOReturn result=self->_nativeBSDGate->attemptAction(nativeServiceWCLAction);
-    if(result==kIOReturnCannotLock || result==kIOReturnNoMemory){
+    auto lock=self->_nativeServiceLock;
+    IOLockLock(lock);
+    self->_nativeServiceQueued=false;self->_nativeServiceRunning=true;
+    const bool stopping=self->_nativeServiceStopping;
+    IOLockUnlock(lock);
+    // Do not hold the bookkeeping lock while attempting either workloop.
+    IOReturn result=kIOReturnNotReady;
+    if(!stopping && self->_nativeBSDGate)
+        result=self->_nativeBSDGate->attemptAction(nativeServiceWCLAction);
+    IOLockLock(lock);
+    if(!self->_nativeServiceStopping && !self->_nativeServiceQueued &&
+       (result==kIOReturnCannotLock || result==kIOReturnNoMemory)){
         AbsoluteTime deadline;clock_interval_to_deadline(10,kMillisecondScale,&deadline);
+        self->_nativeServiceQueued=true;
         thread_call_enter_delayed(self->_nativeServiceCall,deadline);
     }
+    self->_nativeServiceRunning=false;
+    IOLockWakeup(lock,&self->_nativeServiceRunning,false);
+    IOLockUnlock(lock);
+    // No access to self after publishing completion: stop may release it now.
 }
 IOReturn Ath10kPCIDevice::nativeServiceWCLAction(OSObject *owner,void *,void *,void *,void *) {
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);

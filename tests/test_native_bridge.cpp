@@ -1,24 +1,42 @@
 #include <cassert>
 #include <cstdint>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <thread>
 using UInt64=uint64_t;using IOReturn=int;using thread_call_param_t=void *;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4,kIOReturnNoMemory=5,kIOReturnNotAttached=6;
 using AbsoluteTime=UInt64;constexpr unsigned kMillisecondScale=1;
 static void clock_interval_to_deadline(unsigned n,unsigned,AbsoluteTime *out){*out=n;}
 static unsigned delayed=0;
 static void thread_call_enter_delayed(void *,AbsoluteTime deadline){assert(deadline==10);++delayed;}
+struct IOLock {std::mutex mutex;std::condition_variable cv;};
+static void IOLockLock(IOLock *lock){lock->mutex.lock();}
+static void IOLockUnlock(IOLock *lock){lock->mutex.unlock();}
+constexpr int THREAD_UNINT=0;
+static std::atomic<bool> sleeping{false};
+static void IOLockSleep(IOLock *lock,void *,int){
+ std::unique_lock<std::mutex> guard(lock->mutex,std::adopt_lock);
+ sleeping=true;lock->cv.wait(guard);guard.release();
+}
+static void IOLockWakeup(IOLock *lock,void *,bool){lock->cv.notify_all();}
 struct OSObject {};
 struct Ath10kNativeInterface {};
 #define OSDynamicCast(type,obj) static_cast<type *>(obj)
 namespace Ath10k {inline UInt64 uptimeNS(){return 123000000u;}}
-static unsigned scheduled=0,rank=0,cancelled=0,freed=0;static std::vector<unsigned> order;
+static unsigned scheduled=0,cancelled=0,freed=0;static thread_local unsigned rank=0;static std::vector<unsigned> order;
 static void thread_call_enter(void *){++scheduled;}
-static bool thread_call_cancel_wait(void *){assert(rank==0);++cancelled;return true;}
+static bool dispatchStarted=false;
+static bool thread_call_cancel(void *){assert(rank==0);++cancelled;return !dispatchStarted;}
 static bool thread_call_free(void *){assert(rank==0 && cancelled>freed);++freed;return true;}
 using Action=IOReturn (*)(OSObject *,void *,void *,void *,void *);
 struct Gate {
- unsigned ownRank;OSObject *owner;bool busy=false;
- IOReturn attemptAction(Action action){return busy?kIOReturnCannotLock:runAction(action);}
+ unsigned ownRank;OSObject *owner;bool busy=false;std::atomic<bool> *pause=nullptr,*entered=nullptr;
+ IOReturn attemptAction(Action action){
+  if(pause){*entered=true;while(pause->load())std::this_thread::yield();}
+  return busy?kIOReturnCannotLock:runAction(action);
+ }
  Gate *getWorkLoop(){return this;}void commandWakeup(void *){}
  IOReturn runAction(Action action,void *argument=nullptr){
   assert(ownRank>rank);unsigned previous=rank;rank=ownRank;order.push_back(rank);
@@ -32,6 +50,9 @@ public:
  unsigned runtimeStops=0;
  void endWMIRuntime(const char *){assert(rank==2 && _nativeStopping && !_nativeStarted);++runtimeStops;_wmiLive.active=false;}
  void nativeInterfaceWillStop(Ath10kNativeInterface *);
+ void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
+ void blockPowerIOForTermination(){blocked=true;}
+ IOLock *_probePowerLock=nullptr;
  static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
  void discardNativeSecurity(){++securityDiscards;}unsigned securityDiscards=0;
  bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
@@ -40,6 +61,8 @@ public:
  bool _nativeStarted=true,_nativeReadyRequested=true,_nativeReadyPublished=false;
  bool _nativeStopping=false,_nativeServicePending=false,_nativeMACWaiting=false;
  IOReturn _nativeMACResult=kIOReturnSuccess;
+ IOLock serviceLock;IOLock *_nativeServiceLock=&serviceLock;
+ bool _nativeServiceQueued=false,_nativeServiceRunning=false,_nativeServiceStopping=false;
  void *_nativeServiceCall=this;unsigned services=0;
  struct {bool active=true;} _wmiLive;
  Gate wcl{1,this},radio{2,this};Gate *_nativeBSDGate=&wcl,*_nativeGate=&radio;
@@ -123,5 +146,33 @@ int main(){
  Ath10kPCIDevice partial;partial._nativeGate=nullptr;
  partial.nativeInterfaceWillStop(&partial.interface);
  assert(partial._nativeStopping && !partial._nativeStarted && partial.securityDiscards==1 && !partial.runtimeStops);
+
+ // Dispatch started in the kernel, but has not entered our callback yet.
+ // A false cancellation must retain queued ownership and wait for entry/exit.
+ Ath10kPCIDevice dispatch;dispatch.requestNativeService();dispatchStarted=true;sleeping=false;
+ std::atomic<bool> finished{false};
+ std::thread stopper([&]{dispatch.stopNativeRequests();finished=true;});
+ while(!sleeping.load())std::this_thread::yield();
+ assert(!finished.load());
+ dispatch.nativeServiceThread(&dispatch,nullptr);
+ stopper.join();dispatchStarted=false;
+ assert(finished && !dispatch._nativeServiceCall && !dispatch._nativeServiceQueued && !dispatch._nativeServiceRunning);
+ assert(!dispatch.services); // Closed admission excludes WCL/radio work.
+ dispatch.stopNativeRequests();
+ Ath10kPCIDevice missing;missing._nativeServiceCall=nullptr;missing._nativeServiceLock=nullptr;
+ missing.stopNativeRequests(); // Allocation failure before lock/call creation.
+
+ // Callback is already executing outside the bookkeeping lock. Stop must
+ // wait for its final completion publication, even after cancel returns false.
+ Ath10kPCIDevice running;running.requestNativeService();dispatchStarted=true;
+ std::atomic<bool> pause{true},entered{false};running.wcl.pause=&pause;running.wcl.entered=&entered;
+ std::thread callback([&]{running.nativeServiceThread(&running,nullptr);});
+ while(!entered.load())std::this_thread::yield();
+ sleeping=false;finished=false;
+ std::thread runningStop([&]{running.stopNativeRequests();finished=true;});
+ while(!sleeping.load())std::this_thread::yield();
+ assert(!finished.load());pause=false;
+ callback.join();runningStop.join();dispatchStarted=false;
+ assert(finished && !running._nativeServiceCall && !running._nativeServiceRunning && !running.services);
 
 }

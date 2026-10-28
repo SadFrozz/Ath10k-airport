@@ -7,6 +7,9 @@ class Ath10kNativeInterface : public IO80211InfraProtocol {
 public:
     Ath10kPCIDevice *controller=nullptr;
     bool initWithController(Ath10kPCIDevice *);
+    bool prepareTerminationNotification();
+    void releaseTerminationNotification();
+    static bool willTerminateNotification(void *,void *,IOService *,IONotifier *);
     bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
     void detachRegistrationLoan();
     void stop(IOService *) override;
@@ -209,5 +212,6 @@ private:
     // Borrow only the prefix of the framework-owned Ethernet registration.
     // Its typed owner outlives stop/deregister and releases it in base free().
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
+    IONotifier *_terminationNotifier=nullptr;
 
 };

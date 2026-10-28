@@ -32,6 +32,7 @@ public:
     void releaseNativeInterface();
     void stopNativeRequests();
     void nativeInterfaceWillStop(Ath10kNativeInterface *);
+    void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
     static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
     void discardNativeSecurity();
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
@@ -43,6 +44,8 @@ public:
     static IOReturn nativeServiceWCLAction(OSObject *,void *,void *,void *,void *);
     static IOReturn nativeServiceRadioAction(OSObject *,void *,void *,void *,void *);
     thread_call_t _nativeServiceCall=nullptr;
+    IOLock *_nativeServiceLock=nullptr;
+    bool _nativeServiceQueued=false,_nativeServiceRunning=false,_nativeServiceStopping=false;
     bool _nativeServicePending=false;
     IOReturn _nativePostError=kIOReturnSuccess;
     UInt64 _nativePostFailures=0;

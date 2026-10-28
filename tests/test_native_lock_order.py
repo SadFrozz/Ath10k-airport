@@ -70,6 +70,25 @@ class NativeLockOrder(unittest.TestCase):
         self.assertIn("if(_nativeStarted && stillAttached)",release)
         self.assertIn("if(stillAttached)_nativeInterface->detach(this)",release)
 
+    def test_pm_termination_notification_runs_barrier_before_ungated_pmstop(self):
+        root=Path(__file__).resolve().parents[1]
+        native=(root/"src/kext/native/Ath10kNative.cpp").read_text()
+        init=native.split("bool Ath10kNativeInterface::initWithController(",1)[1].split("bool Ath10kNativeInterface::prepareTerminationNotification()",1)[0]
+        self.assertIn("prepareTerminationNotification()",init)
+        register=native.split("bool Ath10kNativeInterface::prepareTerminationNotification()",1)[1].split("void Ath10kNativeInterface::releaseTerminationNotification()",1)[0]
+        self.assertIn('IOService::serviceMatching("Ath10kNativeInterface")',register)
+        self.assertNotIn("registryEntryIDMatching(",register)
+        callback=native.split("bool Ath10kNativeInterface::willTerminateNotification(",1)[1].split("bool Ath10kNativeInterface::prepareRegistrationInfo(",1)[0]
+        self.assertLess(callback.index("prepareNativeInterfaceTermination(self)"),callback.index("self->PMstop()"))
+        self.assertNotIn("runAction(",callback)
+        prep=native.split("void Ath10kPCIDevice::prepareNativeInterfaceTermination(",1)[1].split("void Ath10kPCIDevice::stopNativeRequests()",1)[0]
+        self.assertLess(prep.index("blockPowerIOForTermination()"),prep.index("IOLockLock(_probePowerLock)"))
+        self.assertLess(prep.index("IOLockLock(_probePowerLock)"),prep.index("nativeInterfaceWillStop(interface)"))
+        self.assertLess(prep.index("nativeInterfaceWillStop(interface)"),prep.index("IOLockUnlock(_probePowerLock)"))
+        self.assertNotIn("PMstop()",prep)
+        free=native.split("void Ath10kNativeInterface::free()",1)[1].split("IOReturn Ath10kNativeInterface::deregisterLogicalLink()",1)[0]
+        self.assertLess(free.index("releaseTerminationNotification()"),free.index("IO80211InfraProtocol::free()"))
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()
@@ -126,8 +145,9 @@ class NativeLockOrder(unittest.TestCase):
         wcl=native.split("IOReturn Ath10kPCIDevice::nativeServiceWCLAction",1)[1].split("IOReturn Ath10kPCIDevice::nativeServiceRadioAction",1)[0]
         self.assertIn("_nativeGate->attemptAction(nativeServiceRadioAction)",wcl)
         stop=native.split("void Ath10kPCIDevice::stopNativeRequests()",1)[1].split("void Ath10kPCIDevice::releaseNativeInterface()",1)[0]
-        self.assertLess(stop.index("runAction(nativeStopAction)"),stop.index("thread_call_cancel_wait"))
-        self.assertLess(stop.index("thread_call_cancel_wait"),stop.index("thread_call_free"))
+        self.assertLess(stop.index("runAction(nativeStopAction)"),stop.index("thread_call_cancel("))
+        self.assertLess(stop.index("IOLockSleep("),stop.index("thread_call_free"))
+        self.assertNotIn("thread_call_cancel_wait(",native)
 
     def test_postoffice_is_only_called_inside_wcl_bridge(self):
         native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()

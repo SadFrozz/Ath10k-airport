@@ -6,6 +6,11 @@ symbols = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(symbols)
 
 class SymbolTests(unittest.TestCase):
+    def test_private_thread_call_wait(self):
+        row = "(undefined) external _thread_call_cancel_wait (dynamically looked up)"
+        self.assertEqual(symbols.rejected_symbols(row), [row])
+        self.assertEqual(symbols.rejected_symbols("(undefined) external _thread_call_cancel"), [])
+
     def test_captured_probe(self):
         row = '                 (undefined) weak external ____chkstk_darwin (dynamically looked up)'
         self.assertEqual(symbols.rejected_symbols(row), [row.strip()])

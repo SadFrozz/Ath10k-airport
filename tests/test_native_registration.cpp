@@ -48,6 +48,7 @@ struct Controller {unsigned interfaceStops=0;void nativeInterfaceWillStop(void *
 class Ath10kNativeInterface:public IO80211InfraProtocol {
 public:
     Controller *controller=nullptr;
+    void releaseTerminationNotification(){}
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
     bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
     void detachRegistrationLoan();void stop(IOService *) override;void free() override;

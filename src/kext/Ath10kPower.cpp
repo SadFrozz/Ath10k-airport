@@ -40,6 +40,13 @@ void Ath10kPCIDevice::finishPowerSuspend()
         if(OSCompareAndSwap(old,Ath10k::applyPowerSuspend(old),&_powerIOBlock))return;
     }
 }
+void Ath10kPCIDevice::blockPowerIOForTermination()
+{
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::terminatePowerIO(old),&_powerIOBlock))return;
+    }
+}
 void Ath10kPCIDevice::publishPowerState()
 {
     setProperty("Ath10kPowerNotificationRegistered",_powerNotifier!=nullptr);

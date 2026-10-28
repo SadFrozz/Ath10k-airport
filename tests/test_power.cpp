@@ -43,7 +43,7 @@ public:
  bool stopDMAForRelease(){assert(loop.inside && pciPowered);++dmaChecks;return dmaSafe;}
  unsigned resets=0,published=0;bool resetQuarantines=false,pciPowered=true;
  bool preparePowerNotifications();void releasePowerNotifications();bool powerIOBlocked();bool powerRestartAllowed();
- void beginPowerSuspend();void finishPowerSuspend();
+ void beginPowerSuspend();void finishPowerSuspend();void blockPowerIOForTermination();
  void requestPowerEvent(Ath10k::PowerEvent);void publishPowerState();
  static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
  static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);
@@ -157,5 +157,13 @@ int main(){
  assert(Ath10k::applyPowerSuspend(5)==1);
  assert(Ath10k::queuePowerSuspend(0xfffffffdu)==0xffffffffu);
  assert(Ath10k::applyPowerSuspend(0xffffffffu)==0xffffffffu);
+
+ Ath10kPCIDevice terminating;terminating.requestPowerEvent(PowerEvent::SystemSleep);
+ terminating.blockPowerIOForTermination();
+ terminating.requestPowerEvent(PowerEvent::SystemWake);
+ assert(terminating.powerIOBlocked() && !terminating.powerRestartAllowed());
+ terminating.requestPowerEvent(PowerEvent::DeviceOff);terminating.requestPowerEvent(PowerEvent::DeviceOn);
+ assert(terminating.powerIOBlocked() && !terminating.powerRestartAllowed());
+ for(UInt32 word:{0u,1u,2u,5u,9u,0xffffffffu})assert((Ath10k::terminatePowerIO(word)&3u)==3u);
  registrationFail=true;Ath10kPCIDevice alloc;assert(!alloc.preparePowerNotifications() && !alloc._powerNotifier);
 }
