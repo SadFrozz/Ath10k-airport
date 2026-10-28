@@ -2677,6 +2677,12 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
 {
     auto &state=_wmiScan;
     if (state.completed) return nullptr;
+    // An accepted request cancelled before submission owns no DMA or firmware
+    // scan. Finish it locally instead of starting a scan merely to stop it.
+    if(!state.attempted && state.cancelRequested){
+        state.completed=true;state.terminal=true;state.reason=1;
+        state.status="scan-cancelled-before-start";return nullptr;
+    }
     if (!state.attempted && (_connection.stats.step || _connection.maintenance.step || _connection.radio.step || _connection.radio.appliedPS))return nullptr;
     if (!state.attempted) {
         state.attempted=true;state.startedMs=nowMs;state.status="scan-prerequisite";
@@ -2695,7 +2701,8 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
         if (!Ath10k::buildWMIScan(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress()),
             static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,state.id,_connection.stage==Ath10k::LinkStage::Connected,&_regulatory,
 #ifdef ATH10K_NATIVE
-            _nativeScanDwellMs
+            _nativeScanDwellMs,
+            Ath10k::wmiRequestedScanMask(_nativeScanPending && _nativeScan.channelCount?_nativeScan.channels:nullptr,sizeof(_nativeScan.channels))
 #else
             Ath10k::kWMIScanDwellMs
 #endif

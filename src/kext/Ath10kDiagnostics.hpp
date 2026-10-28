@@ -6,5 +6,5 @@
 #if ATH10K_DIAGNOSTICS
 #define ATH10K_TRACE(...) IOLog(__VA_ARGS__)
 #else
-#define ATH10K_TRACE(...) do {} while (0)
+#define ATH10K_TRACE(...) do { if (false) IOLog(__VA_ARGS__); } while (0)
 #endif

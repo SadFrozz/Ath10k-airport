@@ -73,6 +73,16 @@ public:
 
 #ifndef ATH10K_WMI_BSS_TEST
 int main() {
+    {
+        ScanDriver cancelled;
+        cancelled._wmiScan.cancelRequested=true;
+        assert(!cancelled.serviceWMIScan(1000));
+        assert(cancelled._wmiScan.completed && cancelled._wmiScan.terminal);
+        assert(!cancelled._wmiScan.attempted && !cancelled._wmiScan.txOwned);
+        assert(!cancelled.scans && !cancelled._wmi.credits.outstanding);
+        assert(!strcmp(cancelled._wmiScan.status,"scan-cancelled-before-start"));
+        cancelled.releaseWMIRuntime();
+    }
     reusableScanTests();
     ScanDriver d;d.launch();d.deliver(2,scanPacket(1));d.tick(1040);
     assert(d._wmiScan.started && d._wmiScan.creditReturned && !d._wmiScan.completed);

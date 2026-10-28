@@ -427,8 +427,12 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             ((s.stage!=Ath10k::LinkStage::Disabled && (!s.portAuthorized || s.stage!=Ath10k::LinkStage::Connected))?64u:0u);
         setProperty("Ath10kNativeScanBusyMask",UInt64(busy),32);
         if(busy)return kIOReturnBusy;
-        // The radio core's bounded passive scan is used; report results only
-        // for requested channels/SSID once collection has completed.
+        const UInt64 requested=Ath10k::wmiRequestedScanMask(scan.channelCount?scan.channels:nullptr,sizeof(scan.channels));
+        const UInt32 channelCount=Ath10k::regulatoryScanCount(&_regulatory,requested);
+        setProperty("Ath10kNativeScanRequestedChannelCount",UInt64(channelCount),32);
+        if(!channelCount)return kIOReturnUnsupported;
+        // Restrict the firmware scan itself as well as delivered results.
+        // DFS remains passive and every channel still intersects the domain.
         UInt32 generation=_wmiScan.generation+1;Ath10k::resetInPlace(_wmiScan);_wmiScan.generation=generation;
         _wmiScan.id=0xa000|((0x36+generation)&0xfff);Ath10k::resetInPlace(_wmiBSS);_nativeScan=scan;_nativeScanPending=true;
         return kIOReturnSuccess;}

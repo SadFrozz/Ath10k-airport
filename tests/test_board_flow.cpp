@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include "Ath10kDiagnostics.hpp"
 // The runner includes the three actual driver method bodies from the .cpp.
 // This ROM/CE0 model is NOT a macOS kernel or physical hardware test.
 #include "Ath10kBMI.hpp"

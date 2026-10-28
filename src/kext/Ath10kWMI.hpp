@@ -382,8 +382,8 @@ inline bool buildWMIStopScan(UInt8 *f,UInt32 capacity,UInt8 endpoint,UInt32 id,U
     // wmi_stop_scan_cmd order is requestor, scan_id, req_type, vdev_id.
     return true;
 }
-inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs) {
-    const UInt32 count=regulatoryScanCount(policy),frameBytes=140+4*count;
+inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs,UInt64 requested=~UInt64(0)) {
+    const UInt32 count=regulatoryScanCount(policy,requested),frameBytes=140+4*count;
     if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255 || passiveDwellMs<1 || passiveDwellMs>kWMIScanDwellMs) return false;
     htcZero(f,frameBytes);
     f[0]=endpoint;f[1]=1;f[5]=9;
@@ -397,7 +397,7 @@ inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWM
     htcWriteLE32(f+84,1); // num_bssids; num_ssids, IE length, probes and MAC/mask zero.
     htcWriteLE16(f+116,4*count);htcWriteLE16(f+118,16);
     UInt32 slot=0;for(UInt32 i=0;i<kWMIScanChannelCount;++i)
-        if(!policy || regulatoryScanChannel(*policy,wmiScanChannel(i)))htcWriteLE32(f+120+4*slot++,wmiScanFrequency(i));
+        if((requested & (UInt64(1)<<i)) && (!policy || regulatoryScanChannel(*policy,wmiScanChannel(i))))htcWriteLE32(f+120+4*slot++,wmiScanFrequency(i));
     const UInt32 tail=120+4*count;
     htcWriteLE16(f+tail+2,19); // empty SSID ARRAY_FIXED_STRUCT
     htcWriteLE16(f+tail+4,8);htcWriteLE16(f+tail+6,19);
