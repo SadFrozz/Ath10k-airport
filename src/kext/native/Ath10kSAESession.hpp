@@ -1,6 +1,7 @@
 #pragma once
 #include "Ath10kSAEWorker.hpp"
 #include "../../shared/Ath10kSAEExchange.hpp"
+#include "../../shared/Ath10kSAEPassword.hpp"
 
 class Ath10kSAEJob;
 // Owner methods require the same radio gate. Jobs get independent context
@@ -90,8 +91,9 @@ public:
 static_assert(sizeof(Ath10kSAEJob)<=4096,"Bounded heap-owned SAE job");
 static_assert(sizeof(Ath10kSAESession)<=8192,"Allocate the SAE owner off the kernel stack");
 
-// One-shot preparation from an already derived, identity-bound PWE. Password
-// derivation/admission and kernel backend validation remain caller prerequisites.
+// One-shot preparation from a derived PWE or an experimental retained H2E/legacy
+// credential snapshot. Native admission and kernel backend validation remain
+// caller prerequisites.
 // Inputs are immutable after init; execute is worker-only; takePrepared is owner-
 // gated only after taking the completed job. No callback enters an owner gate.
 class Ath10kSAEPrepareJob : public Ath10kSAEWorkItem {
@@ -104,11 +106,35 @@ class Ath10kSAEPrepareJob : public Ath10kSAEWorkItem {
     uint32_t generation=0;
     uint64_t started=0,deadline=0;
     bool initialized=false,executed=false,prepared=false,consumed=false;
+    AthSecurity::P256FieldAPI fieldAPI{};
+    AthSecurity::P256FieldWorkspace fieldWorkspace{};
+    uint8_t password[64]{},ssid[32]{},pt[64]{};
+    size_t passwordBytes=0,ssidBytes=0;
+    bool credentialBound=false;
+    bool initPassword(const AthSecurity::P256CoreCryptoAPI &,const AthSecurity::P256FieldAPI &,
+        bool (*)(uint8_t *,size_t),bool,const uint8_t *,size_t,const uint8_t *,size_t,
+        const uint8_t *,size_t,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    bool initBinding(const AthSecurity::P256CoreCryptoAPI &,bool (*)(uint8_t *,size_t),
+        bool,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    Ath10kSAESession *takePreparedBound(const uint8_t *,const uint8_t *,const uint8_t *,size_t,uint32_t,uint64_t);
 public:
     bool initPWE(const AthSecurity::P256CoreCryptoAPI &,bool (*)(uint8_t *,size_t),
         const uint8_t *,size_t,bool,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    // Experimental retained H2E password derivation. Provider ABI/timing and
+    // native credential admission must be validated before native use.
+    bool initH2E(const AthSecurity::P256CoreCryptoAPI &,const AthSecurity::P256FieldAPI &,
+        bool (*)(uint8_t *,size_t),const uint8_t *,size_t,const uint8_t *,size_t,
+        const uint8_t *,size_t,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
     void execute() override;
     void discard() override;
+    // Legacy SAE has no password identifier. Selection must come from the
+    // negotiated mode, never an automatic fallback after H2E/backend failure.
+    bool initLegacyPassword(const AthSecurity::P256CoreCryptoAPI &,const AthSecurity::P256FieldAPI &,
+        bool (*)(uint8_t *,size_t),const uint8_t *,size_t,const uint8_t *,size_t,
+        const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    // Both password modes require exact SSID, identities, generation and deadline.
+    Ath10kSAESession *takePreparedPassword(const uint8_t *,size_t,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    Ath10kSAESession *takePreparedH2E(const uint8_t *,size_t,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
     // Transfers a newly retained owner once, only to the exact admitted attempt.
     Ath10kSAESession *takePrepared(const uint8_t *,const uint8_t *,uint32_t,uint64_t);
 };

@@ -1,9 +1,12 @@
 #include "mock_sae_worker.hpp"
 #include "../src/shared/Ath10kSAEExchange.hpp"
+#include "../src/shared/Ath10kSAEPassword.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
 #include "common_crypto_personal.hpp"
 #include "sae_eapol_vectors.inc"
 #include "p256_corecrypto_fixtures.hpp"
+#include "h2e_password_vectors.inc"
+#include "legacy_password_vectors.inc"
 #include <CommonCrypto/CommonHMAC.h>
 #include <dlfcn.h>
 #include <array>
@@ -15,11 +18,13 @@ struct Pause {
     void wait(){std::unique_lock<std::mutex> guard(mutex);assert(cv.wait_for(guard,5s,[&]{return entered;}));}
     void resume(){std::lock_guard<std::mutex> guard(mutex);go=true;cv.notify_all();}
 };
-static bool failDigest=false;
+static bool failDigest=false,forceLegacyNoCandidate=false;
+static unsigned prepareHMACCalls=0;
 static Pause *pauseHMAC=nullptr;
 static const void *ccsha256_di(){assert(!heldLocks && !ownerGate);return failDigest?nullptr:reinterpret_cast<void *>(1);}
 static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *data,void *out){
-    assert(!heldLocks && !ownerGate);if(pauseHMAC)pauseHMAC->waitHere();
+    assert(!heldLocks && !ownerGate);++prepareHMACCalls;if(pauseHMAC)pauseHMAC->waitHere();
+    if(forceLegacyNoCandidate && n==59){memset(out,0xff,32);return;}
     CCHmac(kCCHmacAlgSHA256,key,kl,data,n,out);
 }
 #include "sae_session.inc"
@@ -51,9 +56,20 @@ static void observeFree(OSObject *object){
     else if(dynamic_cast<Ath10kSAEJob *>(object)){bytes=sizeof(Ath10kSAEJob);++retiredJobs;}
     else if(dynamic_cast<Session *>(object)){bytes=sizeof(Session);++retiredSessions;}
     if(!bytes)return;
+    if(dynamic_cast<Ath10kSAEPrepareJob *>(object)){
+        const auto *p=reinterpret_cast<const uint8_t *>(object);
+        for(size_t i=0;i+13<=bytes;++i)assert(memcmp(p+i,"test-password",13));
+    }
     const auto *p=reinterpret_cast<const uint8_t *>(object);
     for(size_t i=0;i+64<=bytes;++i)assert(memcmp(p+i,observedPWE,64));
     for(size_t i=0;i+32<=bytes;++i)assert(memcmp(p+i,observedPMK,32));
+}
+static unsigned legacyRandomCalls=0;
+static unsigned legacyRandomMode=0;
+static bool legacyRandom(uint8_t *out,size_t n){
+    assert(!heldLocks && !ownerGate && n && n<=64);const auto count=legacyRandomCalls++;
+    memset(out,0,n);if(legacyRandomMode==1)return false;
+    if(legacyRandomMode!=2)out[n-1]=uint8_t(count%2?3:7);return true;
 }
 static unsigned prepareRandomCalls=0;
 static int prepareRandomMode=0;
@@ -149,6 +165,184 @@ int main(){
       assert(!job->initPWE(api,prepareRandom,g.data(),64,true,local,ap,1,~uint64_t(0)));
       job->discard();assert(!job->initPWE(api,prepareRandom,g.data(),64,true,local,ap,1,1));
       job->execute();assert(!prepareRandomCalls);job->release();assert(objects==1);
+    }
+    { // Password -> PT -> MAC-bound PWE -> random/mask -> commit all run on the worker.
+      AthSecurity::P256FieldAPI field{};field.curve=curve;
+#define FIELD(member,name) field.member=reinterpret_cast<decltype(field.member)>(dlsym(lib,name));assert(field.member)
+      FIELD(units,"cczp_n");FIELD(prime,"cczp_prime");FIELD(multiply,"cczp_mul");FIELD(inverse,"cczp_inv");FIELD(add,"cczp_add");FIELD(subtract,"cczp_sub");
+#undef FIELD
+      const uint8_t name[]="test-ssid",secret[]="test-password",identifier[]="test-id";
+      const auto expectedPWE=decode<64>("8e3a78633b49752947fa2ec5fe4f9ceb7d80763eb62ecbaa468a8b570618f660a4932a75da3118352dfa78c45ed3c039d020c8e1b9f32504a8e725e085b6930d");
+      const auto expectedPT=decode<64>("84347bb62237b0df47cae8e044af1c097d15f635dbed2ae56b6b1740189a73f5de793758cf3db5c47ef4e2636e730ab88551c914ebdb8e9ef4e3303b7c9d5c1b");
+      auto contains=[](const void *object,size_t bytes,const uint8_t *value,size_t length){
+        auto p=static_cast<const uint8_t *>(object);for(size_t at=0;at+length<=bytes;++at)if(!memcmp(p+at,value,length))return true;return false;
+      };
+      auto prepare=[&](bool broken=false){
+        auto job=new Ath10kSAEPrepareJob;uint8_t mutableName[9],mutableSecret[13],mutableID[7];
+        memcpy(mutableName,name,9);memcpy(mutableSecret,secret,13);memcpy(mutableID,identifier,7);
+        auto provider=field;if(broken)provider.curve=[]()->const void *{assert(!ownerGate && !heldLocks);return nullptr;};
+        const auto callsBefore=curveCalls;ownerGate=true;
+        assert(job->initH2E(api,provider,prepareRandom,mutableName,9,mutableSecret,13,mutableID,7,local,ap,401,80000));
+        ownerGate=false;assert(callsBefore==curveCalls);
+        memset(mutableName,0,sizeof(mutableName));memset(mutableSecret,0,sizeof(mutableSecret));memset(mutableID,0,sizeof(mutableID));
+        return job;
+      };
+      for(unsigned scenario=0;scenario<5;++scenario){
+        prepareRandomMode=3;prepareRandomCalls=0;auto job=prepare(scenario==4);assert(worker->submit(job));job->release();
+        run(call);auto item=worker->takeCompletedFor(job);assert(item==job);
+        assert(!contains(job,sizeof(*job),secret,13) && !contains(job,sizeof(*job),expectedPT.data(),64));
+        if(scenario==0){
+          ownerGate=true;auto session=job->takePreparedH2E(name,9,local,ap,401,80001);ownerGate=false;assert(session && session->usingH2E());
+          AthSecurity::SAEGroup19CommitTx tx;assert(session->snapshotCommit(tx,1,401,80001));
+          AthSecurity::SAEGroup19AuthMessage parsed;assert(AthSecurity::decodeSAEGroup19AuthBody(tx.data()+24,tx.size()-24,true,0,parsed)==AthSecurity::SAEWireResult::Valid);
+          assert(parsed.identifierPresent && parsed.identifierBytes==7 && !memcmp(parsed.identifier,identifier,7));
+          uint8_t commit[96]{};assert(AthSecurity::saeGroup19Commit(engine,random,mask,32,expectedPWE.data(),64,commit,96,workspace));
+          assert(!memcmp(parsed.commit,commit,96));
+          auto remote=parsed;assert(AthSecurity::saeGroup19Commit(engine,peerRandom,peerMask,32,expectedPWE.data(),64,remote.commit,96,workspace));
+          AthSecurity::SAEGroup19Keys remoteKeys{};
+          assert(AthSecurity::saeGroup19ExchangeCandidate<HMAC>(engine,peerRandom,32,remote.commit,96,parsed.commit,96,expectedPWE.data(),64,true,ap,local,nullptr,0,nullptr,0,remoteKeys,workspace));
+          assert(session->completeCommit(tx,true,401,80001));const auto remoteFrame=fromAP(remote);
+          assert(session->receive(remoteFrame.data(),remoteFrame.size(),401,80002)==Action::ComputeKeys);
+          ownerGate=true;assert(session->queue(worker,Kind::Keys,401,80002)==Submission::Queued);ownerGate=false;run(call);
+          auto keyResult=worker->takeCompletedFor(session);assert(keyResult && session->consume(keyResult,401,80003)==Action::SendConfirm);keyResult->release();
+          assert(session->queue(worker,Kind::LocalConfirm,401,80003)==Submission::Queued);run(call);auto confirmationJob=worker->takeCompletedFor(session);assert(confirmationJob);
+          assert(session->consume(confirmationJob,401,80004)==Action::SendConfirm);
+          assert(session->completeConfirm(confirmationJob,true,401,80004)==Action::Ignore);confirmationJob->release();
+          AthSecurity::SAEGroup19AuthMessage remoteConfirm{};remoteConfirm.kind=AthSecurity::SAEAuthKind::Confirm;remoteConfirm.h2e=true;remoteConfirm.confirm[0]=1;
+          assert(AthSecurity::saeGroup19Confirm<HMAC>(remoteKeys.kck,32,1,remote.commit,96,parsed.commit,96,remoteConfirm.confirm+2,32));
+          const auto remoteConfirmFrame=fromAP(remoteConfirm);
+          assert(session->receive(remoteConfirmFrame.data(),remoteConfirmFrame.size(),401,80005)==Action::VerifyPeer);
+          assert(session->queue(worker,Kind::PeerConfirm,401,80005)==Submission::Queued);run(call);confirmationJob=worker->takeCompletedFor(session);
+          assert(confirmationJob && session->consume(confirmationJob,401,80006)==Action::Accepted);confirmationJob->release();
+          uint8_t authenticated[32]{},pmkid[16]{};assert(session->copyPMK(authenticated,32,pmkid,16,401,80006));
+          assert(!memcmp(authenticated,remoteKeys.pmk,32) && !memcmp(pmkid,remoteKeys.pmkid,16));
+          AthSecurity::wipe(authenticated,sizeof(authenticated));AthSecurity::wipe(&remoteKeys,sizeof(remoteKeys));session->release();
+        }else if(scenario==1)assert(!job->takePreparedH2E(reinterpret_cast<const uint8_t *>("wrongssid"),9,local,ap,401,80001));
+        else if(scenario==2)assert(!job->takePrepared(local,ap,401,80001)); // No unbound/PWE API escape.
+        else if(scenario==3)assert(!job->takePreparedH2E(name,9,local,ap,401,80000+AthSecurity::SAEGroup19ClientExchange::DeadlineMs));
+        else {assert(!prepareRandomCalls);assert(!job->takePreparedH2E(name,9,local,ap,401,80001));}
+        assert(!job->takePreparedH2E(name,9,local,ap,401,80001));job->release();assert(objects==1);
+      }
+      {auto job=prepare();assert(worker->submit(job));job->release();ownerGate=true;
+       assert(worker->cancelFor(job));ownerGate=false;assert(!worker->takeCompleted() && objects==1);}
+      {auto job=prepare();job->release();assert(objects==1);} // Unsubmitted secrets retire too.
+      {auto job=prepare();failDigest=true;prepareRandomCalls=0;assert(worker->submit(job));job->release();run(call);failDigest=false;
+       auto item=worker->takeCompletedFor(job);assert(item==job && !prepareRandomCalls);
+       assert(!contains(job,sizeof(*job),secret,13) && !job->takePreparedH2E(name,9,local,ap,401,80001));job->release();assert(objects==1);}
+      {auto job=prepare();prepareRandomMode=3;prepareRandomCalls=0;assert(worker->submit(job));job->release();
+       Pause paused;pauseHMAC=&paused;std::thread runner([&]{run(call);});paused.wait();ownerGate=true;assert(worker->cancelFor(job));ownerGate=false;
+       paused.resume();runner.join();pauseHMAC=nullptr;assert(!worker->takeCompleted() && objects==1);}
+      // Independent boundary vectors include embedded NULs, full 32/64/254-byte
+      // fields, absent identifiers and UTF-8 octets. No strlen on credentials.
+      auto octets=[](const char *hex){
+        const size_t count=strlen(hex)/2;std::vector<uint8_t> out(count);
+        for(size_t i=0;i<count;++i){unsigned value=0;assert(sscanf(hex+2*i,"%2x",&value)==1);out[i]=uint8_t(value);}return out;
+      };
+      for(const auto &vector:H2EPasswordVectors::vectors){
+        const auto boundName=octets(vector.ssid),boundSecret=octets(vector.password),boundID=octets(vector.identifier);
+        const auto pt=decode<64>(vector.pt);const auto expectedCommit=decode<96>(vector.commit);
+        for(unsigned mismatch=0;mismatch<(boundName.size()==32?7u:1u);++mismatch){
+          auto mutableName=boundName,mutableSecret=boundSecret,mutableID=boundID;
+          auto job=new Ath10kSAEPrepareJob;prepareRandomMode=3;prepareRandomCalls=0;
+          ownerGate=true;const auto before=curveCalls;
+          assert(job->initH2E(api,field,prepareRandom,mutableName.data(),mutableName.size(),mutableSecret.data(),mutableSecret.size(),
+            mutableID.data(),mutableID.size(),local,ap,403,90000));
+          assert(curveCalls==before);ownerGate=false;
+          memset(mutableName.data(),0xa5,mutableName.size());memset(mutableSecret.data(),0xa5,mutableSecret.size());
+          if(!mutableID.empty())memset(mutableID.data(),0xa5,mutableID.size());
+          assert(worker->submit(job));job->release();run(call);assert(worker->takeCompletedFor(job)==job);
+          assert(prepareRandomCalls==2);job->execute();assert(prepareRandomCalls==2);
+          assert(!contains(job,sizeof(*job),pt.data(),pt.size()));
+          if(boundSecret.size()>=8)assert(!contains(job,sizeof(*job),boundSecret.data(),boundSecret.size()));
+          auto suppliedName=boundName;uint8_t suppliedStation[6],suppliedAP[6];
+          memcpy(suppliedStation,local,6);memcpy(suppliedAP,ap,6);
+          if(mismatch==1)suppliedName.back()^=1; // Same NUL prefix, different final SSID octet.
+          if(mismatch==2)suppliedStation[5]^=1;
+          if(mismatch==3)suppliedAP[5]^=1;
+          const uint32_t suppliedGeneration=mismatch==4?404:403;
+          const uint64_t now=mismatch==5?89999:(mismatch==6?95000:90001);
+          ownerGate=true;auto session=job->takePreparedH2E(suppliedName.data(),suppliedName.size(),suppliedStation,suppliedAP,suppliedGeneration,now);ownerGate=false;
+          if(mismatch)assert(!session);
+          else {
+            assert(session && session->usingH2E());AthSecurity::SAEGroup19CommitTx tx;
+            assert(session->snapshotCommit(tx,1,403,90001));AthSecurity::SAEGroup19AuthMessage parsed;
+            assert(AthSecurity::decodeSAEGroup19AuthBody(tx.data()+24,tx.size()-24,true,0,parsed)==AthSecurity::SAEWireResult::Valid);
+            assert(!memcmp(parsed.commit,expectedCommit.data(),96));
+            assert(parsed.identifierPresent==!boundID.empty() && parsed.identifierBytes==boundID.size());
+            if(!boundID.empty())assert(!memcmp(parsed.identifier,boundID.data(),boundID.size()));session->release();
+          }
+          assert(!job->takePreparedH2E(boundName.data(),boundName.size(),local,ap,403,90001));
+          job->release();assert(objects==1);
+        }
+      }
+      // Non-H2E password derivation must use legacy SAE, never open auth or
+      // truncation into a PMK. Expected commits come from independent arithmetic.
+      for(const auto &vector:LegacyPasswordVectors::vectors){
+        auto password=octets(vector.password);const auto original=password;
+        const auto expectedCommit=decode<96>(vector.commit);
+        legacyRandomCalls=prepareHMACCalls=0;legacyRandomMode=0;auto job=new Ath10kSAEPrepareJob;
+        ownerGate=true;const auto before=curveCalls;
+        assert(job->initLegacyPassword(api,field,legacyRandom,name,9,password.data(),password.size(),local,ap,405,100000));
+        assert(curveCalls==before);ownerGate=false;memset(password.data(),0xa5,password.size());
+        assert(worker->submit(job));job->release();run(call);assert(worker->takeCompletedFor(job)==job);
+        assert(vector.counter<=40 && prepareHMACCalls==80 && legacyRandomCalls==44);
+        if(original.size()>=8)assert(!contains(job,sizeof(*job),original.data(),original.size()));
+        assert(!job->takePreparedH2E(name,9,local,ap,405,100001)); // Mode-specific collector cannot mislabel the result.
+        assert(!job->takePrepared(local,ap,405,100001)); // This rejects and consumes the bound result.
+        job->release();assert(objects==1);
+        // Prepare a fresh result and collect through the explicitly bound password API.
+        job=new Ath10kSAEPrepareJob;legacyRandomCalls=0;
+        assert(job->initLegacyPassword(api,field,legacyRandom,name,9,original.data(),original.size(),local,ap,405,100000));
+        assert(worker->submit(job));job->release();run(call);assert(worker->takeCompletedFor(job)==job);
+        ownerGate=true;auto session=job->takePreparedPassword(name,9,local,ap,405,100001);ownerGate=false;
+        assert(session && !session->usingH2E());AthSecurity::SAEGroup19CommitTx tx;
+        assert(session->snapshotCommit(tx,1,405,100001));AthSecurity::SAEGroup19AuthMessage parsed;
+        assert(AthSecurity::decodeSAEGroup19AuthBody(tx.data()+24,tx.size()-24,false,0,parsed)==AthSecurity::SAEWireResult::Valid);
+        assert(!parsed.h2e && !parsed.identifierPresent && !memcmp(parsed.commit,expectedCommit.data(),96));
+        assert(!job->takePreparedPassword(name,9,local,ap,405,100001));
+        const auto expectedPWE=decode<64>(vector.pwe);
+          auto remote=parsed;assert(AthSecurity::saeGroup19Commit(engine,peerRandom,peerMask,32,expectedPWE.data(),64,remote.commit,96,workspace));
+          AthSecurity::SAEGroup19Keys remoteKeys{};
+          assert(AthSecurity::saeGroup19ExchangeCandidate<HMAC>(engine,peerRandom,32,remote.commit,96,parsed.commit,96,expectedPWE.data(),64,false,ap,local,nullptr,0,nullptr,0,remoteKeys,workspace));
+          assert(session->completeCommit(tx,true,405,100001));const auto remoteFrame=fromAP(remote);
+          assert(session->receive(remoteFrame.data(),remoteFrame.size(),405,100002)==Action::ComputeKeys);
+          ownerGate=true;assert(session->queue(worker,Kind::Keys,405,100002)==Submission::Queued);ownerGate=false;run(call);
+          auto keyResult=worker->takeCompletedFor(session);assert(keyResult && session->consume(keyResult,405,100003)==Action::SendConfirm);keyResult->release();
+          assert(session->queue(worker,Kind::LocalConfirm,405,100003)==Submission::Queued);run(call);auto confirmationJob=worker->takeCompletedFor(session);assert(confirmationJob);
+          assert(session->consume(confirmationJob,405,100004)==Action::SendConfirm);
+          assert(session->completeConfirm(confirmationJob,true,405,100004)==Action::Ignore);confirmationJob->release();
+          AthSecurity::SAEGroup19AuthMessage remoteConfirm{};remoteConfirm.kind=AthSecurity::SAEAuthKind::Confirm;remoteConfirm.h2e=false;remoteConfirm.confirm[0]=1;
+          assert(AthSecurity::saeGroup19Confirm<HMAC>(remoteKeys.kck,32,1,remote.commit,96,parsed.commit,96,remoteConfirm.confirm+2,32));
+          const auto remoteConfirmFrame=fromAP(remoteConfirm);
+          assert(session->receive(remoteConfirmFrame.data(),remoteConfirmFrame.size(),405,100005)==Action::VerifyPeer);
+          assert(session->queue(worker,Kind::PeerConfirm,405,100005)==Submission::Queued);run(call);confirmationJob=worker->takeCompletedFor(session);
+          assert(confirmationJob && session->consume(confirmationJob,405,100006)==Action::Accepted);confirmationJob->release();
+          uint8_t authenticated[32]{},pmkid[16]{};assert(session->copyPMK(authenticated,32,pmkid,16,405,100006));
+          assert(!memcmp(authenticated,remoteKeys.pmk,32) && !memcmp(pmkid,remoteKeys.pmkid,16));
+          AthSecurity::wipe(authenticated,sizeof(authenticated));AthSecurity::wipe(&remoteKeys,sizeof(remoteKeys));session->release();
+        job->release();assert(objects==1);
+      }
+      for(unsigned failure=0;failure<5;++failure){
+        auto provider=field;if(failure==3)provider.curve=[]()->const void *{assert(!ownerGate && !heldLocks);return nullptr;};
+        legacyRandomMode=failure==0?1:(failure==1?2:0);legacyRandomCalls=prepareHMACCalls=0;
+        auto job=new Ath10kSAEPrepareJob;
+        assert(job->initLegacyPassword(api,provider,legacyRandom,name,9,secret,13,local,ap,406,110000));
+        failDigest=failure==2;forceLegacyNoCandidate=failure==4;assert(worker->submit(job));job->release();run(call);failDigest=forceLegacyNoCandidate=false;
+        assert(worker->takeCompletedFor(job)==job && !contains(job,sizeof(*job),secret,13));
+        assert(!job->takePreparedPassword(name,9,local,ap,406,110001));job->release();assert(objects==1);
+        if(failure==0)assert(legacyRandomCalls==1 && !prepareHMACCalls);
+        if(failure==1)assert(legacyRandomCalls==129 && !prepareHMACCalls);
+        if(failure==4)assert(legacyRandomCalls==202 && prepareHMACCalls==400); // Exhausted 200 candidates without a usable x.
+      }
+      legacyRandomMode=0;
+      {auto job=new Ath10kSAEPrepareJob;legacyRandomCalls=0;
+       assert(job->initLegacyPassword(api,field,legacyRandom,name,9,secret,13,local,ap,407,120000));
+       assert(worker->submit(job));job->release();Pause paused;pauseHMAC=&paused;
+       std::thread runner([&]{run(call);});paused.wait();ownerGate=true;assert(worker->cancelFor(job));ownerGate=false;
+       paused.resume();runner.join();pauseHMAC=nullptr;assert(!worker->takeCompleted() && objects==1);}
+      {auto job=new Ath10kSAEPrepareJob;assert(!job->initH2E(api,field,prepareRandom,name,0,secret,13,nullptr,0,local,ap,402,0));
+       assert(!job->initH2E(api,field,prepareRandom,name,9,secret,65,nullptr,0,local,ap,402,0));
+       auto missing=field;missing.add=nullptr;assert(!job->initH2E(api,missing,prepareRandom,name,9,secret,13,nullptr,0,local,ap,402,0));job->release();assert(objects==1);}
     }
     auto create=[&](uint32_t generation,uint64_t now){
         auto s=new Session;const auto before=curveCalls;

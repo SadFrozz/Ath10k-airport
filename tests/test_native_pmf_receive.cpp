@@ -17,6 +17,7 @@ struct Ath10kKernelCrypto : PersonalTestCrypto {
 #include "pmf_session.inc"
 #ifdef ATH10K_NATIVE_REAL_SAE
 #include "../src/shared/Ath10kSAEExchange.hpp"
+#include "../src/shared/Ath10kSAEPassword.hpp"
 #include <CommonCrypto/CommonHMAC.h>
 static const void *ccsha256_di(){assert(!ownerGate && !heldLocks);return reinterpret_cast<const void *>(1);}
 static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *data,void *out){

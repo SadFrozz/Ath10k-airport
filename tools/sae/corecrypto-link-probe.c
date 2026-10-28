@@ -14,6 +14,12 @@ extern void ccec_mult_blinded(void);
 extern void ccn_read_uint(void);
 extern void ccn_write_uint_padded(void);
 extern void ccrng(void);
+extern void cczp_n(void);
+extern void cczp_prime(void);
+extern void cczp_mul(void);
+extern void cczp_inv(void);
+extern void cczp_add(void);
+extern void cczp_sub(void);
 
 static void (*volatile ath10k_crypto_link_imports[])(void) __attribute__((used)) = {
     ccec_cp_256,
@@ -28,6 +34,12 @@ static void (*volatile ath10k_crypto_link_imports[])(void) __attribute__((used))
     ccn_read_uint,
     ccn_write_uint_padded,
     ccrng,
+    cczp_n,
+    cczp_prime,
+    cczp_mul,
+    cczp_inv,
+    cczp_add,
+    cczp_sub,
 };
 extern kern_return_t _start(kmod_info_t *,void *);
 extern kern_return_t _stop(kmod_info_t *,void *);

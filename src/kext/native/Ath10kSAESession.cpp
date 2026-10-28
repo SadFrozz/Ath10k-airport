@@ -111,26 +111,68 @@ void Ath10kSAEJob::discard(){
 
 OSDefineMetaClassAndStructors(Ath10kSAEPrepareJob,Ath10kSAEWorkItem)
 
-bool Ath10kSAEPrepareJob::initPWE(const AthSecurity::P256CoreCryptoAPI &provider,
-    bool (*rng)(uint8_t *,size_t),const uint8_t *point,size_t bytes,bool h2e,
-    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
-    if(initialized || consumed || !OSObject::init() || !provider.complete() || !rng || !point || bytes!=64 ||
+bool Ath10kSAEPrepareJob::initBinding(const AthSecurity::P256CoreCryptoAPI &provider,
+    bool (*rng)(uint8_t *,size_t),bool h2e,const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    if(initialized || consumed || !OSObject::init() || !provider.complete() || !rng ||
        !AthSecurity::saeUnicastIdentity(station) || !AthSecurity::saeUnicastIdentity(bssid) ||
        AthSecurity::equal(station,bssid,6) || !connection ||
        now>~uint64_t(0)-AthSecurity::SAEGroup19ClientExchange::DeadlineMs)return false;
-    api=provider;randomBytes=rng;AthSecurity::copy(pwe,point,64);
-    AthSecurity::copy(local,station,6);AthSecurity::copy(ap,bssid,6);
+    api=provider;randomBytes=rng;AthSecurity::copy(local,station,6);AthSecurity::copy(ap,bssid,6);
     generation=connection;started=now;deadline=now+AthSecurity::SAEGroup19ClientExchange::DeadlineMs;
     request.kind=AthSecurity::SAEAuthKind::Commit;request.h2e=h2e;initialized=true;return true;
+}
+bool Ath10kSAEPrepareJob::initPWE(const AthSecurity::P256CoreCryptoAPI &provider,
+    bool (*rng)(uint8_t *,size_t),const uint8_t *point,size_t bytes,bool h2e,
+    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    if(!point || bytes!=64 || !initBinding(provider,rng,h2e,station,bssid,connection,now))return false;
+    AthSecurity::copy(pwe,point,64);return true;
+}
+bool Ath10kSAEPrepareJob::initH2E(const AthSecurity::P256CoreCryptoAPI &provider,
+    const AthSecurity::P256FieldAPI &field,bool (*rng)(uint8_t *,size_t),
+    const uint8_t *name,size_t nameBytes,const uint8_t *secret,size_t secretBytes,
+    const uint8_t *identifier,size_t identifierBytes,const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    return initPassword(provider,field,rng,true,name,nameBytes,secret,secretBytes,identifier,identifierBytes,station,bssid,connection,now);
+}
+bool Ath10kSAEPrepareJob::initLegacyPassword(const AthSecurity::P256CoreCryptoAPI &provider,
+    const AthSecurity::P256FieldAPI &field,bool (*rng)(uint8_t *,size_t),
+    const uint8_t *name,size_t nameBytes,const uint8_t *secret,size_t secretBytes,
+    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    return initPassword(provider,field,rng,false,name,nameBytes,secret,secretBytes,nullptr,0,station,bssid,connection,now);
+}
+bool Ath10kSAEPrepareJob::initPassword(const AthSecurity::P256CoreCryptoAPI &provider,
+    const AthSecurity::P256FieldAPI &field,bool (*rng)(uint8_t *,size_t),bool h2e,
+    const uint8_t *name,size_t nameBytes,const uint8_t *secret,size_t secretBytes,
+    const uint8_t *identifier,size_t identifierBytes,const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    if(!name || !nameBytes || nameBytes>sizeof(ssid) || !secret || !secretBytes || secretBytes>sizeof(password) ||
+       (!identifier && identifierBytes) || identifierBytes>sizeof(request.identifier) ||
+       !field.curve || !field.units || !field.prime || !field.multiply || !field.inverse || !field.add || !field.subtract ||
+       !initBinding(provider,rng,h2e,station,bssid,connection,now))return false;
+    fieldAPI=field;AthSecurity::copy(ssid,name,nameBytes);ssidBytes=nameBytes;
+    AthSecurity::copy(password,secret,secretBytes);passwordBytes=secretBytes;credentialBound=true;
+    request.identifierPresent=identifierBytes!=0;request.identifierBytes=static_cast<uint16_t>(identifierBytes);
+    if(identifierBytes)AthSecurity::copy(request.identifier,identifier,identifierBytes);
+    return true;
 }
 void Ath10kSAEPrepareJob::execute(){
     if(!initialized || executed || consumed)return;
     executed=true;
     AthSecurity::P256CoreCryptoCandidate engine(api);
     uint8_t mask[32]{},scalar[32]{};
+    bool derived=true;
+    if(credentialBound){
+        AthSecurity::P256FieldCandidate field(fieldAPI);
+        if(request.h2e){
+            derived=AthSecurity::saeGroup19H2EPT<Ath10kSAEHMAC>(field,engine,ssid,ssidBytes,password,passwordBytes,
+                request.identifier,request.identifierBytes,pt,sizeof(pt),fieldWorkspace,workspace) &&
+                AthSecurity::saeGroup19H2EPWE<Ath10kSAEHMAC>(engine,pt,sizeof(pt),local,ap,6,pwe,sizeof(pwe),workspace);
+        }else derived=AthSecurity::saeGroup19LegacyPWE<Ath10kSAEHMAC>(field,engine,randomBytes,password,passwordBytes,
+            local,ap,pwe,sizeof(pwe),fieldWorkspace,workspace);
+        AthSecurity::wipe(password,sizeof(password));passwordBytes=0;AthSecurity::wipe(pt,sizeof(pt));
+        fieldWorkspace.clear();AthSecurity::wipe(&fieldAPI,sizeof(fieldAPI));
+    }
     // Reject out-of-range values without modulo bias. A broken RNG cannot
     // monopolize the shared worker: at most 128 complete candidate pairs.
-    if(engine.validate(pwe,64,workspace))for(unsigned attempt=0;attempt<128;++attempt){
+    if(derived && engine.validate(pwe,64,workspace))for(unsigned attempt=0;attempt<128;++attempt){
         AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(mask,sizeof(mask));
         if(!randomBytes(random,32) || !randomBytes(mask,32))break;
         if(!AthSecurity::saeGroup19CommitScalar(random,mask,32,scalar,32))continue;
@@ -141,12 +183,24 @@ void Ath10kSAEPrepareJob::execute(){
     randomBytes=nullptr;
     if(!prepared){AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(pwe,sizeof(pwe));AthSecurity::wipe(&request,sizeof(request));}
 }
-Ath10kSAESession *Ath10kSAEPrepareJob::takePrepared(const uint8_t *station,const uint8_t *bssid,
-    uint32_t connection,uint64_t now){
+Ath10kSAESession *Ath10kSAEPrepareJob::takePrepared(const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    return takePreparedBound(station,bssid,nullptr,0,connection,now);
+}
+Ath10kSAESession *Ath10kSAEPrepareJob::takePreparedH2E(const uint8_t *name,size_t bytes,
+    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    return credentialBound && request.h2e?takePreparedBound(station,bssid,name,bytes,connection,now):nullptr;
+}
+Ath10kSAESession *Ath10kSAEPrepareJob::takePreparedPassword(const uint8_t *name,size_t bytes,
+    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    return credentialBound?takePreparedBound(station,bssid,name,bytes,connection,now):nullptr;
+}
+Ath10kSAESession *Ath10kSAEPrepareJob::takePreparedBound(const uint8_t *station,const uint8_t *bssid,
+    const uint8_t *name,size_t bytes,uint32_t connection,uint64_t now){
     if(!executed || consumed)return nullptr;
     consumed=true;
     Ath10kSAESession *session=nullptr;
-    if(prepared && station && bssid && connection==generation && now>=started && now<deadline &&
+    const bool nameBound=!credentialBound || (name && bytes==ssidBytes && AthSecurity::equal(name,ssid,bytes));
+    if(prepared && nameBound && station && bssid && connection==generation && now>=started && now<deadline &&
        AthSecurity::equal(station,local,6) && AthSecurity::equal(bssid,ap,6)){
         session=new Ath10kSAESession;
         if(session && !session->initPrepared(api,random,32,pwe,64,request,local,ap,generation,started)){
@@ -164,6 +218,9 @@ void Ath10kSAEPrepareJob::discard(){
     AthSecurity::wipe(&api,sizeof(api));randomBytes=nullptr;workspace.clear();
     AthSecurity::wipe(&request,sizeof(request));AthSecurity::wipe(pwe,sizeof(pwe));
     AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(local,sizeof(local));AthSecurity::wipe(ap,sizeof(ap));
+    fieldWorkspace.clear();AthSecurity::wipe(&fieldAPI,sizeof(fieldAPI));
+    AthSecurity::wipe(password,sizeof(password));AthSecurity::wipe(ssid,sizeof(ssid));AthSecurity::wipe(pt,sizeof(pt));
+    passwordBytes=ssidBytes=0;credentialBound=false;
     generation=0;started=deadline=0;prepared=false;consumed=true;
 }
 

@@ -1269,10 +1269,12 @@ frames or a working WPA3 association. The prepared 0.0.99 boot candidate and EFI
 are unchanged by these source additions.
 
 
-### Remaining native SAE radio integration, checked against current source
+### Historical native SAE radio integration baseline (0.0.100)
 
 The retained preparation job is intentionally not sufficient to enable a join.
-The next implementation must replace these exact open-auth assumptions together:
+At that revision, the following open-auth assumptions required replacement.
+Subsequent 0.0.101/0.0.102 integration and local password work supersede this
+baseline; use the current matrix at the end of this document for open items:
 
 | Boundary | Current implementation | Required SAE behavior |
 | --- | --- | --- |
@@ -1602,3 +1604,196 @@ link uses a diagnostic copy without OSBundleRequired only for AuxKC eligibility;
 no system kernel collection is installed or patched. Static stack frames are
 104 bytes for native SAE service and association construction. No hardware
 WPA3/H2E success is inferred from these source/model checks.
+
+
+### Retained H2E credential derivation (local follow-up to bc45c34)
+
+Ath10kSAEPrepareJob now has an experimental initH2E path taking copied SSID,
+password octets, optional nonempty password identifier, identities/generation,
+point/field providers and RNG. Bounds follow the existing 64-byte credential
+slot, 1..32-byte named SSID and bounded identifier; input is not interpreted as
+a C string. Native macOS credential delivery/interpretation is not thereby
+validated, and no native request is admitted by this change.
+
+Initialization only validates/copies metadata; the retained worker derives PT,
+then MAC-bound PWE, samples rand/mask and builds the commit. Password and PT are
+erased immediately after derivation, on both success and failure, while public
+SSID/identifier binding survives until collection. Queue cancellation and final
+release erase unexecuted or abandoned snapshots too. HMAC/field-provider errors
+fail closed without RNG/legacy fallback. Kernel ABI/timing remains an explicit
+prerequisite: the field provider runs only on the worker, not an owner gate.
+
+A credential result can be collected once through takePreparedH2E only with the
+same SSID octets, identities/generation and original deadline. The old unbound
+PWE collector cannot extract a password-derived session; a new deadline is not
+created at collection. The request carries the password identifier that was
+included in derivation. Prepared session/job ownership remains independent.
+
+The retained-session test uses real userland CoreCrypto and an independent
+known H2E PWE vector. It mutates original inputs after initialization, compares
+the prepared commit/identifier, then executes peer commit/key/local-confirm/
+peer-confirm work and checks authenticated PMK/PMKID agreement. Cases also cover
+wrong SSID, unbound-collector bypass, expired result, field/HMAC errors, invalid
+bounds/providers, queued cancellation, final release and cancellation during
+actual HMAC. Memory checks verify password/PT erasure in completed jobs and
+password erasure at destruction. Focused ASan/UBSan passes for sae_session,
+sae_eapol and native_sae_radio; sae_session ThreadSanitizer passes. Native and
+kernel compile-only builds pass without new external imports; preparation's
+optimized static frame is 1464 bytes, under the enforced 4096-byte frame limit.
+This is not a new full-suite, offline-link, signature or hardware claim.
+
+This follow-up stays local for the next publication batch. Native password
+request decoding/admission, legacy password PWE, kernel crypto ABI/timing and
+firmware PMF/RX/PN validation remain open. Native WPA3 capabilities remain
+disabled; no kext installation or reboot is performed.
+
+
+### Sequoia field-provider static ABI check (local follow-up)
+
+The locally extracted CoreCrypto image has cczp_add at
+0xffffff800323de53, cczp_mul at 0xffffff800323ef1c, cczp_sub at
+0xffffff800323f67e and cczp_inv at 0xffffff80031f9939. The first three
+consume (field context, output, left, right) and return a 32-bit status;
+inverse consumes (field context, output, input) and preserves its backend
+status. Add/multiply/subtract wrappers return zero after successful dispatch
+and -13 on workspace-allocation failure. This agrees with the experimental
+P256FieldAPI return types for this image; no void-return correction is justified.
+These wrappers allocate temporary heap workspaces, reinforcing worker-only use.
+
+This is static evidence for one extracted Sequoia image, not a runtime test or
+an ABI guarantee for other macOS versions. The existing offline crypto probe
+previously checked twelve point/scalar/RNG exports only. It now also references
+cczp_n, cczp_prime, cczp_mul, cczp_inv, cczp_add and cczp_sub. The rebuilt
+18-import diagnostic probe links offline against the running system's boot
+collection; exact fileset inclusion matches probe UUID
+46600F2A-4E86-3083-A97A-C69F912A0404. The probe has no personality, calls no
+crypto and refuses start/stop; it is not loaded or installed. This establishes
+export availability on this system, not the parameter ABI. Context
+representation, runtime behavior and timing still require validation before
+native H2E credential admission. Raw Apple disassembly remains local
+and is not included in the repository or SD source snapshots.
+
+
+### H2E credential boundary vectors (local follow-up)
+
+The retained preparation test now crosses the worker/collection boundary with
+independent Python integer/HMAC vectors for a one-octet zero SSID/password,
+32-octet binary SSID plus 64-octet binary password and 254-octet identifier,
+and UTF-8 SSID/password with no identifier. The generator imports no production
+code and uses cryptography to validate resulting P-256 points. It reproduces
+the earlier known PT/PWE before emitting new PT/PWE/commit expectations; fixture
+regeneration is byte-identical. Inputs are synthetic and do not read the native
+credential store. The maximal password pattern is deliberately distinct from
+the public identifier, so memory-erasure checks do not mistake public identifier
+bytes for retained password data.
+
+Tests mutate caller buffers before worker execution and compare the actual
+serialized scalar/element and full identifier against independent expected
+values. They verify password/PT erasure, one-time execution/collection and
+failure on a changed final SSID octet after an embedded NUL, changed station/AP,
+changed generation, backwards time and the exact original deadline. These are
+preparation/ownership checks; they do not prove how macOS delivers a live SAE
+password or approve the kernel provider's execution/timing.
+
+The three focused ASan/UBSan suites (sae_session, sae_eapol and
+native_sae_radio) pass with these vectors; sae_session ThreadSanitizer passes.
+No new full-suite or hardware validation is claimed for this local follow-up.
+
+
+### Retained legacy SAE password derivation (local follow-up)
+
+Ath10kSAEPassword.hpp adds the group-19 hunting-and-pecking password-to-PWE
+path. The seed is HMAC-SHA256(max(MACs)||min(MACs), password||counter), with
+explicit password octet length; PRF-256 uses the group prime and the label
+"SAE Hunting and Pecking". Out-of-range x candidates take the field path using
+a canonical substitute and cannot be selected. The first valid x and seed
+parity are retained through masked selection. At least 40 iterations run;
+authentication fails if no candidate is found by 200. After finding the first
+candidate, later iterations use a copied random dummy password.
+
+Quadratic-residue testing is blinded: a random nonzero field element forms
+QR=r0^2 and QNR=-QR (P-256's p is 3 mod 4). Each iteration draws fresh r and
+checks the coset of y_squared*r^2*(odd(r)?QR:QNR), reversing the result according
+to that parity. The final unblinded square root is calculated only for the
+selected valid x, its sign follows the saved seed, and the point provider
+validates the output. Random field draws use bounded rejection (128 attempts)
+without modulo reduction. Random, field or HMAC failure is terminal. Temporary
+password material, seeds, field values and both workspaces are wiped on every
+exit, and output is published only after complete success.
+
+The retained job gains initLegacyPassword and an exact-SSID-bound
+takePreparedPassword collector for both modes. initH2E retains its behavior;
+its mode-specific collector cannot relabel a legacy result. The unbound PWE
+collector cannot extract either password-derived mode. Both modes preserve
+the original MACs, generation and authentication deadline. Legacy derivation
+has no password-identifier input and is selected explicitly; H2E failure never
+causes an automatic fallback. NativeJoinAuth still rejects SAE, so this does
+not enable native password admission or advertise working WPA3.
+
+Independent Python integer/HMAC vectors cover one-octet, ordinary and 64-octet
+binary passwords. Serialized commits match independently calculated PWE points,
+then retained worker key/confirm exchange produces matching authenticated
+PMK/PMKID with a synthetic peer. Tests cover no owner-gate crypto, copied inputs,
+password erasure, mode/collector separation, RNG failure, bounded all-zero RNG,
+HMAC/field failures, 200 forced out-of-range candidates and cancellation during
+real HMAC. Tests assert the normal 40 iterations even when the first candidate
+succeeds. These checks establish algorithm/ownership behavior in a process;
+provider timing/ABI in the kernel and native credential delivery remain open.
+
+Primary references (pinned upstream source, read locally):
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/common/sae.c
+(sae_derive_pwe_ecc, sae_test_pwd_seed_ecc), and
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/common/dragonfly.c
+(dragonfly_min_pwe_loop_iter, dragonfly_is_quadratic_residue_blind).
+
+
+### Current native SAE matrix after local password preparation work
+
+This matrix supersedes the historical 0.0.100 baseline above. Source behavior
+is distinct from native request admission and physical validation.
+
+| Boundary | Current source evidence | Still required |
+| --- | --- | --- |
+| Password preparation | Retained H2E and legacy jobs, exact SSID/MAC/generation/deadline binding, exclusive worker, terminal errors and wiping; independent commit and authenticated PMK/PMKID tests | Decode/validate actual native password request and connect preparation ownership to native join cancellation |
+| P-256 provider | Userland real-provider tests; kernel compilation; eighteen-export offline link and static Sequoia ABI evidence | Bind and validate kernel provider/context execution and timing; repeat ABI work for other supported macOS versions |
+| Authentication TX/RX | Ath10kSAERadio routes algorithm 3, retained compute/confirm jobs, generation checks and actual management TX reservation; open-auth builder refuses AKM8 | Physical frames/firmware validation, plus accepted-state behavior audit for the station role |
+| Authentication to association | Verified local/peer confirmations precede PMK handoff; exact AKM8 RSNE/PMKID and negotiated H2E RSNXE; no PSK fallback | Native entry path and physical association |
+| EAPOL and keys | H2E RSNXE snapshot/M3 validation, PTK/GTK/IGTK staging, retained PMF ownership and replay epochs tested | Physical PMF RX layout, firmware management TX/PN ownership and complete required-PMF exchange |
+| Lifecycle | Retained worker/session cancellation, original deadlines and typed completion ownership in source tests | Native credential/preparation factory integration; real leave/rejoin/sleep/wake and runtime terminal-fault recovery |
+| Admission/capabilities | NativeJoinAuth rejects SAE and no native WPA3 capability is enabled | Enable only with the dependent credential, backend and PMF paths implemented and verified |
+
+macOS 11–26 ABI coverage and AWDL/AirDrop remain separate stages. No additional
+application, system-volume patch or installed kernel-collection change is used.
+The retained 0.0.99 reboot candidate is unchanged; local password development
+is not an installed or hardware-validated driver release.
+
+
+The combined local H2E/legacy preparation changes pass the full 55-test
+ASan/UBSan suite with halt-on-error; sanitizer logs are checked, not only process
+exit codes. Native build and kernel compile checks pass, with unchanged external
+imports relative to immutable 0.0.99. The optimized preparation frame is 1656
+bytes (the enforced per-frame limit is 4096); this is not a proof of total
+kernel call-depth usage or provider latency. No new signature/offline-inclusion
+or hardware-success claim is made for this local, uninstalled driver build.
+
+The retained preparation/session test also passes ThreadSanitizer with legacy
+derivation/cancellation enabled. Both H2E and legacy vector generators regenerate
+byte-identical fixtures. The source and validation package is backed up to the
+UUID-checked SD volume and compared byte-for-byte; no installation or reboot.
+
+
+The combined retained H2E/legacy password preparation and expanded crypto-export
+probe batch is development version 0.0.103 (compatible version 0.0.98). Native
+SAE admission/capabilities remain disabled; this release does not claim working
+hardware WPA3. It is separate from the immutable 0.0.99 reboot candidate and
+does not authorize installation or reboot.
+
+
+The 0.0.103 publication candidate passes strict ad-hoc signature validation and
+exact offline AuxKC inclusion for Mach-O UUID
+5D27CA7A-B539-35EA-BC2B-26DFB5B23066. The diagnostic AuxKC copy alone removes
+OSBundleRequired; the saved native bundle retains Network-Root. Native and
+legacy builds and callback-audit checks pass. The full 55-test sanitizer suite
+and sae_session ThreadSanitizer cover unchanged preparation/protocol source;
+subsequent edits are version metadata and documentation. No installed kernel
+collection, EFI files or running driver is changed by this validation.
