@@ -363,6 +363,7 @@ void Ath10kPCIDevice::drainControlWorkers()
 {
     // The probe may still create the native interface and its worker. Finish
     // or cancel that producer before draining the worker it can create.
+    blockPowerIOForTermination();
     cancelDeferredProbe();
 #ifdef ATH10K_NATIVE
     if(_nativeInterface)_nativeInterface->drainPowerCalls();
@@ -380,8 +381,7 @@ void Ath10kPCIDevice::stop(IOService *provider)
     if (_reprobeRequested)
         ath10kSetRecoveryStatus(provider, "stop-started", "Driver stop began for a requested recovery rematch");
     ATH10K_TRACE("Ath10kMac: stop %s\n", chipName());
-    releasePowerNotifications();
-    if (_powerManaged) { PMstop(); _powerManaged=false; }
+    drainControllerPowerCalls();
     releaseWMIRuntime();
     Ath10k::wipeConnectionSecrets(_connection);
     releaseRXReserve();
@@ -456,8 +456,7 @@ void Ath10kPCIDevice::free()
 {
     // free() also covers partial initialization without a preceding stop().
     drainControlWorkers();
-    releasePowerNotifications();
-    if (_powerManaged) { PMstop(); _powerManaged=false; }
+    drainControllerPowerCalls();
     releaseWMIRuntime();
     Ath10k::wipeConnectionSecrets(_connection);
     releaseRXReserve();

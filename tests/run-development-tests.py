@@ -48,7 +48,7 @@ def main():
         (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
         driver=(ROOT/'src/kext/Ath10kPCIDevice.cpp').read_text()
-        (include/'native_termination_power.inc').write_text(power[power.index('void Ath10kPCIDevice::blockPowerIOForTermination()'):power.index('void Ath10kPCIDevice::publishPowerState()')])
+        (include/'native_termination_power.inc').write_text(power[power.index('void Ath10kPCIDevice::blockPowerIOForTermination()'):power.index('bool Ath10kPCIDevice::controllerPowerClosed()')])
         (include/'native_termination_controller.inc').write_text(native[native.index('void Ath10kPCIDevice::prepareNativeInterfaceTermination('):native.index('void Ath10kPCIDevice::stopNativeRequests()')])
         (include/'native_termination_notifier.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareTerminationNotification()'):native.index('bool Ath10kNativeInterface::prepareRegistrationInfo(')])
         (include/'native_bsd_reference.inc').write_text(native[native.index('IOReturn Ath10kNativeInterface::prepareBSDInterface('):native.index('bool Ath10kNativeInterface::prepareTerminationNotification()')])

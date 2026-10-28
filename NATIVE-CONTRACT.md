@@ -407,3 +407,40 @@ Still not ready for installation: the separate PCI-controller setPowerState and
 root power notification path needs terminal admission/barrier verification before
 its own PMstop/resource release. Automatic wake recovery also remains missing.
 No hardware stability or full-stack completion is established by these host tests.
+
+## PCI-controller power admission/resource fence candidate (current)
+
+The stop/free path now raises the permanent I/O block before draining firmware
+creation. That block does not by itself reject root sleep notifications: a sleep
+acknowledgement must still follow hardware quiescence. A separate atomic
+controller-power admission flag closes only after the existing DeviceOff action
+has run under the initialization barrier and radio gate. The action stops WMI
+and checks partial-bootstrap DMA ownership; an already-suspended device avoids
+a second powered-off PCI access. With the producer drained and I/O permanently
+blocked, no new firmware/runtime work can rearm the device in this handoff.
+
+After quiescence and closure, root notifier removal synchronizes outstanding
+handlers, controller PMstop inhibits further platform callbacks, and a final
+initialization-barrier rendezvous precedes WMI/resource release. requestPowerEvent
+checks the separate closure flag both before and after acquiring that barrier.
+An already-dispatched callback which passed its first check therefore cannot
+access a retired workloop, PCI pointer, runtime state or property publisher after
+resources are released. A callback entering later returns at its first check.
+Late root sleep notifications can acknowledge immediately because closure is
+published only after quiescence. Repeated stop/free and early partial setup
+share this sequence.
+
+Threaded production-method tests pause a callback between its first check and
+barrier acquisition, close/quiesce the controller, mark resources unavailable
+and then resume it. They also hold an executing callback inside the barrier to
+prove cleanup cannot overtake it, verify root sleep still quiesces with the
+permanent I/O block, exercise late root acknowledgement, already-powered-off PCI
+and repeated cleanup. Native/partial producer tests remain enabled.
+
+This closes the specific controller power-admission/resource race found in this
+audit. It is not kernel/hardware proof. Automatic wake/rematch recovery remains
+unimplemented, and the broader native callback/traffic audit remains incomplete.
+A boot/connection stability test of the accumulated fixes is the next hardware
+gate; it requires a fresh explicit reboot authorization.
+
+Current controller-power candidate executable UUID: `8C9FAF40-3A5D-36D8-8D82-F685EDF20FBB`; full portable and ASan/UBSan suites, native build/import check and exact-UUID auxiliary binding passed. Original OpenCore boot and actual hardware termination remain unverified.

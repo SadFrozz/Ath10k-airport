@@ -7,6 +7,7 @@ public:
     bool probePending=false,nativePending=false,nativeAllocated=false;
     bool nativeStopping=false,resourcesLive=true;
     unsigned probeCancels=0,nativeDrains=0;unsigned gateDepth=0;
+    void blockPowerIOForTermination(){}
     void drainControlWorkers();
     void cancelDeferredProbe(){
         assert(!gateDepth && resourcesLive);++probeCancels;

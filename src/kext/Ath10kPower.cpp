@@ -47,6 +47,30 @@ void Ath10kPCIDevice::blockPowerIOForTermination()
         if(OSCompareAndSwap(old,Ath10k::terminatePowerIO(old),&_powerIOBlock))return;
     }
 }
+bool Ath10kPCIDevice::controllerPowerClosed()
+{
+    return !OSCompareAndSwap(0,0,&_controllerPowerClosed);
+}
+void Ath10kPCIDevice::drainControllerPowerCalls()
+{
+    // Stop/free enter outside the hardware gate. First quiesce while PCI is
+    // available, then close callback admission under the same producer barrier.
+    // A late root sleep acknowledgement is safe only after this quiescence.
+    blockPowerIOForTermination();
+    if(_probePowerLock)IOLockLock(_probePowerLock);
+    if(!controllerPowerClosed()){
+        auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
+        if(loop)loop->runAction(controlPowerState,this,
+            reinterpret_cast<void *>(static_cast<uintptr_t>(Ath10k::PowerEvent::DeviceOff)));
+        OSCompareAndSwap(0,1,&_controllerPowerClosed);
+    }
+    if(_probePowerLock)IOLockUnlock(_probePowerLock);
+    releasePowerNotifications();
+    if(_powerManaged){PMstop();_powerManaged=false;}
+    // PMstop is bounded. Drain bodies admitted before closure; calls which
+    // were dispatched but have not entered yet fail their admission check.
+    if(_probePowerLock){IOLockLock(_probePowerLock);IOLockUnlock(_probePowerLock);}
+}
 void Ath10kPCIDevice::publishPowerState()
 {
     setProperty("Ath10kPowerNotificationRegistered",_powerNotifier!=nullptr);
@@ -69,6 +93,7 @@ void Ath10kPCIDevice::publishPowerState()
 }
 void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
 {
+    if(controllerPowerClosed())return;
     if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff){
         beginPowerSuspend();
     }
@@ -78,6 +103,10 @@ void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
     // Firmware initialization is not yet a runtime workloop action. Wait for
     // it before quiescing DMA, including sleep before _wmiWorkLoop exists.
     if(_probePowerLock)IOLockLock(_probePowerLock);
+    if(controllerPowerClosed()){
+        if(_probePowerLock)IOLockUnlock(_probePowerLock);
+        return;
+    }
     auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
     if(loop)loop->runAction(controlPowerState,this,
         reinterpret_cast<void *>(static_cast<uintptr_t>(event)));

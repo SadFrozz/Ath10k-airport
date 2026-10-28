@@ -82,6 +82,9 @@ private:
     void beginPowerSuspend();
     void finishPowerSuspend();
     void blockPowerIOForTermination();
+    bool controllerPowerClosed();
+    void drainControllerPowerCalls();
+    volatile UInt32 _controllerPowerClosed=0;
     void requestPowerEvent(Ath10k::PowerEvent);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);

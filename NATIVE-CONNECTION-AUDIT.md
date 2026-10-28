@@ -323,3 +323,15 @@ A distinct native parent-start flag preserves mandatory parent stop after early
 radio retirement and avoids double stop. Host/threaded and sanitizer tests pass;
 kernel lifecycle/hardware not verified. Next audit is the PCI-controller's own
 setPowerState/root callback closure and resource-release barrier, then wake recovery.
+
+### Controller PM closure and quiescence (2026-10-28)
+
+Stop/free now permanently block I/O, drain producers/native calls, quiesce through
+the DeviceOff action under the shared producer/radio barrier, and only then close
+power admission. Root notifier removal, PMstop and an actual barrier rendezvous
+precede resource release. Entry and inside-barrier checks reject late controller
+callbacks without touching retired state. Quiescence must precede closure so a
+late root sleep acknowledgement remains valid. Threaded host cases cover both
+pre-barrier and executing-body races, powered-off PCI and repeated cleanup.
+Kernel/hardware delivery still requires a boot test; automatic wake recovery
+and the broad native callback/connection audit are not complete.

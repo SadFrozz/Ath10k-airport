@@ -17,7 +17,12 @@ static bool OSCompareAndSwap(UInt32 old,UInt32 next,volatile UInt32 *address){
 }
 static UInt32 OSAddAtomic(int amount,volatile UInt32 *address){return __sync_fetch_and_add(address,amount);}
 using IOLock=std::mutex;
-static void IOLockLock(IOLock *lock){lock->lock();}
+static thread_local bool pauseNextLock=false;
+static std::atomic<bool> entryPaused{false},releaseEntry{false};
+static void IOLockLock(IOLock *lock){
+ if(pauseNextLock){pauseNextLock=false;entryPaused=true;while(!releaseEntry.load())std::this_thread::yield();}
+ lock->lock();
+}
 static void IOLockUnlock(IOLock *lock){lock->unlock();}
 struct IONotifier{bool removed=false;void remove(){removed=true;}};
 static IONotifier notifier;static bool registrationFail=false;static unsigned registrations=0;
@@ -26,8 +31,8 @@ static IONotifier *registerPrioritySleepWakeInterest(Handler,void *,void *){++re
 struct IOPowerStateChangeNotification{void *powerRef=nullptr;unsigned long returnValue=123;};
 static void *acked=nullptr;static void acknowledgeSleepWakeNotification(void *ref){acked=ref;}
 struct Gate{
- bool inside=false;
- template<class F> int runAction(F fn,Ath10kPCIDevice *d,void *p){inside=true;int r=fn(d,p,nullptr,nullptr,nullptr);inside=false;return r;}
+ bool inside=false;std::atomic<bool> *hold=nullptr,*entered=nullptr;
+ template<class F> int runAction(F fn,Ath10kPCIDevice *d,void *p){inside=true;if(entered)*entered=true;if(hold)while(hold->load())std::this_thread::yield();int r=fn(d,p,nullptr,nullptr,nullptr);inside=false;return r;}
 };
 struct MockPCI {template<class... T> bool setProperty(T...){return true;}};
 class Ath10kPCIDevice{
@@ -35,7 +40,8 @@ class Ath10kPCIDevice{
 public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
  IOLock probeLock;IOLock *_probePowerLock=&probeLock;
- Gate *getWorkLoop(){return &loop;}
+ bool resourcesLive=true;
+ Gate *getWorkLoop(){assert(resourcesLive);return &loop;}
  Ath10k::PowerState _power{};volatile UInt32 _powerIOBlock=0;
  IONotifier *_powerNotifier=nullptr;bool _systemSuspended=false,_dmaQuarantine=false;
  struct{bool active=true;const char *status="active";} _wmiLive;
@@ -44,11 +50,14 @@ public:
  unsigned resets=0,published=0;bool resetQuarantines=false,pciPowered=true;
  bool preparePowerNotifications();void releasePowerNotifications();bool powerIOBlocked();bool powerRestartAllowed();
  void beginPowerSuspend();void finishPowerSuspend();void blockPowerIOForTermination();
+ volatile UInt32 _controllerPowerClosed=0;bool _powerManaged=false;unsigned pmStops=0;
+ bool controllerPowerClosed();void drainControllerPowerCalls();
+ void PMstop(){assert(controllerPowerClosed() && !_wmiLive.active);++pmStops;pciPowered=false;}
  void requestPowerEvent(Ath10k::PowerEvent);void publishPowerState();
  static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
  static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);
- template<class... T> void setProperty(T...){}
- void publishWMIRuntimeProperties(){++published;}
+ template<class... T> void setProperty(T...){assert(resourcesLive);}
+ void publishWMIRuntimeProperties(){assert(resourcesLive);++published;}
  void endWMIRuntime(const char *reason){
   assert(loop.inside && powerIOBlocked());
   if(!_wmiLive.active)return;
@@ -165,5 +174,48 @@ int main(){
  terminating.requestPowerEvent(PowerEvent::DeviceOff);terminating.requestPowerEvent(PowerEvent::DeviceOn);
  assert(terminating.powerIOBlocked() && !terminating.powerRestartAllowed());
  for(UInt32 word:{0u,1u,2u,5u,9u,0xffffffffu})assert((Ath10k::terminatePowerIO(word)&3u)==3u);
+
+ // Permanent I/O block does not itself close power admission: a root sleep
+ // still must quiesce and only then acknowledge while termination is pending.
+ Ath10kPCIDevice rootDuringRetire;rootDuringRetire.blockPowerIOForTermination();
+ IOPowerStateChangeNotification retireNote;retireNote.powerRef=&rootDuringRetire;acked=nullptr;
+ rootDuringRetire.powerNotification(&rootDuringRetire,nullptr,kIOMessageSystemWillSleep,nullptr,&retireNote,sizeof(retireNote));
+ assert(acked==&rootDuringRetire && rootDuringRetire.resets==1 && !rootDuringRetire.controllerPowerClosed());
+ rootDuringRetire.drainControllerPowerCalls();assert(rootDuringRetire.controllerPowerClosed());
+
+ // Already dispatched callback pauses after its first admission check.
+ // PMstop can return without waiting for it; the second check must prevent
+ // any access to retired radio/workloop/property state when it resumes.
+ Ath10kPCIDevice stale;stale._powerManaged=true;entryPaused=false;releaseEntry=false;
+ std::thread dispatched([&]{pauseNextLock=true;stale.requestPowerEvent(PowerEvent::DeviceOn);});
+ while(!entryPaused.load())std::this_thread::yield();
+ stale.drainControllerPowerCalls();
+ assert(stale.controllerPowerClosed() && stale.pmStops==1 && stale.resets==1 && stale.dmaChecks==1);
+ stale.resourcesLive=false;stale._wmiWorkLoop=nullptr;
+ const auto before=stale.published;releaseEntry=true;dispatched.join();
+ stale.requestPowerEvent(PowerEvent::DeviceOff);stale.requestPowerEvent(PowerEvent::DeviceOn);
+ IOPowerStateChangeNotification after;after.powerRef=&stale;acked=nullptr;
+ stale.powerNotification(&stale,nullptr,kIOMessageSystemWillSleep,nullptr,&after,sizeof(after));
+ assert(acked==&stale && !after.returnValue && stale.published==before && stale.resets==1);
+ stale.drainControllerPowerCalls();assert(stale.pmStops==1 && stale.resets==1); // Repeated stop/free.
+
+ // An executing callback owns the initialization barrier through its last
+ // hardware/property access. Closure and cleanup cannot overtake it.
+ Ath10kPCIDevice active;active._powerManaged=true;
+ std::atomic<bool> holding{true},entered{false},drained{false};
+ active.loop.hold=&holding;active.loop.entered=&entered;
+ std::thread body([&]{active.requestPowerEvent(PowerEvent::DeviceOff);});
+ while(!entered.load())std::this_thread::yield();
+ std::thread drain([&]{active.drainControllerPowerCalls();drained=true;});
+ while((OSAddAtomic(0,&active._powerIOBlock)&3u)!=3u)std::this_thread::yield();
+ assert(!drained && !active.controllerPowerClosed());holding=false;body.join();drain.join();
+ assert(drained && active.controllerPowerClosed() && active.resets==1 && active.dmaChecks==1 && active.pmStops==1);
+
+ // Failed startup without a producer mutex/workloop and an already-sleeping
+ // device are both valid cleanup inputs; do not re-read powered-off PCI.
+ Ath10kPCIDevice noProducer;noProducer._probePowerLock=nullptr;
+ noProducer.drainControllerPowerCalls();assert(noProducer.controllerPowerClosed() && noProducer.resets==1);
+ Ath10kPCIDevice sleeping;sleeping.requestPowerEvent(PowerEvent::SystemSleep);sleeping.pciPowered=false;
+ sleeping.drainControllerPowerCalls();assert(sleeping.controllerPowerClosed() && sleeping.resets==1 && sleeping.dmaChecks==1);
  registrationFail=true;Ath10kPCIDevice alloc;assert(!alloc.preparePowerNotifications() && !alloc._powerNotifier);
 }

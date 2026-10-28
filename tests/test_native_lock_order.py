@@ -2,6 +2,22 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_controller_power_quiescence_precedes_terminal_admission_and_resources(self):
+        root=Path(__file__).resolve().parents[1]
+        power=(root/'src/kext/Ath10kPower.cpp').read_text()
+        retire=power.split('void Ath10kPCIDevice::drainControllerPowerCalls()',1)[1].split('void Ath10kPCIDevice::publishPowerState()',1)[0]
+        self.assertLess(retire.index('runAction(controlPowerState'),retire.index('OSCompareAndSwap(0,1'))
+        self.assertLess(retire.index('OSCompareAndSwap(0,1'),retire.index('releasePowerNotifications()'))
+        self.assertLess(retire.index('releasePowerNotifications()'),retire.index('PMstop()'))
+        request=power.split('void Ath10kPCIDevice::requestPowerEvent(',1)[1].split('IOReturn Ath10kPCIDevice::controlPowerState',1)[0]
+        self.assertEqual(request.count('if(controllerPowerClosed())'),2)
+        self.assertLess(request.index('IOLockLock'),request.rindex('if(controllerPowerClosed())'))
+        self.assertLess(request.rindex('if(controllerPowerClosed())'),request.index('auto *loop='))
+        driver=(root/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        for entry in ['void Ath10kPCIDevice::stop(IOService *provider)','void Ath10kPCIDevice::free()']:
+            body=driver.split(entry,1)[1].split('\nvoid ',1)[0]
+            self.assertLess(body.index('drainControllerPowerCalls()'),body.index('releaseWMIRuntime()'))
+
     def test_power_completion_and_wcl_fence_precede_framework_stop(self):
         native=(Path(__file__).resolve().parents[1]/'src/kext/native/Ath10kNative.cpp').read_text()
         worker=native.split('void Ath10kNativeInterface::terminationThread(',1)[1].split('IOReturn Ath10kNativeInterface::finalizeBSDAction(',1)[0]
@@ -33,7 +49,7 @@ class NativeLockOrder(unittest.TestCase):
         self.assertLess(drain.index("drainPowerCalls()"),drain.index("stopNativeRequests();"))
         for entry in ["void Ath10kPCIDevice::stop(IOService *provider)","void Ath10kPCIDevice::free()"]:
             body=source.split(entry,1)[1].split("\nvoid ",1)[0]
-            self.assertLess(body.index("drainControlWorkers();"),body.index("releasePowerNotifications();"))
+            self.assertLess(body.index("drainControlWorkers();"),body.index("drainControllerPowerCalls();"))
             self.assertLess(body.index("drainControlWorkers();"),body.index("releaseWMIRuntime();"))
             self.assertLess(body.index("drainControlWorkers();"),body.index("stopDMAForRelease();"))
 
