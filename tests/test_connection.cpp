@@ -946,6 +946,50 @@ int main(){
     UInt8 wire[256];cs.stage=LinkStage::Start;
     assert(Ath10k::buildConnectionWMI(wire,sizeof(wire),2,cs)==120);
     assert(Ath10k::wmiReadLE32(wire+92)==2412 && Ath10k::wmiReadLE32(wire+96)==2412);
+    { // Reject unsupported basic rates before touching the selected AP.
+      auto candidate=adjacent._wmiBSS;
+      candidate.entries[0].advertisedChannel=6;
+      candidate.entries[0].rates[0]=0xff;
+      const auto before=cs;
+      assert(!strcmp(Ath10k::selectOpenBSS(cs,candidate),"unsupported-basic-rate"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { auto candidate=adjacent._wmiBSS;
+      candidate.entries[0].advertisedChannel=6;
+      candidate.entries[0].powerConstraintDb=255;
+      const auto before=cs;
+      assert(!strcmp(Ath10k::selectOpenBSS(cs,candidate),"invalid-channel-definition"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { auto ap=adjacent._wmiBSS.entries[0];ap.bssid[5]^=0x40;ap.advertisedChannel=6;
+      const auto before=cs;Ath10k::CandidateConfiguration prepared{};
+      assert(!Ath10k::prepareBSSCandidate(cs,ap,prepared));
+      assert(prepared.operatingChannel==6 && !memcmp(prepared.ap.bssid,ap.bssid,6));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+      ap.ssid[0]^=1;
+      assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"candidate-ssid-mismatch"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { const auto original=adjacent._wmiBSS.entries[0];
+      const auto before=cs;Ath10k::CandidateConfiguration prepared{};
+      for(unsigned length=33;length<256;++length){
+          auto ap=original;ap.ssidLength=length;
+          assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"invalid-ssid-length"));
+          ap=original;ap.rateCount=length;
+          assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"bss-missing-valid-rates"));
+      }
+      auto ap=original;ap.privacy=true;
+      assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"protected-network-not-supported"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+      // Configuration application must not overwrite keys, BSSID or queue ownership.
+      assert(!Ath10k::prepareBSSCandidate(cs,original,prepared));
+      auto destination=cs;destination.installedPair[0]=0x5a;destination.pairPN[0]=123;
+      destination.wmiOwned=destination.txOwned=true;destination.bssid[5]^=0x80;
+      const auto lastBSSID=destination.bssid[5];
+      Ath10k::applyBSSCandidate(destination,prepared);
+      assert(destination.installedPair[0]==0x5a && destination.pairPN[0]==123);
+      assert(destination.wmiOwned && destination.txOwned && destination.bssid[5]==lastBSSID);
+    }
     adjacent._wmiBSS.entries[0].advertisedChannel=169;
     assert(!strcmp(Ath10k::selectOpenBSS(cs,adjacent._wmiBSS),"bss-channel-unsupported"));
     adjacent._wmiBSS.entries[0].advertisedChannel=36;

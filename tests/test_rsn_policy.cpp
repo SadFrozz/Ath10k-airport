@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdint>
 #include <vector>
+#include <cstring>
 #include "../src/shared/Ath10kSecurity.hpp"
 using namespace AthSecurity;
 
@@ -14,6 +15,34 @@ static std::vector<uint8_t> rsn(bool psk, bool sae, uint16_t caps = 0x80) {
     return v;
 }
 int main() {
+    { uint8_t ie[30]={221,28,0,15,172,9,4,0,1,2,3,4,5,6};
+      for(unsigned i=0;i<16;++i)ie[14+i]=uint8_t(i+1);
+      IGTKCMAC128 result{};assert(parseIGTKCMAC128(ie,sizeof(ie),result));
+      assert(result.keyID==4 && result.ipn==0x060504030201ull && result.key[15]==16);
+      const auto saved=result;
+      for(unsigned n=0;n<30;++n){assert(!parseIGTKCMAC128(ie,n,result));assert(!memcmp(&result,&saved,sizeof(result)));}
+      assert(!parseIGTKCMAC128(nullptr,30,result));
+      for(unsigned offset: {0u,1u,2u,3u,4u,5u,6u,7u}){
+        uint8_t bad[30];memcpy(bad,ie,30);bad[offset]=255;
+        assert(!parseIGTKCMAC128(bad,30,result));assert(!memcmp(&result,&saved,sizeof(result)));
+      }
+      ie[6]=5;assert(parseIGTKCMAC128(ie,30,result) && result.keyID==5);
+      assert(findIGTKCMAC128(ie,30,result));const auto previous=result;
+      std::vector<uint8_t> block(ie,ie+30);block.push_back(1); // Truncated following IE.
+      assert(!findIGTKCMAC128(block.data(),block.size(),result));
+      assert(!memcmp(&result,&previous,sizeof(result)));
+      block.assign(ie,ie+30);block.insert(block.end(),ie,ie+30);
+      assert(!findIGTKCMAC128(block.data(),block.size(),result)); // Duplicate, even identical.
+      assert(!memcmp(&result,&previous,sizeof(result)));
+      block.assign(ie,ie+30);block.insert(block.end(),{221,0,0,0});
+      assert(findIGTKCMAC128(block.data(),block.size(),result));
+      block.back()=1;assert(!findIGTKCMAC128(block.data(),block.size(),result));
+      assert(!memcmp(&result,&previous,sizeof(result)));
+      uint8_t other[]={1,1,7};assert(!findIGTKCMAC128(other,sizeof(other),result));
+      assert(!findIGTKCMAC128(nullptr,30,result));
+
+    }
+
     auto wpa2 = rsn(true, false, 0);
     auto wpa3 = rsn(false, true, 0xc0);
     auto mixed = rsn(true, true);

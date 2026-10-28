@@ -130,3 +130,52 @@ inline bool nativeLowLatencySessions(void *out,size_t capacity) {
 inline UInt32 nativeScanDwellBudget(UInt32 maximumAwayMs){
     return maximumAwayMs && maximumAwayMs<120?maximumAwayMs:120;
 }
+
+// Sequoia WCL request shape recovered from sendReassocCommand and its ten
+// direct producers. This decoder does not imply a working roaming backend.
+struct NativeReassocRequest {
+    UInt16 channels[50]{};UInt32 channelCount=0;
+    UInt8 bssid[6]{},flags=0,ssid[32]{},ssidLength=0;
+};
+inline bool nativeDecodeReassoc(const void *data,size_t bytes,NativeReassocRequest &out){
+    if(!data || bytes!=0xbc)return false;
+    const auto *p=static_cast<const UInt8 *>(data);
+    const UInt32 count=AirportWCL::read32(p+0x94);
+    // +0x90 is always 1 in the observed producers. Do not infer arbitrary
+    // BSSID-list semantics from unused bytes or accept unknown forms.
+    if(AirportWCL::read32(p+0x90)!=1 || count>50 || p[0xb9]>32 || (p[0x98]&~1u))return false;
+    NativeReassocRequest decoded{};decoded.channelCount=count;
+    for(UInt32 i=0;i<count;++i)decoded.channels[i]=Ath10k::htcReadLE16(p+2*i);
+    for(UInt32 i=0;i<6;++i)decoded.bssid[i]=p[0x64+i];
+    decoded.flags=p[0x98];decoded.ssidLength=p[0xb9];
+    for(UInt32 i=0;i<decoded.ssidLength;++i)decoded.ssid[i]=p[0x99+i];
+    out=decoded;return true;
+}
+
+// Sequoia ChanSpecGetPrimaryChannel representation normalization. This is
+// deliberately NOT a regulatory/channel-validity check.
+inline UInt8 nativePrimaryChannel(UInt16 spec){
+    const unsigned index=(spec>>11)&7;
+    unsigned center=spec&255;
+    const unsigned widths[]={5,10,20,40,80,160,160};
+    if(index==7 || !center || widths[index]<20)return static_cast<UInt8>(center);
+    unsigned width=widths[index];
+    if((spec&0xc000)==0xc000 && index==6 && center<=5){
+        const unsigned centers[]={42,58,106,122,138,155};
+        center=centers[center];width=80;
+    }
+    const int low=int(center)-int(width/10)+2;
+    const int primary=low+4*((spec>>8)&7);
+    if(low<0 || low>255 || primary>255)return 0;
+    return static_cast<UInt8>(primary);
+}
+inline bool nativeChannelSpecsMatch(UInt16 a,UInt16 b){
+    return (a&0xc000)==(b&0xc000) && nativePrimaryChannel(a)==nativePrimaryChannel(b);
+}
+inline bool nativeReassocChannelMatches(const NativeReassocRequest &request,UInt16 candidate){
+    if(request.channelCount>50)return false;
+    if(!request.channelCount)return true;
+    for(UInt32 i=0;i<request.channelCount;++i)
+        if(nativeChannelSpecsMatch(request.channels[i],candidate))return true;
+    return false;
+}

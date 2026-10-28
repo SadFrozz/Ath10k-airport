@@ -5,6 +5,37 @@
 namespace AthSecurity {
 inline void wipe(void *p,size_t n){volatile uint8_t *b=(volatile uint8_t *)p;while(n--)*b++=0;}
 inline bool equal(const uint8_t *a,const uint8_t *b,size_t n){uint8_t d=0;for(size_t i=0;i<n;++i)d|=a[i]^b[i];return d==0;}
+// Worker/gate-owned software IGTK state. Call activate only after authenticated
+// key delivery and required installation acknowledgement. Never access concurrently.
+class PMFKeyEpochs {
+ struct Slot {IGTKCMAC128 key{};uint64_t epoch=0;bool valid=false;} slots[2]{};
+ uint64_t nextEpoch=0;
+public:
+ PMFKeyEpochs()=default;
+ PMFKeyEpochs(const PMFKeyEpochs &)=delete;
+ PMFKeyEpochs &operator=(const PMFKeyEpochs &)=delete;
+ ~PMFKeyEpochs(){wipe(this,sizeof(*this));}
+ void clear(){wipe(slots,sizeof(slots));} // Preserve monotonic epoch across reuse.
+ bool activate(const IGTKCMAC128 &key){
+  if((key.keyID!=4 && key.keyID!=5) || key.ipn>0xffffffffffffull)return false;
+  for(unsigned i=0;i<2;++i)if(slots[i].valid && equal(slots[i].key.key,key.key,16))
+   return slots[i].key.keyID==key.keyID; // Retransmission cannot reset replay state.
+  if(nextEpoch==~uint64_t(0))return false;
+  auto &slot=slots[key.keyID-4];wipe(&slot,sizeof(slot));
+  slot.key=key;slot.epoch=++nextEpoch;slot.valid=true;return true;
+ }
+ bool snapshot(uint16_t id,IGTKCMAC128 &key,uint64_t &epoch) const {
+  if(id<4 || id>5 || !slots[id-4].valid)return false;
+  key=slots[id-4].key;epoch=slots[id-4].epoch;return true;
+ }
+ // Commit a verified packet only if its snapshot still belongs to this key.
+ bool commitIPN(uint16_t id,uint64_t epoch,uint64_t ipn){
+  if(id<4 || id>5 || !slots[id-4].valid || ipn>0xffffffffffffull)return false;
+  auto &slot=slots[id-4];
+  if(slot.epoch!=epoch || ipn<=slot.key.ipn)return false;
+  slot.key.ipn=ipn;return true;
+ }
+};
 inline uint16_t le16(const uint8_t *p){return static_cast<uint16_t>(p[0]|(uint16_t(p[1])<<8));}
 inline uint16_t be16(const uint8_t *p){return static_cast<uint16_t>((uint16_t(p[0])<<8)|p[1]);}
 inline void put16(uint8_t *p,uint16_t n){p[0]=static_cast<uint8_t>(n>>8);p[1]=static_cast<uint8_t>(n);}

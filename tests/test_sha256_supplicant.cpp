@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstring>
+#include <initializer_list>
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonCryptor.h>
 #include "../src/shared/Ath10kSupplicant.hpp"
@@ -11,7 +12,77 @@ struct Crypto {
  static bool encrypt(const uint8_t *k,const uint8_t *p,uint8_t *o){size_t done=0;return CCCrypt(kCCEncrypt,kCCAlgorithmAES,kCCOptionECBMode,k,16,nullptr,p,16,o,16,&done)==kCCSuccess && done==16;}
  static bool decrypt(const uint8_t *k,const uint8_t *p,uint8_t *o){size_t done=0;return CCCrypt(kCCDecrypt,kCCAlgorithmAES,kCCOptionECBMode,k,16,nullptr,p,16,o,16,&done)==kCCSuccess && done==16;}
 };
+struct FailedHMAC:Crypto {
+ static bool hmac256(const uint8_t *,size_t,const uint8_t *,size_t,uint8_t *out){memset(out,0x77,32);return false;}
+};
+struct FailSelectedHMAC:Crypto {
+ static inline unsigned calls=0,failAt=0;
+ static bool hmac256(const uint8_t *k,size_t kl,const uint8_t *p,size_t n,uint8_t *out){
+  if(++calls==failAt){memset(out,0x77,32);return false;}
+  return Crypto::hmac256(k,kl,p,n,out);
+ }
+};
 int main(){
+ { const uint8_t ssid[]="test-ssid",password[]="test-password",identifier[]="test-id";
+   const uint8_t expected[]={249,239,103,234,204,133,139,5,13,32,186,157,203,224,93,10,220,76,193,147,96,119,105,182,73,35,87,23,97,206,85,112,99,126,163,154,183,174,116,36,195,96,182,24,61,196,224,15,143,143,121,0,176,36,28,161,23,203,147,154,176,212,168,196,232,83,250,14,196,44,227,225,81,240,25,92,61,103,133,245,136,22,105,167,192,115,215,103,166,194,255,85,199,96,166,211};uint8_t out[104];memset(out,0xa5,sizeof(out));
+   assert(AthSecurity::saeGroup19H2EValues<Crypto>(ssid,9,password,13,identifier,7,out,sizeof(out)));
+   assert(!memcmp(out,expected,96));for(unsigned i=96;i<104;++i)assert(out[i]==0xa5);
+   for(unsigned failure=1;failure<=5;++failure){
+     FailSelectedHMAC::calls=0;FailSelectedHMAC::failAt=failure;memset(out,0xa5,sizeof(out));
+     assert(!AthSecurity::saeGroup19H2EValues<FailSelectedHMAC>(ssid,9,password,13,identifier,7,out,sizeof(out)));
+     for(auto b:out)assert(b==0xa5);
+   }
+ }
+
+ { uint8_t kck[32],sender[96],receiver[96],out[40];
+   for(unsigned i=0;i<32;++i)kck[i]=uint8_t(i);
+   for(unsigned i=0;i<96;++i){sender[i]=uint8_t(i);receiver[i]=uint8_t(i+96);}
+   const uint8_t expected[]={184,126,183,216,119,3,244,86,114,117,139,71,138,205,83,101,76,8,242,28,124,67,73,92,60,177,170,22,221,172,109,193};
+   memset(out,0xa5,sizeof(out));
+   assert(AthSecurity::saeGroup19Confirm<Crypto>(kck,32,0x1234,sender,96,receiver,96,out,sizeof(out)));
+   assert(!memcmp(out,expected,32));for(unsigned i=32;i<40;++i)assert(out[i]==0xa5);
+   assert(AthSecurity::saeGroup19Confirm<Crypto>(kck,32,0x1234,receiver,96,sender,96,out,sizeof(out)));
+   assert(memcmp(out,expected,32)); // Receive verification must reverse sender order.
+   uint8_t body[34]={0x34,0x12};memcpy(body+2,out,32);uint16_t accepted=999;
+   assert(AthSecurity::verifySAEGroup19PeerConfirm<Crypto>(kck,32,sender,96,receiver,96,body,34,false,0,accepted));
+   assert(accepted==0x1234);accepted=999;
+   assert(!AthSecurity::verifySAEGroup19PeerConfirm<Crypto>(kck,32,sender,96,receiver,96,body,34,true,0x1234,accepted));
+   assert(accepted==999);
+   for(unsigned i=0;i<34;++i){
+     body[i]^=1;
+     assert(!AthSecurity::verifySAEGroup19PeerConfirm<Crypto>(kck,32,sender,96,receiver,96,body,34,false,0,accepted));
+     assert(accepted==999);body[i]^=1;
+   }
+   for(unsigned n=0;n<34;++n)assert(!AthSecurity::verifySAEGroup19PeerConfirm<Crypto>(kck,32,sender,96,receiver,96,body,n,false,0,accepted));
+   assert(!AthSecurity::verifySAEGroup19PeerConfirm<FailedHMAC>(kck,32,sender,96,receiver,96,body,34,false,0,accepted));
+   assert(accepted==999);
+
+   memset(out,0xa5,sizeof(out));
+   assert(!AthSecurity::saeGroup19Confirm<FailedHMAC>(kck,32,0x1234,sender,96,receiver,96,out,sizeof(out)));
+   for(auto v:out)assert(v==0xa5);
+   assert(!AthSecurity::saeGroup19Confirm<Crypto>(kck,32,0x1234,sender,95,receiver,96,out,sizeof(out)));
+   for(auto v:out)assert(v==0xa5);
+   AthSecurity::SAEGroup19Keys keys{};memset(&keys,0xa5,sizeof(keys));
+   assert(!AthSecurity::deriveSAEGroup19Keys<FailedHMAC>(kck,32,sender,32,keys));
+   for(auto v:keys.kck)assert(v==0xa5);for(auto v:keys.pmk)assert(v==0xa5);
+ }
+
+ { const uint8_t seed[]={70,189,50,6,5,197,166,182,22,58,183,11,198,52,91,146,165,249,8,231,159,229,137,121,194,62,187,71,209,165,227,7},sum[]={31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0},expected[]={102,163,87,175,244,25,116,240,42,253,178,34,5,192,113,147,77,155,22,246,64,223,237,0,85,246,163,236,26,229,218,71,88,192,240,166,231,118,241,109,25,74,4,248,23,170,117,172,218,37,25,197,199,64,145,30,122,227,221,161,84,255,70,234};
+   AthSecurity::SAEGroup19Keys keys{};
+   assert(AthSecurity::deriveSAEGroup19Keys<Crypto>(seed,32,sum,32,keys));
+   assert(!memcmp(keys.kck,expected,32) && !memcmp(keys.pmk,expected+32,32) && !memcmp(keys.pmkid,sum,16));
+   const auto previous=keys;
+   for(unsigned failure:{1u,2u}){
+     FailSelectedHMAC::calls=0;FailSelectedHMAC::failAt=failure;
+     assert(!AthSecurity::deriveSAEGroup19Keys<FailSelectedHMAC>(seed,32,sum,32,keys));
+     assert(!memcmp(&keys,&previous,sizeof(keys)));
+   }
+
+   assert(!AthSecurity::deriveSAEGroup19Keys<Crypto>(seed,31,sum,32,keys));
+   assert(!memcmp(&keys,&previous,sizeof(keys)));
+   AthSecurity::wipe(&keys,sizeof(keys));
+ }
+
  using S=AthSecurity::Supplicant<Crypto,true>;S s;
  assert(!s.begin(nullptr,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));
  assert(s.begin(s_pmk,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));

@@ -1,12 +1,113 @@
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <initializer_list>
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
 #include "../src/kext/native/Ath10kNativeMAC.hpp"
 int main(){
+ { Ath10k::ConnectionState live{};live.ssidLength=4;memcpy(live.ssid,"test",4);
+   Ath10k::WMIBSS ap{};ap.ssidLength=4;memcpy(ap.ssid,"test",4);
+   ap.bssid[0]=2;ap.bssid[5]=7;ap.hidden=false;ap.capabilities=1;
+   ap.beaconInterval=100;ap.rateCount=1;ap.rates[0]=0x82;ap.rxChannel=ap.advertisedChannel=6;
+   NativeReassocRequest request{};request.ssidLength=4;memcpy(request.ssid,"test",4);memset(request.bssid,255,6);
+   const auto saved=live;Ath10k::CandidateConfiguration prepared{};
+   { auto cache=new AthNative::CandidateCache;
+     auto weaker=ap;weaker.snr=20;cache->add(weaker,1000);
+     auto stronger=ap;stronger.bssid[5]=8;stronger.snr=50;cache->add(stronger,1100);
+     auto wrong=stronger;wrong.bssid[5]=9;wrong.ssid[0]^=1;wrong.snr=80;cache->add(wrong,1200);
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,1300,prepared));
+     assert(prepared.ap.bssid[5]==8);
+     cache->observed[1]=0; // Stronger observation expires, weaker remains usable.
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,30500,prepared));
+     assert(prepared.ap.bssid[5]==7);
+     const auto previous=prepared;
+     assert(!AthNative::chooseRoamCandidate(live,request,*cache,40000,prepared));
+     assert(!memcmp(&previous,&prepared,sizeof(prepared)));
+     cache->observed[1]=1100;
+     assert(!AthNative::chooseRoamCandidate(live,request,*cache,500,prepared));
+     assert(!memcmp(&saved,&live,sizeof(live)));delete cache;
+   }
+
+   { auto cache=new AthNative::CandidateCache;
+     auto first=ap;first.snr=40;first.bssid[5]=9;
+     auto second=first;second.bssid[5]=7;
+     for(bool reverse:{false,true}){
+       cache->bss.count=0;
+       cache->add(reverse?second:first,1000);cache->add(reverse?first:second,1000);
+       assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+       assert(prepared.ap.bssid[5]==7); // Stable tie break regardless of cache order.
+     }
+     cache->add(first,1500);
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+     assert(prepared.ap.bssid[5]==9); // Freshness breaks equal-signal ties first.
+     memcpy(request.bssid,second.bssid,6);
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+     assert(prepared.ap.bssid[5]==7); // Explicit target outranks signal/freshness.
+     memset(request.bssid,255,6);
+     const auto previous=prepared;cache->bss.count=65;
+     assert(!AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+     assert(!memcmp(&previous,&prepared,sizeof(prepared)));
+     delete cache;
+   }
+   assert(!AthNative::prepareRoamCandidate(live,request,ap,prepared));
+   memcpy(request.bssid,ap.bssid,6);request.channelCount=1;request.channels[0]=0x1006;
+   assert(!AthNative::prepareRoamCandidate(live,request,ap,prepared));
+   request.channels[0]=0x5006;
+   assert(!strcmp(AthNative::prepareRoamCandidate(live,request,ap,prepared),"roam-channel-mismatch"));
+   request.channels[0]=0x1006;request.bssid[5]^=1;
+   assert(!strcmp(AthNative::prepareRoamCandidate(live,request,ap,prepared),"roam-target-mismatch"));
+   memset(request.bssid,0,6);
+   assert(!strcmp(AthNative::prepareRoamCandidate(live,request,ap,prepared),"roam-target-invalid"));
+   memset(request.bssid,255,6);request.ssid[0]^=1;
+   assert(!strcmp(AthNative::prepareRoamCandidate(live,request,ap,prepared),"roam-request-ssid-mismatch"));
+   assert(!memcmp(&saved,&live,sizeof(live)));
+ }
+
+ assert(nativePrimaryChannel(0x1006)==6 && nativePrimaryChannel(0xd024)==36);
+ for(unsigned side=0;side<2;++side)
+   assert(nativePrimaryChannel(UInt16(0xd826|(side<<8)))==36+4*side);
+ for(unsigned side=0;side<4;++side)
+   assert(nativePrimaryChannel(UInt16(0xe02a|(side<<8)))==36+4*side);
+ for(unsigned side=0;side<8;++side)
+   assert(nativePrimaryChannel(UInt16(0xe832|(side<<8)))==36+4*side);
+ assert(nativeChannelSpecsMatch(0xd024,0xe02a));
+ assert(!nativeChannelSpecsMatch(0xd028,0xe02a));
+ assert(!nativeChannelSpecsMatch(0xd024,0x5024)); // Equal number, different band.
+ assert(nativePrimaryChannel(0xf001)==52 && nativePrimaryChannel(0xf000)==0);
+ assert(nativePrimaryChannel(0xe801)==0 && nativePrimaryChannel(0xefff)==0);
+ { NativeReassocRequest request{};
+   assert(nativeReassocChannelMatches(request,0xe02a));
+   request.channelCount=1;request.channels[0]=0xd024;
+   assert(nativeReassocChannelMatches(request,0xe02a));
+   assert(!nativeReassocChannelMatches(request,0x5024));
+   request.channelCount=51;assert(!nativeReassocChannelMatches(request,0xe02a));
+ }
+
+ { UInt8 wire[0xbc]{};Ath10k::htcWriteLE32(wire+0x90,1);
+   memset(wire+0x64,255,6);wire[0xb9]=4;memcpy(wire+0x99,"test",4);
+   NativeReassocRequest decoded{};
+   assert(nativeDecodeReassoc(wire,sizeof(wire),decoded));
+   assert(!decoded.channelCount && decoded.bssid[0]==255 && decoded.ssidLength==4);
+   Ath10k::htcWriteLE32(wire+0x94,50);wire[0x98]=1;
+   for(unsigned i=0;i<50;++i)Ath10k::htcWriteLE16(wire+2*i,0xd024+i);
+   assert(nativeDecodeReassoc(wire,sizeof(wire),decoded));
+   assert(decoded.channelCount==50 && decoded.channels[49]==0xd055 && decoded.flags==1);
+   const auto saved=decoded;
+   for(unsigned n=0;n<sizeof(wire);++n){
+     assert(!nativeDecodeReassoc(wire,n,decoded));assert(!memcmp(&saved,&decoded,sizeof(saved)));
+   }
+   assert(!nativeDecodeReassoc(nullptr,sizeof(wire),decoded));
+   assert(!nativeDecodeReassoc(wire,sizeof(wire)+1,decoded));
+   for(unsigned offset: {0x90u,0x94u,0x98u,0xb9u}){
+     UInt8 bad[sizeof(wire)];memcpy(bad,wire,sizeof(wire));bad[offset]=255;
+     assert(!nativeDecodeReassoc(bad,sizeof(bad),decoded));
+     assert(!memcmp(&saved,&decoded,sizeof(saved)));
+   }
+ }
+
  UInt8 privateMAC[]={2,0x11,0x22,0x33,0x44,0x55},invalidMAC[]={1,0,0,0,0,1},zeroMAC[6]{};
  assert(AthNative::validMAC(privateMAC) && !AthNative::validMAC(invalidMAC) && !AthNative::validMAC(zeroMAC) && !AthNative::validMAC(nullptr));
  UInt8 mf[48];memset(mf,0xa5,sizeof(mf));

@@ -117,3 +117,117 @@ allocations, constant-time behavior, cancellation safety or complete SAE.
 Kernel execution, per-version ABI checks, scalar/field operations, SAE/H2E,
 a retained cancellable worker, four-way AKM-8 and PMF/BIP remain outstanding.
 No WPA3 capability is enabled by this candidate.
+
+## WPA3 priority baseline, 2026-10-28 after user-test reboot
+
+Re-ran `make sae-p256-userland-check sae-p256-kernel-compile` on the current
+boot. ASan/UBSan user-process validation passed 12 multiplication vectors,
+14 add/subtract vectors and 37 injected failures, with a 688-byte workspace
+cleared on exits. Userland CoreCrypto UUID: 522269EC-E612-39DA-AFAB-ADF591065C57.
+The kernel-target object compiled and passed the import checker. This provides
+no kernel execution evidence: kernel runtime ABI/lifetime remains unverified
+and the adapter remains disconnected from the installed Wi-Fi path. The next
+security gate is matching callable kernel ABI plus execution/cancellation
+coverage, before implementing SAE operations on top of this adapter.
+
+## SSWU field backend investigation
+
+The matching local kernel CoreCrypto symbol inventory exports cczp_add/sub,
+mul, inv, sqrt, to and workspace variants. It has cczp_from_ws/default_ws
+but no standalone cczp_from entry in the searched inventory. Do not substitute
+a workspace function for a non-workspace signature.
+Local disassembly confirms cczp_mul at 0xffffff800323ef1c preserves four
+argument registers and calls cc_malloc_clear at 0xffffff800323ef53; cczp_to
+at 0xffffff800321af36 calls it at 0xffffff800321af68; cczp_sqrt at
+0xffffff800321c9aa calls it at 0xffffff800321c9d9; cczp_inv at
+0xffffff80031f9939 calls it at 0xffffff80031f996c. These wrappers cannot be
+assumed allocation-free IRQ/gated operations. Return semantics, selected
+curve representation, conversions and failure cleanup require exact-image
+validation before a callable adapter is integrated.
+
+Apple's current published cczp headers show opaque field context and arithmetic
+entrypoints, but they are a different-version reference, not proof for Sequoia.
+In particular, plain integers versus curve-specific field representation must
+be tested with independent arithmetic vectors and conversion round trips.
+Sources consulted (not copied into this repository):
+https://github.com/apple/corecrypto
+https://raw.githubusercontent.com/apple/corecrypto/main/cczp/corecrypto/cczp.h
+https://raw.githubusercontent.com/apple/corecrypto/main/cczp/corecrypto/cczp_priv.h
+The local raw disassembly remains outside repository/SD/public artifacts.
+
+## Field representation experiment (current userland CoreCrypto)
+
+A separate ctypes process resolved curve/n/prime/mul/inv and checked the
+context's 4-limb prime against P-256 before arithmetic. Userland lacked
+cczp_to/from/sqrt/from_ws symbols in that lookup; this differs from the local
+kernel inventory and is not evidence that kernel symbols cannot be called.
+Raw cczp_mul(cp,2,3) returned 6*R^-1 mod p, R=2^256, confirming Montgomery
+representation for this curve. Using mul(x,R^2 mod p) to enter and mul(x,1)
+to leave matched 25 independent Python-integer round trips and 625 modular
+products. Inversion on Montgomery inputs for 2,3,p-1 returned Montgomery
+inverses, not plain ones. These are user-process observations only, not kernel
+ABI, constant-time or per-version proof. Raw outputs are stored locally.
+
+Exact kernel-image disassembly separately shows mul/to return 0 after
+successful dispatch and -13 on workspace allocation failure; inv/sqrt preserve
+the dispatched arithmetic status and also return -13 on allocation failure.
+cczp_from_ws receives workspace first and field context second, dispatching
+through the context function table. A callable adapter must keep these
+signatures and representations separate rather than borrowing a userland-only
+symbol set. No new imports or field calls were added to the installed driver.
+
+An experimental function-table P256FieldCandidate now implements multiplication
+and inversion with explicit Montgomery conversion using independently computed
+R^2 mod p. It validates 4 limbs and the exact P-256 prime, rejects noncanonical
+32-byte inputs, and publishes ordinary BE bytes only after success. Its
+192-byte workspace is cleared on every path; input/output must be disjoint
+from workspace and calls must run in an exclusive worker outside radio/WCL
+gates because provider wrappers allocate. No locking is provided.
+Actual userland CoreCrypto ASan/UBSan checks pass 2*3=6 and inverse(2) against
+independent Python-integer results, with failures injected at every curve/
+multiply/inverse provider stage preserving output and clearing workspace.
+A used kernel compile-only entry instantiates the adapter and passes the
+import/stack checks. The production kext has no new direct field imports;
+kernel runtime ABI, SSWU and complete PWE derivation remain unverified.
+
+P256FieldCandidate now derives a square root with public exponent (p+1)/4,
+keeping intermediate powers in Montgomery representation and verifying the
+result by squaring before ordinary-byte publication. No direct sqrt import
+is required. Actual userland CoreCrypto ASan/UBSan tests pass independent
+Python pow fixtures for 0,1,4,9 and reject p-1 (a nonsquare). Injected failures
+at initial, middle and final provider calls preserve output and clear the
+workspace. A used kernel compile entry instantiates this path and passes
+import/stack checks. The operation currently returns bool, so missing square
+root and provider failure are not distinguished; this must be resolved for
+SSWU candidate selection rather than treating all failures as nonsquares.
+Public fixed exponent branches are independent of secret input; machine-level
+constant-time behavior and kernel runtime execution are still unverified.
+
+Square-root status is now explicit: Success, NotSquare or Error. Only a
+successfully computed candidate whose square differs from the input returns
+NotSquare; bad arguments/context/provider failures return Error. Existing bool
+wrappers remain compatible. Userland ASan/UBSan tests distinguish p-1 as
+NotSquare, p as invalid Error, and an injected arithmetic failure while
+processing a nonsquare as Error, preserving output. Kernel compile/import
+checks pass. The original point adapter run body was separately compared
+byte-for-byte with HEAD and remains unchanged. No SSWU fallback is wired yet.
+
+Field adapter now adds canonical ordinary-value addition/subtraction through
+optional function-table entries, with exact P-256 context/range validation and
+transactional output publication. Existing multiply/inverse/sqrt require no
+new entries. Actual userland CoreCrypto ASan/UBSan tests pass independent
+Python modular sums/differences for (2,3), (p-1,p-1), (0,1) and (1,1), with
+output guard bytes retained. Kernel compile/import checks instantiate these
+operations. This completes the experimental operation set needed by SSWU,
+not a verified mapping or a working H2E/WPA3 path. Add/sub provider fault
+injection and mapping-level validation are still needed.
+
+A call-count regression identified a residue-dependent provider path: the
+original square-root helper returned NotSquare before its final Montgomery
+conversion, while Success made one additional multiply/allocation wrapper
+call. The test comparing tracked provider-call totals failed before the fix.
+Both outcomes now perform the final conversion before status publication;
+updated ASan/UBSan userland tests and kernel compile/import checks pass.
+This removes the demonstrated missing-provider-call difference only. Status
+branches, provider arithmetic/allocator timing and complete H2E behavior still
+require side-channel analysis before any native password path is enabled.

@@ -1213,3 +1213,152 @@ This prevents native scan busy bit 1024 persisting after an abandoned update
 and gives a later update a fresh drain deadline. Follow-up ASan/UBSan suites ap_maintenance, runtime_power, native_scan and
 native_notifications passed, and the native rebuild/import check passed.
 This remains local validation, not hardware confirmation.
+
+Roaming implementation dependency, confirmed against source at 1a5a0c3:
+setWCL_ASSOCIATE consumes the PMK into Supplicant::begin and wipes both the
+local JoinRequest and _nativeJoin.key. Supplicant retains PMK only in the
+live session; NativeSecurity::reset wipes it. serviceNativeRequests discards
+security on cancellation, Disabled/Failed or any disconnect stage, before
+waiting for WCL notifications. The recovered 0xbc-byte REASSOC envelope
+contains no new credential slot. Thus routing roaming through normal LEAVE
+and ASSOCIATE would destroy the only retained PMK and cannot implement the
+contract. Do not weaken normal leave/forget-network zeroization. A roaming
+transaction needs bounded ownership of reusable authentication context,
+separate fresh per-BSSID handshake/nonces and explicit wipe on cancellation,
+failure, user leave, power-off and completion. Candidate discovery must not
+mutate the live ConnectionState until a candidate is selected; the existing
+selectOpenBSS path writes that state. These are implementation requirements,
+not a claim that a roaming credential transfer or candidate switch exists.
+
+Candidate rate rejection was reproduced as non-transactional: a matching
+BSSID advertising unsupported basic rate 0xff changed selected AP/channel
+before returning unsupported-basic-rate. The regression compares the whole
+ConnectionState before/after rejection and failed before the fix. Common-rate
+and mandatory-rate checks now precede AP/channel mutation. This addresses
+rate rejection only; HT negotiation and power validation still mutate state
+and require a separate candidate configuration for complete roaming isolation.
+Follow-up connection ASan/UBSan suite and native build/import checks passed.
+Hardware validation remains pending.
+
+Candidate isolation design constraint: ConnectionState includes installed key
+bytes, replay state, EAPOL queues, data TX slots and firmware ownership flags.
+Do not make a whole-state kernel-stack copy or copy it back to commit a
+candidate. The PHY preparation helpers depend on AP metadata, regulatory
+policy, firmware HT/VHT capabilities and RF chains; their outputs are channel,
+width/center, common rates/maps, PHY flags/reason and negotiated rate ceilings.
+Power validation additionally reads candidate country and power constraints.
+Use a dedicated configuration without keys or transport ownership, and commit
+only these fields after all validation succeeds. Existing association-response
+callers of the PHY helpers must retain their current negotiated-rate semantics.
+No such isolated configuration has been implemented yet. Reboot remains
+deferred at the user's explicit request; do not install the prepared candidate
+as part of this source refactor.
+
+Candidate configuration isolation implemented locally: selectOpenBSS now
+prepares AP/PHY/rate/power fields in CandidateConfiguration, statically bounded
+to 2048 bytes, with no credentials, packet queues or firmware ownership fields.
+PHY negotiation and regulatory power helpers accept this configuration as
+well as existing ConnectionState callers. Only after all checks succeed are
+explicit configuration fields committed. A rejection caused by AP power
+constraint 255 leaves the whole ConnectionState byte-identical in the new
+regression. Connection ASan/UBSan and native build/import checks passed;
+channel_switch and ap_maintenance ASan/UBSan suites also passed.
+This does not implement candidate ranking, reassociation or roaming keys.
+Published 1a5a0c3 separately passed both GitHub workflow runs 40677155025
+and 40677154974; those results do not cover this later local refactor.
+
+Preparation/application split now implemented locally: prepareBSSCandidate
+accepts a const ConnectionState and one AP, checks SSID/security, rates and
+regulatory power, and produces configuration without changing the connection.
+BSSID ranking is intentionally a caller responsibility. applyBSSCandidate
+commits only configuration fields; it does not switch the firmware peer,
+replace connection BSSID or transfer credentials. Existing selectOpenBSS
+retains its exact-BSSID search behavior and uses these two stages. A test
+prepares another BSSID on channel 6, checks its prepared identity/channel and
+byte-identical live state, then verifies SSID mismatch also leaves live state
+unchanged. Connection ASan/UBSan and native build/import checks passed.
+This enables candidate evaluation; it is not a functioning roaming controller.
+
+Candidate boundary regression passed with ASan/UBSan: all SSID/rate counts
+33..255 reject before array access, protected AP rejects for open policy, and
+live ConnectionState remains byte-identical. Applying validated configuration
+preserves seeded pairwise key byte, replay counter, BSSID and WMI/TX ownership
+flags. This checks selective assignment, not firmware roaming or key transfer.
+
+Reassociation producer inventory completed for the ten direct callers in the
+local Sequoia image: all write value 1 at +0x90. The previously unclassified
+callers are triggerNeighborCacheSteering (0xffffff8002215e60) and
+triggerBSSIDSteering (0xffffff8002216690). The latter copies a chosen six-byte
+BSSID to +0x64, obtains a chanspec through its beacon object's slot 0x1e8,
+writes it at +0, then stores 64-bit 0x0000000100000001 at +0x90 (therefore
++0x90=1 and +0x94=1) before sendReassocCommand(true,0). This confirms the
+single-target/single-channel shape used by BSSID steering. It does not prove
+that +0x90 is a BSSID count or establish multi-target capacity: all observed
+producers use the same value, so a decoder must not infer an arbitrary list
+layout from the unused bytes. The ten-call inventory covers direct callers
+in this image only, not future versions or indirect invocations.
+
+A local nativeDecodeReassoc now decodes the observed single-target request
+shape: exact 0xbc bytes, +0x90 fixed to 1, <=50 channel specs, byte flags
+limited to observed bit 0 and SSID length <=32. It preserves channel specs
+without interpreting their radio legality, and permits the confirmed zero-
+channel broadcast request. Unsupported layouts reject without changing output.
+ASan/UBSan native_wire tests cover zero/50 channels, every truncated buffer,
+null/oversized input and invalid selector/count/flags/SSID length. The native
+setWCL_REASSOC callback remains unsupported: this parser is not admission,
+firmware roaming, key transfer or completion-event implementation.
+
+Channel constraint comparison resolved from Sequoia helpers:
+ChanSpecGetPrimaryChannel (0xffffff8002135823) derives width index from
+(spec>>11)&7 and uses widths [5,10,20,40,80,160,160]. For width index 7,
+zero low byte or width below 20 it returns the low byte. Otherwise it computes
+primary = center - width/10 + 2 + 4*((spec>>8)&7), rejecting under/overflow.
+For band bits 0xc000, width index 6 and nonzero low byte <=5, center is
+looked up in [42,58,106,122,138,155] and width becomes 80 before that calculation.
+The zero-byte early exit happens BEFORE this lookup.
+ChanSpecGetPrimarySpec (0xffffff80021358e3) combines the resulting primary
+with (spec&0xc000)|0x1000. IO80211_channelSpecMatches
+(0xffffff8002135f83) compares derived primary bytes AND equal upper two band
+bits (xor <0x4000); it does not require raw chanspec equality. Therefore a
+20MHz primary constraint can match the same primary in a wider AP definition,
+but an equal numeric primary in another band cannot match. These functions
+normalize/compare representations; they are not regulatory or capability
+validation and even retain some invalid encodings. A driver must still apply
+its supported-band/channel-width and domain checks separately.
+
+Channel normalization/comparison is now implemented in nativePrimaryChannel,
+nativeChannelSpecsMatch and nativeReassocChannelMatches. Tests passed with
+ASan/UBSan for every primary position in 40/80/160 MHz examples, 20-to-80 MHz
+matching, different-band rejection, the special width-index-6 center lookup,
+zero-center early return, arithmetic under/overflow, zero-channel requests and
+invalid channel-count bounds. These helpers deliberately mirror representation
+comparison, not channel authorization: invalid encodings can normalize to zero
+and still compare equal just as in the recovered helper. A caller must perform
+capability/domain validation before admitting or choosing a candidate. No
+roaming callback has been enabled by this change.
+
+Local prepareRoamCandidate now combines the decoded request constraints with
+read-only candidate preparation: exact current SSID, broadcast or valid unicast
+target, target BSSID match, supported primary and normalized band/channel
+constraint, then existing security/PHY/regulatory validation. No ranking or
+firmware state transition occurs. ASan/UBSan native_wire tests pass for
+broadcast discovery and exact target, reject mismatched band/target/SSID and
+zero target, and verify byte-identical live state. Request flag bit 0 is
+preserved/shape-checked but its roaming policy semantics remain unimplemented.
+The callback remains unsupported until the complete transaction exists.
+
+Local chooseRoamCandidate ranks only fresh, request-compatible observations
+that pass prepareRoamCandidate. It ignores entries older than the cache's
+existing 30-second limit or timestamped after now, then prefers higher signed
+SNR, newer observation, and lexicographically lower BSSID as a stable tie break.
+No eligible candidate leaves the output unchanged; live state and cache are
+read-only. ASan/UBSan native_wire tests cover stronger but incompatible SSID,
+expired stronger candidate, all-expired cache and backwards observation time.
+This ranking is a local initial policy, not a recovered Apple scoring formula.
+It does not decide when to roam, exclude the current AP, implement flag policy,
+provide hysteresis or trigger firmware changes. Those remain caller duties.
+
+Candidate ranking tie regressions passed with ASan/UBSan: equal signal and
+observation time select the same BSSID under reversed cache insertion order;
+a fresher observation wins an equal-signal tie; an explicit requested BSSID
+filters other choices; count 65 rejects without changing output.

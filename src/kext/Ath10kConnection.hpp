@@ -386,7 +386,8 @@ inline bool vhtPrimary80(UInt32 primary,UInt8 width,UInt8 first,UInt8 second,UIn
     }
     center=static_cast<UInt8>(c);return true;
 }
-inline void negotiateHighThroughput(ConnectionState &s){
+template<class Config>
+inline void negotiateHighThroughput(Config &s){
     s.htEnabled=s.vhtEnabled=false;s.htRateCount=0;s.vhtMap=0xffff;
     s.vhtRxMap=s.vhtTxMap=0xffff;s.nss=1;s.width=20;s.centerChannel=static_cast<UInt8>(s.operatingChannel);
     s.localHT=s.peerHT=0;s.localVHT=s.peerVHT=0;s.shortGI=false;
@@ -481,7 +482,8 @@ inline UInt8 peerBandwidth(const ConnectionState &s){
     if(s.peerOperatingWidth && s.peerOperatingWidth<width)width=s.peerOperatingWidth;
     return s.htEnabled?width:20;
 }
-inline void rememberNegotiatedRates(ConnectionState &s){
+template<class Config>
+inline void rememberNegotiatedRates(Config &s){
     s.negotiatedNSS=s.nss;s.negotiatedWidth=20;s.negotiatedHTMask=0;
     if(s.htEnabled && (s.localHT&htcReadLE16(s.ap.ht)&2))
         s.negotiatedWidth=s.vhtEnabled && ATH10K_MAX_WIDTH>=80?80:40;
@@ -510,7 +512,8 @@ inline void applyPeerRates(ConnectionState &s,UInt8 nss,UInt8 width){
     s.vhtRxMap=r.rx;s.vhtTxMap=r.tx;s.vhtMap=intersectVHTMap(r.rx,r.tx);
 }
 inline void connTLV(UInt8 *,UInt16,UInt16);
-inline UInt8 stationPowerLimitFor(const ConnectionState &s,UInt32 primary,UInt32 center,UInt8 width,
+template<class Config>
+inline UInt8 stationPowerLimitFor(const Config &s,UInt32 primary,UInt32 center,UInt8 width,
                                  const UInt8 *country=nullptr,UInt32 countryLength=0){
     auto p=s.regulatory;p.ceilingHalfDbm=255;
     const UInt8 maximum=regulatoryPower(p,primary,center,width);
@@ -525,7 +528,8 @@ inline UInt8 stationPowerLimitFor(const ConnectionState &s,UInt32 primary,UInt32
     if(constrained>maximum)constrained=maximum;
     return constrained<s.regulatory.ceilingHalfDbm?constrained:s.regulatory.ceilingHalfDbm;
 }
-inline UInt8 stationPowerLimit(const ConnectionState &s){
+template<class Config>
+inline UInt8 stationPowerLimit(const Config &s){
     return stationPowerLimitFor(s,s.operatingChannel,s.centerChannel,s.width);
 }
 inline UInt8 stationOperationalPowerLimit(const ConnectionState &s){
@@ -571,42 +575,109 @@ inline UInt32 buildRadioMaintenance(UInt8 *f,UInt32 capacity,UInt8 endpoint,cons
     }else {n=20;cmd=0x1d001;connTLV(f+12,149,4);htcWriteLE32(f+16,radioCookie(s));}
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,n-8);htcWriteLE32(f+8,cmd);return n;
 }
+// Prepared AP/PHY configuration only: no keys, queues or firmware ownership.
+struct CandidateConfiguration {
+    WMIBSS ap{};RegulatoryPolicy regulatory{};
+    UInt32 operatingChannel=0,firmwareHT=0,firmwareVHT=0,localVHT=0,peerVHT=0;
+    UInt8 rfChains=1,nss=1,width=20,centerChannel=0,groupCipher=0;
+    UInt8 powerConstraintDb=0,txPowerHalfDbm=0,htRates[16]{},htRateCount=0;
+    UInt8 negotiatedNSS=1,negotiatedWidth=20;
+    UInt16 localHT=0,peerHT=0,vhtMap=0xffff,vhtRxMap=0xffff,vhtTxMap=0xffff;
+    UInt16 negotiatedHTMask=0,negotiatedVHTRx=0xffff,negotiatedVHTTx=0xffff;
+    bool htEnabled=false,vhtEnabled=false,shortGI=false,ratesRemembered=false;
+    const char *phyReason="not-negotiated";
+};
+static_assert(sizeof(CandidateConfiguration)<=2048,"candidate must fit bounded kernel stack budget");
+// The output is usable only on success; the live connection is read-only.
+// BSSID selection/ranking belongs to the caller, but SSID/security must match.
+inline const char *prepareBSSCandidate(const ConnectionState &s,const WMIBSS &ap,CandidateConfiguration &candidate) {
+    if(s.ssidLength>sizeof(s.ssid) || ap.ssidLength>sizeof(ap.ssid))return "invalid-ssid-length";
+    if(!(s.hiddenSSID && ap.hidden)){
+        if(ap.ssidLength!=s.ssidLength)return "candidate-ssid-mismatch";
+        for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])return "candidate-ssid-mismatch";
+    }
+    if(s.secure){if(!ap.privacy || !AthSecurity::supportsPSKAKM(ap.rsn,ap.rsnLength,s.securityAKM))return "wpa2-psk-ccmp-pairwise-required";}
+    else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
+    if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
+    if(!ap.beaconInterval || !ap.rateCount || ap.rateCount>sizeof(ap.rates) || !ap.ratesValid)return "bss-missing-valid-rates";
+    // RX metadata describes where a beacon was heard, not necessarily
+    // the AP's primary channel. Preserve it and resolve the home channel
+    // independently from the DS/HT fields validated by recordWMIBSS.
+    const UInt32 channel=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
+    if(!wmiScanChannelAllowed(channel) || !wmiScanChannelAllowed(ap.rxChannel))return "bss-channel-unsupported";
+    if((channel>14)!=(ap.rxChannel>14))return "bss-channel-band-mismatch";
+    if(channelNeedsDFS(channel) && !s.regulatory.stationDFS)return "dfs-connection-not-supported";
+    // Candidate rejection must precede changes to the selected AP.
+    UInt32 commonRates=0;
+    for(UInt32 j=0;j<ap.rateCount;++j){
+        if(supportedLegacyRate(ap.rates[j],channel>14))++commonRates;
+        else if(ap.rates[j]&128)return "unsupported-basic-rate";
+    }
+    if(!commonRates)return "no-common-rate";
+    candidate={};
+    candidate.regulatory=s.regulatory;candidate.firmwareHT=s.firmwareHT;
+    candidate.firmwareVHT=s.firmwareVHT;candidate.rfChains=s.rfChains;
+    candidate.txPowerHalfDbm=s.txPowerHalfDbm;
+    candidate.operatingChannel=channel;
+    candidate.ap=ap;candidate.ap.rateCount=0;
+    candidate.groupCipher=s.secure?AthSecurity::wpa2GroupCipher(ap.rsn,ap.rsnLength):0;
+    for(UInt32 j=0;j<ap.rateCount;++j){
+        if(!supportedLegacyRate(ap.rates[j],channel>14))continue;
+        candidate.ap.rates[candidate.ap.rateCount++]=ap.rates[j];
+    }
+    negotiateHighThroughput(candidate);
+    rememberNegotiatedRates(candidate);
+    candidate.powerConstraintDb=ap.powerConstraintDb;
+    const UInt8 limit=stationPowerLimit(candidate);
+    if(!limit)return "invalid-channel-definition";
+    if(!candidate.txPowerHalfDbm)return "invalid-tx-power";
+    if(candidate.txPowerHalfDbm>limit)candidate.txPowerHalfDbm=limit;
+    return nullptr;
+}
+inline void applyBSSCandidate(ConnectionState &s,const CandidateConfiguration &candidate) {
+    // Commit only after every candidate check has passed.
+    s.ap=candidate.ap;
+    s.operatingChannel=candidate.operatingChannel;
+    s.groupCipher=candidate.groupCipher;
+    s.powerConstraintDb=candidate.powerConstraintDb;
+    s.txPowerHalfDbm=candidate.txPowerHalfDbm;
+    s.htRateCount=candidate.htRateCount;
+    s.htEnabled=candidate.htEnabled;
+    s.vhtEnabled=candidate.vhtEnabled;
+    s.nss=candidate.nss;
+    s.width=candidate.width;
+    s.centerChannel=candidate.centerChannel;
+    s.shortGI=candidate.shortGI;
+    s.localHT=candidate.localHT;
+    s.peerHT=candidate.peerHT;
+    s.localVHT=candidate.localVHT;
+    s.peerVHT=candidate.peerVHT;
+    s.vhtMap=candidate.vhtMap;
+    s.vhtRxMap=candidate.vhtRxMap;
+    s.vhtTxMap=candidate.vhtTxMap;
+    s.phyReason=candidate.phyReason;
+    s.negotiatedNSS=candidate.negotiatedNSS;
+    s.negotiatedWidth=candidate.negotiatedWidth;
+    s.negotiatedHTMask=candidate.negotiatedHTMask;
+    s.negotiatedVHTRx=candidate.negotiatedVHTRx;
+    s.negotiatedVHTTx=candidate.negotiatedVHTTx;
+    s.ratesRemembered=candidate.ratesRemembered;
+    for(UInt32 j=0;j<16;++j)s.htRates[j]=candidate.htRates[j];
+    s.apDisconnect={}; // New accepted candidate cannot inherit an old AP cause.
+}
 inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
     for(UInt32 i=0;i<cache.count;++i){
         const auto &ap=cache.entries[i];
-        if(!sameMAC(ap.bssid,s.bssid) || (!(s.hiddenSSID && ap.hidden) && ap.ssidLength!=s.ssidLength))continue;
-        bool equal=true;for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
-        if(!equal && !(s.hiddenSSID && ap.hidden))continue;
-        if(s.secure){if(!ap.privacy || !AthSecurity::supportsPSKAKM(ap.rsn,ap.rsnLength,s.securityAKM))return "wpa2-psk-ccmp-pairwise-required";}
-        else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
-        if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
-        if(!ap.beaconInterval || !ap.rateCount || !ap.ratesValid)return "bss-missing-valid-rates";
-        // RX metadata describes where a beacon was heard, not necessarily
-        // the AP's primary channel. Preserve it and resolve the home channel
-        // independently from the DS/HT fields validated by recordWMIBSS.
-        const UInt32 channel=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
-        if(!wmiScanChannelAllowed(channel) || !wmiScanChannelAllowed(ap.rxChannel))return "bss-channel-unsupported";
-        if((channel>14)!=(ap.rxChannel>14))return "bss-channel-band-mismatch";
-        if(channelNeedsDFS(channel) && !s.regulatory.stationDFS)return "dfs-connection-not-supported";
-        s.operatingChannel=channel;
-        s.ap=ap;s.ap.rateCount=0;
-        s.groupCipher=s.secure?AthSecurity::wpa2GroupCipher(ap.rsn,ap.rsnLength):0;
-        for(UInt32 j=0;j<ap.rateCount;++j){
-            if(!supportedLegacyRate(ap.rates[j],channel>14)){
-                if(ap.rates[j]&128)return "unsupported-basic-rate";
-                continue;
-            }
-            s.ap.rates[s.ap.rateCount++]=ap.rates[j];
+        if(!sameMAC(ap.bssid,s.bssid))continue;
+        if(!(s.hiddenSSID && ap.hidden)){
+            if(ap.ssidLength!=s.ssidLength)continue;
+            bool equal=true;for(UInt32 j=0;j<s.ssidLength && j<sizeof(s.ssid);++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
+            if(!equal)continue;
         }
-        if(!s.ap.rateCount)return "no-common-rate";
-        negotiateHighThroughput(s);
-        rememberNegotiatedRates(s);
-        s.powerConstraintDb=ap.powerConstraintDb;
-        const UInt8 limit=stationPowerLimit(s);
-        if(!limit)return "invalid-channel-definition";
-        if(!s.txPowerHalfDbm)return "invalid-tx-power";
-        if(s.txPowerHalfDbm>limit)s.txPowerHalfDbm=limit;
-        s.apDisconnect={}; // New accepted candidate cannot inherit an old AP cause.
+        CandidateConfiguration candidate{};
+        const char *error=prepareBSSCandidate(s,ap,candidate);
+        if(error)return error;
+        applyBSSCandidate(s,candidate);
         return nullptr;
     }
     return "configured-bss-not-found";
