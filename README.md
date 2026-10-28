@@ -6,9 +6,10 @@ system-volume patches. Read [NATIVE-ABI.txt](NATIVE-ABI.txt) before testing.
 
 Hardware verified on Lunnen QCA9377 168c:0042 / 1a3b:2b51: firmware starts,
 macOS publishes a native Wi-Fi interface, and networks appear in the system UI.
-Association and data traffic are still being debugged; this is not a stable release.
-The station DFS profile is enabled; the corresponding hardware connection test
-is pending. No router reconfiguration is required by the intended design.
+A hardware run confirmed MAC recreation, association on DFS channel 52,
+PSK-SHA256 protection, IP configuration and bidirectional traffic. A subsequent
+watchdog exposed a WCL/network lock inversion; the correction is under test.
+This is not a stable release. No router reconfiguration was used for that test.
 
 This adapter supports Darwin 24.2–24.99 (Sequoia), x86_64 only. It deliberately
 rejects Darwin 25 (Tahoe). Tahoe requires its own tested OS adapter; sharing the
@@ -16,7 +17,7 @@ radio core does not guarantee binary compatibility.
 
 Validation: native kext build/import checks and host regressions for scan,
 regulatory policy, station maintenance, and channel switching pass. Host tests
-and offline linking do not establish working association on hardware.
+and offline linking do not establish sustained stability on hardware.
 
 # Ath10kMac
 

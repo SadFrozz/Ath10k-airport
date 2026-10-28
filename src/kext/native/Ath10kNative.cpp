@@ -200,6 +200,8 @@ IONetworkInterface *Ath10kPCIDevice::createInterface() {
 }
 bool Ath10kPCIDevice::prepareNativeInterface() {
     _nativeStopping=false;
+    _nativeServiceCall=thread_call_allocate_with_options(nativeServiceThread,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
+    if(!_nativeServiceCall)return false;
     bcopy(_wmiInit.mac,_nativeMACCurrent,6);_nativeMACValid=true;
     // Strict profile/OS guard; unrelated adapters must not enter the WCL path.
     if(_vendorId!=0x168c || _deviceId!=0x42 || _subsystemVendorId!=0x1a3b || _subsystemId!=0x2b51)return false;
@@ -244,6 +246,13 @@ IOReturn Ath10kPCIDevice::nativeStopAction(OSObject *owner,void *,void *,void *,
 void Ath10kPCIDevice::stopNativeRequests() {
     if(_nativeGate && _nativeGate->getWorkLoop())_nativeGate->runAction(nativeStopAction);
     else _nativeStopping=true;
+    // stop/free call this outside both workloop gates. The stop flag prevents
+    // new scheduling; wait before removing gates, interface or radio resources.
+    if(_nativeServiceCall){
+        thread_call_cancel_wait(_nativeServiceCall);
+        thread_call_free(_nativeServiceCall);_nativeServiceCall=nullptr;
+    }
+    _nativeServicePending=false;
 }
 void Ath10kPCIDevice::releaseNativeInterface() {
     // stop() has already cancelled the runtime worker under its workloop.
@@ -327,10 +336,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     case N::NativeReady:{
         if(!_nativeStarted || !_nativeInterface || !_networkInterface)return kIOReturnNotReady;
         if(_nativeReadyPublished)return kIOReturnSuccess;
-        UInt32 reset=1;postMessage(_nativeInterface,AirportWCL::ResetInterface,&reset,sizeof(reset),true);
-        AirportWCL::DriverAvailability ready{};ready.version=3;ready.available=1;ready.reason=0xe0821803;
-        postMessage(_nativeInterface,AirportWCL::DriverAvailable,&ready,sizeof(ready),true);
-        _nativeReadyPublished=true;return kIOReturnSuccess;}
+        _nativeReadyRequested=true;requestNativeService();return kIOReturnSuccess;}
     case N::PowerGet:{auto d=static_cast<apple80211_power_data *>(data);bzero(d,sizeof(*d));d->version=1;d->num_radios=1;d->power_state[0]=_nativeRadioOn?1:0;return kIOReturnSuccess;}
     case N::PowerSet:{auto d=static_cast<apple80211_power_data *>(data);if(d->num_radios!=1 || d->power_state[0]>1)return kIOReturnBadArgument;
         _nativeRadioOn=d->power_state[0];if(!_nativeRadioOn){_wmiScan.cancelRequested=true;s.cancelRequested=true;s.portAuthorized=false;networkLink(false);}
@@ -441,7 +447,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(_nativeSecurity)_nativeSecurity->reset();
         if(op==N::setWCL_JOIN_ABORT){
             _nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
-            postMessage(_nativeInterface,AirportWCL::JoinAbortComplete,nullptr,0,true);
+            _nativeAbortRequested=true;requestNativeService();
         }
         return kIOReturnSuccess;}
     case N::setCLEAR_PMKSA_CACHE:return kIOReturnSuccess; // No PMKSA cache is retained.
@@ -462,6 +468,30 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
     }
 }
 
+// Radio code never enters WCL synchronously. One coalesced thread call enters
+// WCL first, then the network gate. PostOffice and interface callbacks therefore
+// use the same WCL -> network order as reportDataPathEvents and native IOCTLs.
+void Ath10kPCIDevice::requestNativeService() {
+    if(_nativeStopping || !_nativeServiceCall || _nativeServicePending)return;
+    _nativeServicePending=true;thread_call_enter(_nativeServiceCall);
+}
+void Ath10kPCIDevice::nativeServiceThread(thread_call_param_t context,thread_call_param_t) {
+    auto self=static_cast<Ath10kPCIDevice *>(context);
+    if(self->_nativeBSDGate)self->_nativeBSDGate->runAction(nativeServiceWCLAction);
+}
+IOReturn Ath10kPCIDevice::nativeServiceWCLAction(OSObject *owner,void *,void *,void *,void *) {
+    auto self=OSDynamicCast(Ath10kPCIDevice,owner);
+    if(!self || !self->_nativeGate)return kIOReturnNotReady;
+    return self->_nativeGate->runAction(nativeServiceRadioAction);
+}
+IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *,void *,void *) {
+    auto self=OSDynamicCast(Ath10kPCIDevice,owner);
+    if(!self)return kIOReturnBadArgument;
+    self->_nativeServicePending=false;
+    if(self->_nativeStopping || !self->_wmiLive.active)return kIOReturnNotReady;
+    self->serviceNative(Ath10k::uptimeNS()/1000000u);return kIOReturnSuccess;
+}
+
 void Ath10kPCIDevice::serviceNative(UInt64 now) {
     if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
     auto &s=_connection;auto sec=_nativeSecurity;
@@ -471,6 +501,14 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         sec->cachedGeneration=_wmiScan.generation;
     }
     auto post=[&](UInt32 id,void *payload,size_t bytes){postMessage(_nativeInterface,id,payload,bytes,true);};
+    if(_nativeReadyRequested && !_nativeReadyPublished){
+        UInt32 reset=1;post(AirportWCL::ResetInterface,&reset,sizeof(reset));
+        AirportWCL::DriverAvailability ready{};ready.version=3;ready.available=1;ready.reason=0xe0821803;
+        post(AirportWCL::DriverAvailable,&ready,sizeof(ready));
+        _nativeReadyPublished=true;_nativeReadyRequested=false;
+    }
+    if(_nativeAbortRequested){post(AirportWCL::JoinAbortComplete,nullptr,0);_nativeAbortRequested=false;}
+
     if(_nativeScanPending && _wmiScan.completed){
         UInt32 emitted=0;
         if(!_wmiScan.failed && !_wmiScan.cancelRequested){
@@ -566,7 +604,10 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     // Native WCL consumes the Sequoia RSSI snapshot, not legacy 227/229 LQM.
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;
     if(quality!=_nativeReportedQuality){
-        _nativeInterface->setLQM(static_cast<unsigned long long>(static_cast<long long>(quality)));
+        // This runs under the radio/network gate. setLQM acquires the WCL
+        // gate, while WCL reportDataPathEvents takes the network gate in the
+        // opposite order. Publish diagnostics here; send RSSI via PostOffice.
+        setProperty("Ath10kNativeLinkQuality",UInt64(static_cast<SInt64>(quality)),64);
         _nativeReportedQuality=quality;
     }
     if(up && s.signalDbm!=INT32_MIN && s.beaconFrameSerial!=_nativeReportedBeacon &&
@@ -578,7 +619,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         AirportWCL::DeauthEvent event{};bcopy(s.bssid,event.bssid,6);event.reason=3;
         post(AirportWCL::Deauth,&event,sizeof(event));
         AirportWCL::LinkStatusEvent link{};bcopy(s.bssid,link.bssid,6);post(AirportWCL::LinkStatus,&link,sizeof(link));
-        _nativeInterface->setCurrentApAddress(nullptr);_nativeInterface->setLinkState(kIO80211NetworkLinkDown,0,false,0);
+        // LinkStatus delivery calls setWCL_LINK_STATE_UPDATE on the WCL queue.
+        // Do not acquire that queue synchronously from the radio gate.
         _nativeBSSBytes=0;_nativeReportedBeacon=0;if(sec)sec->reset();
     }
     _nativeWasUp=up;

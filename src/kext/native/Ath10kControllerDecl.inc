@@ -34,6 +34,12 @@ public:
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);
+    void requestNativeService();
+    static void nativeServiceThread(thread_call_param_t,thread_call_param_t);
+    static IOReturn nativeServiceWCLAction(OSObject *,void *,void *,void *,void *);
+    static IOReturn nativeServiceRadioAction(OSObject *,void *,void *,void *,void *);
+    thread_call_t _nativeServiceCall=nullptr;
+    bool _nativeServicePending=false;
     const char *serviceNativeMAC(UInt64);
     const char *nativeSelectBSS(UInt64);
     bool _nativeMACActive=false,_nativeMACWaiting=false,_nativeMACValid=false;
@@ -63,7 +69,7 @@ private:
     bool _nativeAttached=false,_nativeControllerAttached=false,_nativeStarted=false,_nativeStopping=false;
     UInt32 _nativeReportedBeacon=0;
     int _nativeReportedQuality=-2;
-    bool _nativeReadyPublished=false;
+    bool _nativeReadyPublished=false,_nativeReadyRequested=false,_nativeAbortRequested=false;
     UInt64 _nativeJoinDeadline=0;
     AirportWCL::JoinRequest _nativeJoin{};
     AirportWCL::ScanRequest _nativeScan{};

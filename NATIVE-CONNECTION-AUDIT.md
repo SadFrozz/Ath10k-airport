@@ -45,3 +45,40 @@ invalid ring state, sync failure and BSD publication failure. These tests do not
 prove that QCA9377 firmware accepts a live delete/recreate cycle; hardware
 verification is still required. Firmware command reference:
 https://github.com/torvalds/linux/blob/v6.12/drivers/net/wireless/ath/ath10k/wmi-tlv.c
+
+
+## First association and post-association watchdog (2026-10-28)
+
+The e2b8293 hardware run confirmed station MAC recreation, association on DFS
+channel 52, completed PSK-SHA256 protection, DHCP IPv4, IPv6 configuration and
+bidirectional traffic on the native interface. This is a functional milestone,
+not a stability claim: a subsequent system watchdog captured a lock cycle.
+
+The 03:08:31 configd stackshot records kernel threads 345 and 13561 waiting for
+mutexes owned by each other. Symbolication against the matching stock
+IO80211Family UUID identifies setLQM + 0x49 in the radio-side thread and
+reportDataPathEvents + 0x69, InfraInterface::postMessage and
+PostOffice::outForDelivery in the WCL-side thread. configd's IP configuration
+queue waits on the same cycle. No new kernel panic is required for this failure.
+
+The fix removes synchronous LQM/link-state calls from the radio worker and
+moves native service into one coalesced thread call. It enters the WCL gate,
+then the network/radio gate. PostOffice enqueue/delivery and native requests now
+use WCL -> network ordering. The runtime timer only schedules work and never
+waits for WCL. Reset/availability/join-abort notifications are routed through
+the same bridge. The queued callback uses THREAD_CALL_OPTIONS_ONCE, so
+invocations cannot execute concurrently. Stop marks requests stopped under the
+network gate, releases that gate, cancels/waits and frees the callback, then
+releases interfaces/radio resources. MAC firmware progress stays on the radio
+timer, allowing a WCL MAC callback to sleep without blocking its completion.
+
+Host regressions execute the production bridge callbacks with mocked gates and
+verify ordering, coalescing, inactive/stopped behavior and cancellation outside
+gates. Architecture guards reject synchronous WCL interface updates in the
+radio worker and direct PostOffice use outside the bridge. Hardware stability
+of this correction is not yet confirmed. Continue auditing reconnect, scans
+while associated, IP/multicast handling, key renewal, shutdown and sleep/wake;
+do not treat host tests as proof for those scenarios.
+
+Thread-call cancellation/ONCE semantics checked against Apple's Sequoia-era XNU:
+https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/thread_call.c

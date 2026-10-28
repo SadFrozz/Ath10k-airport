@@ -1099,7 +1099,7 @@ const char *Ath10kPCIDevice::serviceRuntime()
     // completions again before returning rather than waiting for another poll.
     if (!error) error=serviceDataTX(Ath10k::uptimeNS()/1000000u);
 #ifdef ATH10K_NATIVE
-    if (!error) serviceNative(tickMs);
+    if (!error) requestNativeService();
 #endif
     // The full diagnostic sweep synchronizes 1023 mappings. Keep it off
     // sustained traffic; completion/DONE/refill validation still runs per MPDU.

@@ -28,6 +28,7 @@ def main():
         passed.append(name)
     run('prepare-firmware', [sys.executable, 'scripts/prepare-firmware.py'])
     run('payload-python', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_payload.py', '-v'])
+    run('native-lock-order', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_lock_order.py', '-v'])
     run('diagnostic-privacy', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_preflight.py', '-v'])
     if args.zig:
         compiler = [str(args.zig.resolve()), 'c++', '-target', 'x86_64-windows-gnu']
@@ -42,7 +43,9 @@ def main():
             'using UInt32=uint32_t;using UInt64=uint64_t;\n')
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
         (include/'native_mac_method.inc').write_text(native[native.index('const char *Ath10kPCIDevice::serviceNativeMAC('):native.index('const char *Ath10kPCIDevice::nativeSelectBSS(')])
-        names=['native_mac', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
+        (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
+        names=['native_bridge', 'native_mac', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         for name in names:
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
