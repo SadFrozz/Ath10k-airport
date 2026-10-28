@@ -25,7 +25,8 @@ class CCLogStream;
 class IOSkywalkNetworkInterface : public IOSkywalkInterface {
     OSDeclareAbstractStructors(IOSkywalkNetworkInterface)
 public:
-    struct RegistrationInfo { uint8_t bytes[0x130]; };
+    // Verified stock Sequoia network prefix; Ethernet appends through 0x130.
+    struct RegistrationInfo { uint8_t bytes[0x108]; };
     struct IOSkywalkTSOOptions;
     virtual void free() override;
     virtual bool init(OSDictionary*) override;
@@ -90,6 +91,7 @@ public:
     ExpansionData *mExpansionData;
     uint8_t _layout1[0x10];
 };
+static_assert(sizeof(IOSkywalkNetworkInterface::RegistrationInfo) == 0x108, "Sequoia network registration prefix");
 static_assert(sizeof(IOSkywalkNetworkInterface) == 0xd0, "WCL ABI size");
 static_assert(__offsetof(IOSkywalkNetworkInterface, mExpansionData) == 0xb8, "WCL ABI offset");
 #endif

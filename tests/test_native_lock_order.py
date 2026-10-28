@@ -41,6 +41,20 @@ class NativeLockOrder(unittest.TestCase):
         self.assertLess(worker.index("discardNativeSecurity()"),worker.index("sec->supplicant.receive"))
         self.assertLess(worker.index("discardNativeSecurity()"),worker.index("serviceNativeNotifications(now)"))
 
+    def test_registration_uses_framework_factory_and_detaches_borrowed_prefix(self):
+        root=Path(__file__).resolve().parents[1]
+        native=(root/"src/kext/native/Ath10kNative.cpp").read_text()
+        setup=native.split("bool Ath10kPCIDevice::prepareNativeInterface()",1)[1].split("void Ath10kPCIDevice::discardNativeSecurity()",1)[0]
+        self.assertIn("prepareRegistrationInfo(registration)",setup)
+        self.assertNotIn("IOMalloc(sizeof(registration))",setup)
+        for entry,base in [("void Ath10kNativeInterface::stop(","IO80211InfraProtocol::stop"),("void Ath10kNativeInterface::free()","IO80211InfraProtocol::free"),("IOReturn Ath10kNativeInterface::deregisterLogicalLink()","IO80211InfraProtocol::deregisterLogicalLink")]:
+            body=native.split(entry,1)[1].split("\n}",1)[0]
+            self.assertLess(body.index("detachRegistrationLoan()"),body.index(base))
+        factory=native.split("bool Ath10kNativeInterface::prepareRegistrationInfo(",1)[1].split("void Ath10kNativeInterface::detachRegistrationLoan()",1)[0]
+        self.assertLess(factory.index("copyRegistrationInfo(&registration)"),factory.index("mExpansionData->fRegistrationInfo=_registrationLoan"))
+        header=(root/"vendor/itlwm/Airport/macOS15/IOSkywalkNetworkInterface.h").read_text()
+        self.assertIn("uint8_t bytes[0x108]",header)
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()

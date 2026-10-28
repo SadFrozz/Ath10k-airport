@@ -194,6 +194,40 @@ bool Ath10kNativeInterface::initWithController(Ath10kPCIDevice *owner) {
     return IO80211InfraInterface::init() && owner->getHardwareAddress(&address)==kIOReturnSuccess &&
         IO80211SkywalkInterface::init(owner,reinterpret_cast<ether_addr *>(&address));
 }
+bool Ath10kNativeInterface::prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &registration) {
+    if(!mExpansionData || !mExpansionData2 || _registrationLoan ||
+       mExpansionData->fRegistrationInfo || mExpansionData2->fRegistrationInfo)return false;
+    // Stock copyRegistrationInfo owns allocation, copy, MAC publication and
+    // typed destruction. Never put a generic IOMalloc buffer into its slots.
+    if(copyRegistrationInfo(&registration)!=kIOReturnSuccess)return false;
+    auto *owned=mExpansionData2->fRegistrationInfo;
+    if(!owned)return false;
+    static_assert(sizeof(IOSkywalkNetworkInterface::RegistrationInfo)==0x108,"network registration prefix");
+    static_assert(sizeof(IOSkywalkEthernetInterface::RegistrationInfo)==0x130,"Ethernet registration size");
+    _registrationLoan=reinterpret_cast<IOSkywalkNetworkInterface::RegistrationInfo *>(owned);
+    mExpansionData->fRegistrationInfo=_registrationLoan;
+    return true;
+}
+void Ath10kNativeInterface::detachRegistrationLoan() {
+    // A reader which already loaded this prefix still has valid storage until
+    // the interface's final base free. Only remove our loan, never another owner.
+    if(mExpansionData && _registrationLoan && mExpansionData->fRegistrationInfo==_registrationLoan)
+        mExpansionData->fRegistrationInfo=nullptr;
+    _registrationLoan=nullptr;
+}
+void Ath10kNativeInterface::stop(IOService *provider) {
+    detachRegistrationLoan();
+    IO80211InfraProtocol::stop(provider);
+}
+void Ath10kNativeInterface::free() {
+    // Includes partial initialization and a release without a preceding stop.
+    detachRegistrationLoan();
+    IO80211InfraProtocol::free();
+}
+IOReturn Ath10kNativeInterface::deregisterLogicalLink() {
+    detachRegistrationLoan();
+    return IO80211InfraProtocol::deregisterLogicalLink();
+}
 IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const {
     // API user clients inherit their provider's workloop. Their stop path
     // must enter WCL directly, rather than hold the BSD/radio gate and
@@ -239,12 +273,7 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     if(!IONetworkController::attachInterface(&_networkInterface,false))return false;
     IOSkywalkEthernetInterface::RegistrationInfo registration{};
     if(!_nativeInterface->initRegistrationInfo(&registration,1,sizeof(registration)))return false;
-    if(!_nativeInterface->mExpansionData || !_nativeInterface->mExpansionData2)return false;
-    _nativeInterface->mExpansionData->fRegistrationInfo=static_cast<IOSkywalkNetworkInterface::RegistrationInfo *>(IOMalloc(sizeof(registration)));
-    _nativeInterface->mExpansionData2->fRegistrationInfo=static_cast<IOSkywalkEthernetInterface::RegistrationInfo *>(IOMalloc(sizeof(registration)));
-    if(!_nativeInterface->mExpansionData->fRegistrationInfo || !_nativeInterface->mExpansionData2->fRegistrationInfo)return false;
-    bcopy(&registration,_nativeInterface->mExpansionData->fRegistrationInfo,sizeof(registration));
-    bcopy(&registration,_nativeInterface->mExpansionData2->fRegistrationInfo,sizeof(registration));
+    if(!_nativeInterface->prepareRegistrationInfo(registration))return false;
     _nativeInterface->deferBSDAttach(true);
     if(!_nativeInterface->start(this))return false;
     _nativeStarted=true;_networkEnabled=true;

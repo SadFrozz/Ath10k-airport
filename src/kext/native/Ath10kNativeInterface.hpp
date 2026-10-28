@@ -7,6 +7,11 @@ class Ath10kNativeInterface : public IO80211InfraProtocol {
 public:
     Ath10kPCIDevice *controller=nullptr;
     bool initWithController(Ath10kPCIDevice *);
+    bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
+    void detachRegistrationLoan();
+    void stop(IOService *) override;
+    void free() override;
+    IOReturn deregisterLogicalLink() override;
     IOWorkLoop *getWorkLoop() const override;
     IOReturn perform(AthNativeOp,void *);
     IOReturn setMacAddress(ether_addr &) override;
@@ -200,4 +205,9 @@ public:
     IOReturn setDBRG_ENTROPY(apple80211_drbg_entropy* data) override { return kIOReturnUnsupported; }
     IOReturn setSDB_ENABLE(apple80211_sdb_enable* data) override { return kIOReturnUnsupported; }
     IOReturn setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(apple80211_mws_accessory_power_limit* data) override { return kIOReturnUnsupported; }
+private:
+    // Borrow only the prefix of the framework-owned Ethernet registration.
+    // Its typed owner outlives stop/deregister and releases it in base free().
+    IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
+
 };

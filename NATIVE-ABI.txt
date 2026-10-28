@@ -21,8 +21,19 @@ snapshot differ from the reference Tahoe 0x214/0x1dc layouts. A new macOS versio
 requires ABI validation and hardware tests. It does not require restoring old
 macOS network components. A Tahoe adapter is not implemented in this package.
 
-Validation order: restore the stock network stack in a bootable configuration;
-load the experimental driver manually after login; validate native enumeration,
-scan, WPA2 association/traffic, reconnect, power and wake; only then enable it for
-automatic OpenCore injection. The initial test configuration never auto-loads the
-experimental native driver, so a manual-load crash cannot repeat at every boot.
+Validation order: build and run relevant production-method tests and sanitizers,
+verify inherited dispatch slots/imports and the signature, then link offline with
+the installed stock kernel. Save verified SD backups and validate the existing
+OpenCore config before a boot test. Inject the candidate through OpenCore only;
+do not manually load the experimental native kext. Reboot only after explicit
+user authorization. Hardware enumeration, scan, association, traffic, reconnect,
+teardown and sleep/wake remain required evidence; offline checks do not prove
+stability. Current candidates are not installed merely by building them.
+
+Registration metadata: use the stock Ethernet copyRegistrationInfo factory so
+the framework owns its typed 0x130 allocation. The bridge borrows its 0x108
+Network prefix only until stop/free/deregisterLogicalLink detach that loan.
+Network and Ethernet registration declarations are distinct, and local vendor
+header adjustments are recorded in vendor/itlwm/SOURCE.json. This ownership path
+and its inherited vtable slots were checked against the installed Sequoia images;
+other OS/module builds still require their own validation.
