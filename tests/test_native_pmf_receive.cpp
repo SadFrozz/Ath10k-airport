@@ -11,7 +11,7 @@
 #include "pmf_ccmp_vectors.inc"
 static unsigned randomCalls=0;
 struct Ath10kKernelCrypto : PersonalTestCrypto {
- static bool random(uint8_t *out,size_t n){assert(n==2);out[0]=0x12;out[1]=uint8_t(0x34+randomCalls++);return true;}
+ static bool random(uint8_t *out,size_t n){if(n!=2){assert(n==32);return PersonalTestCrypto::random(out,n);}out[0]=0x12;out[1]=uint8_t(0x34+randomCalls++);return true;}
  static bool encrypt(const uint8_t *key,const uint8_t *in,uint8_t *out){assert(!ownerGate && !heldLocks);return PersonalTestCrypto::encrypt(key,in,out);}
 };
 #include "pmf_session.inc"
@@ -28,6 +28,10 @@ public:
  bool _dmaQuarantine=false,blocked=false,failSubmit=false;
  std::vector<std::vector<uint8_t>> transmitted;
  bool powerIOBlocked(){return blocked;}
+ bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
+ bool nativeAcceptSecurityResult(UInt32);
+ bool nativePMFPairwiseAcknowledged(const UInt8 *);
+ bool nativePMFPortReady();
  bool nativePMFFirmwareReady();
  bool nativePMFTransportReady();
  const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode){
@@ -40,6 +44,7 @@ public:
 };
 #include "native_security_class.inc"
 #include "native_pmf_receive.inc"
+#include "native_pmf_key_hooks.inc"
 static Ath10kPCIDevice *create(){
  auto d=new Ath10kPCIDevice;auto &s=d->_connection;s.stage=Ath10k::LinkStage::Connected;
  s.secure=s.pmfRequired=s.pairInstalled=s.portAuthorized=true;s.securityPhase=5;s.pmfQoSTransported=true;for(auto &qos:d->_wmiRadio)qos.completed=qos.txConsumed=qos.creditReturned=true;randomCalls=0;memcpy(s.local,c_sta,6);memcpy(s.bssid,c_ap,6);
@@ -54,6 +59,7 @@ static void service(Ath10kPCIDevice *d,UInt64 now=0){ownerGate=true;d->serviceNa
 static void roundtrip(Ath10kPCIDevice *d){service(d);assert(d->_nativeSecurity->pmfRXInFlight);run(latest);service(d);}
 class ForeignJob final : public Ath10kSAEWorkItem {public:void execute() override {}void discard() override {}};
 void queryTests();void spectrumTests();void firmwareTests();
+#ifndef ATH10K_NATIVE_KEY_STAGE_TEST
 int main(){
  firmwareTests();queryTests();spectrumTests();
  { auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
@@ -100,6 +106,8 @@ int main(){
    d->_connection.cancelRequested=true;service(d);assert(!sec->pmfRXVerified);stop(d);
  }
 }
+
+#endif
 
 static void trigger(Ath10kPCIDevice *d){
  auto f=std::array<uint8_t,sizeof(c_deauth_plain)>{};memcpy(f.data(),c_deauth_plain,f.size());f[1]&=~0x40;

@@ -103,3 +103,61 @@ void Ath10kSAEJob::discard(){
     executed=consumed=false;kind=Ath10kSAESession::Kind::Empty;connectionGeneration=0;
     auto owner=session;session=nullptr;if(owner)owner->release();
 }
+
+OSDefineMetaClassAndStructors(Ath10kSAEPrepareJob,Ath10kSAEWorkItem)
+
+bool Ath10kSAEPrepareJob::initPWE(const AthSecurity::P256CoreCryptoAPI &provider,
+    bool (*rng)(uint8_t *,size_t),const uint8_t *point,size_t bytes,bool h2e,
+    const uint8_t *station,const uint8_t *bssid,uint32_t connection,uint64_t now){
+    if(initialized || consumed || !OSObject::init() || !provider.complete() || !rng || !point || bytes!=64 ||
+       !AthSecurity::saeUnicastIdentity(station) || !AthSecurity::saeUnicastIdentity(bssid) ||
+       AthSecurity::equal(station,bssid,6) || !connection ||
+       now>~uint64_t(0)-AthSecurity::SAEGroup19ClientExchange::DeadlineMs)return false;
+    api=provider;randomBytes=rng;AthSecurity::copy(pwe,point,64);
+    AthSecurity::copy(local,station,6);AthSecurity::copy(ap,bssid,6);
+    generation=connection;started=now;deadline=now+AthSecurity::SAEGroup19ClientExchange::DeadlineMs;
+    request.kind=AthSecurity::SAEAuthKind::Commit;request.h2e=h2e;initialized=true;return true;
+}
+void Ath10kSAEPrepareJob::execute(){
+    if(!initialized || executed || consumed)return;
+    executed=true;
+    AthSecurity::P256CoreCryptoCandidate engine(api);
+    uint8_t mask[32]{},scalar[32]{};
+    // Reject out-of-range values without modulo bias. A broken RNG cannot
+    // monopolize the shared worker: at most 128 complete candidate pairs.
+    if(engine.validate(pwe,64,workspace))for(unsigned attempt=0;attempt<128;++attempt){
+        AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(mask,sizeof(mask));
+        if(!randomBytes(random,32) || !randomBytes(mask,32))break;
+        if(!AthSecurity::saeGroup19CommitScalar(random,mask,32,scalar,32))continue;
+        prepared=AthSecurity::saeGroup19Commit(engine,random,mask,32,pwe,64,request.commit,96,workspace);
+        break; // Backend failure is terminal, not a reason to reroll secrets.
+    }
+    AthSecurity::wipe(mask,sizeof(mask));AthSecurity::wipe(scalar,sizeof(scalar));workspace.clear();
+    randomBytes=nullptr;
+    if(!prepared){AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(pwe,sizeof(pwe));AthSecurity::wipe(&request,sizeof(request));}
+}
+Ath10kSAESession *Ath10kSAEPrepareJob::takePrepared(const uint8_t *station,const uint8_t *bssid,
+    uint32_t connection,uint64_t now){
+    if(!executed || consumed)return nullptr;
+    consumed=true;
+    Ath10kSAESession *session=nullptr;
+    if(prepared && station && bssid && connection==generation && now>=started && now<deadline &&
+       AthSecurity::equal(station,local,6) && AthSecurity::equal(bssid,ap,6)){
+        session=new Ath10kSAESession;
+        if(session && !session->initPrepared(api,random,32,pwe,64,request,local,ap,generation,started)){
+            session->release();session=nullptr;
+        }
+        // Preserve the original preparation deadline; worker latency must not
+        // buy a fresh authentication lifetime after completion collection.
+        if(session && session->poll(generation,now)!=Ath10kSAESession::Action::SendCommit){
+            session->release();session=nullptr;
+        }
+    }
+    discard();return session;
+}
+void Ath10kSAEPrepareJob::discard(){
+    AthSecurity::wipe(&api,sizeof(api));randomBytes=nullptr;workspace.clear();
+    AthSecurity::wipe(&request,sizeof(request));AthSecurity::wipe(pwe,sizeof(pwe));
+    AthSecurity::wipe(random,sizeof(random));AthSecurity::wipe(local,sizeof(local));AthSecurity::wipe(ap,sizeof(ap));
+    generation=0;started=deadline=0;prepared=false;consumed=true;
+}

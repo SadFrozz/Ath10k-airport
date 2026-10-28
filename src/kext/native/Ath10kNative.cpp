@@ -106,7 +106,15 @@ public:
     }
     void popQueryReply(){if(pmfReplyCount){AthSecurity::wipe(&pmfReplies[pmfReplyRead],sizeof(QueryReply));pmfReplyRead=(pmfReplyRead+1)%4;--pmfReplyCount;}}
     Ath10kSAEWorkItem *saePendingTX=nullptr;
-    AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
+    // SAE crypto is available to a future admitted join; native request
+    // policy/capabilities still reject SAE until the radio exchange is wired.
+    AthSecurity::Supplicant<Ath10kKernelCrypto,true,true> supplicant;
+    AthSecurity::IGTKCMAC128 pendingManagement{};
+    // Borrowed only beneath the radio gate from this NativeSecurity's owned
+    // one-shot PMF session. Reset clears this binding before releasing it.
+    Ath10kPMFSession *managementOwner=nullptr;
+    UInt64 managementGeneration=0;bool managementPending=false;
+    void clearManagement(){AthSecurity::wipe(&pendingManagement,sizeof(pendingManagement));managementOwner=nullptr;managementGeneration=0;managementPending=false;}
     AthNative::CandidateCache candidates;
     UInt32 cachedGeneration=~0u;
     bool ready=false,replyPending=false,keysPending=false,authorizePending=false;
@@ -129,6 +137,7 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        clearManagement();
         pmfSpectrumGeneration=pmfSpectrumEpoch=pmfSpectrumDeadlineUS=0;
         clearQueries();pmfTXInFlight=false;pmfTXKind=PMFTXKind::None;
         AthSecurity::wipe(&pmfQueryTX,sizeof(pmfQueryTX));pmfTXGeneration=pmfTXEpoch=pmfTXDeadlineUS=0;
@@ -692,6 +701,43 @@ void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
 // PTK acknowledgement, before firmware authorization and at the final
 // controlled-port barrier. An optional PMF
 // session is admitted by a future complete native WPA3 join, never implicitly.
+bool Ath10kPCIDevice::nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &key){
+    auto sec=_nativeSecurity;
+    if(!_connection.pmfRequired || !sec || !sec->pmfSession || sec->managementPending ||
+       key.keyID<4 || key.keyID>5 || key.ipn>0xffffffffffffull)return false;
+    const UInt64 generation=sec->pmfSession->activeGeneration();if(!generation)return false;
+    sec->pendingManagement=key;sec->managementOwner=sec->pmfSession;
+    sec->managementGeneration=generation;sec->managementPending=true;return true;
+}
+// Consume only authenticated supplicant exports. Replies deliberately ignore
+// stale keyChanges/managementKey from the previous successful key result.
+bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
+    using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || sec->replyPending || sec->keysPending || sec->authorizePending)return false;
+    const bool data=result==S::Keys || result==S::GroupKeys || result==S::PairKeys;
+    const bool management=result==S::ManagementKeys;
+    if(result!=S::Reply && !data && !management)return false;
+    if(!sec->supplicant.outputLength || sec->supplicant.outputLength>sizeof(sec->reply))return false;
+    if(data || management){
+        const UInt8 changes=sec->supplicant.keyChanges;
+        if(changes&~UInt8(S::PTKChanged|S::GTKChanged|S::IGTKChanged))return false;
+        if((result==S::Keys || result==S::PairKeys) && !(changes&S::PTKChanged))return false;
+        if(result==S::GroupKeys && (!(changes&S::GTKChanged) || (changes&S::PTKChanged)))return false;
+        if(management && changes!=S::IGTKChanged)return false;
+        if(data && (sec->supplicant.keys[49]>3 || sec->supplicant.keys[48]!=s.groupCipher))return false;
+        if(s.pmfRequired && (s.groupCipher!=AthSecurity::cipherCCMP || (result==S::Keys && !(changes&S::IGTKChanged))))return false;
+        if(management && (!s.pairInstalled || !s.portAuthorized || s.securityPhase!=5))return false;
+        if((changes&S::IGTKChanged) && !nativeStageManagementKey(sec->supplicant.managementKey))return false;
+        // IGTK-only rekey is a software BIP epoch update. It never becomes a
+        // firmware GTK/key-index transaction; the existing pairwise key is live.
+        if(management && !nativePMFPortReady())return false;
+    }
+    bcopy(sec->supplicant.output,sec->reply,sec->supplicant.outputLength);
+    sec->replyLength=static_cast<UInt32>(sec->supplicant.outputLength);sec->replyPending=true;
+    if(data){bcopy(sec->supplicant.keys,sec->keys,sizeof(sec->keys));sec->keysPending=true;sec->keyOperation=result;}
+    return true;
+}
 bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
     if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
     return _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
@@ -699,7 +745,16 @@ bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
 bool Ath10kPCIDevice::nativePMFPortReady(){
     if(_connection.pmfRequired && !nativePMFFirmwareReady())return false;
     if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
-    return _nativeSecurity->pmfSession->authorize();
+    auto sec=_nativeSecurity;auto pmf=sec->pmfSession;
+    if(sec->managementPending){
+        const bool current=_connection.pmfRequired && sec->managementOwner==pmf &&
+            sec->managementGeneration==pmf->activeGeneration() && sec->managementGeneration;
+        if(!current){sec->clearManagement();return false;}
+        if(!_connection.pairInstalled || _connection.securityPhase<3)return false;
+        const bool activated=pmf->activateManagement(sec->pendingManagement);
+        sec->clearManagement();if(!activated)return false;
+    }
+    return pmf->authorize();
 }
 // Radio-gated terminal cleanup. Event metadata and the last BSSID survive
 // until macOS accepts the terminal notifications; cryptographic material does not.
@@ -1164,7 +1219,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
     if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
-               sec->saeSession || sec->saePendingTX || sec->pmfSession) &&
+               sec->saeSession || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.
@@ -1182,8 +1237,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         if(sec->keysPending && !s.wmiOwned && !s.submitted && !s.txOwned && !s.dataPending &&
            !s.stats.step && !s.maintenance.step && !s.radio.step && _wmiScan.completed && !_wmi.credits.outstanding){
-            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true>::Keys;
-            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true>::PairKeys;
+            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>::Keys;
+            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>::PairKeys;
             if((initial && !s.securityPhase) || (!initial && s.securityPhase==5 && s.portAuthorized)){
                 const unsigned keyBytes=s.groupCipher==AthSecurity::cipherTKIP?32:16;
                 bool sameGroup=s.groupInstalled[sec->keys[49]] && AthSecurity::equal(sec->keys+16,s.installedGroups[sec->keys[49]],keyBytes);
@@ -1206,14 +1261,10 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
-            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true>;
+            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
             if(result==Supplicant::Fatal){s.error="native-wpa2-handshake-failed";s.cancelRequested=true;}
-            else if(result!=Supplicant::Ignore){
-                if(sec->supplicant.outputLength && sec->supplicant.outputLength<=sizeof(sec->reply)){
-                    bcopy(sec->supplicant.output,sec->reply,sec->supplicant.outputLength);sec->replyLength=sec->supplicant.outputLength;sec->replyPending=true;}
-                if(result==Supplicant::Keys || result==Supplicant::GroupKeys || result==Supplicant::PairKeys){
-                    bcopy(sec->supplicant.keys,sec->keys,sizeof(sec->keys));sec->keysPending=true;sec->keyOperation=result;
-                }
+            else if(result!=Supplicant::Ignore && !nativeAcceptSecurityResult(static_cast<UInt32>(result))){
+                s.error="native-security-result-rejected";s.cancelRequested=true;s.portAuthorized=false;
             }
         }
         if(sec->supplicant.pairwisePending()){

@@ -47,12 +47,33 @@ static uint8_t observedPWE[64]{},observedPMK[32]{};
 static unsigned retiredJobs=0,retiredSessions=0;
 static void observeFree(OSObject *object){
     size_t bytes=0;
-    if(dynamic_cast<Ath10kSAEJob *>(object)){bytes=sizeof(Ath10kSAEJob);++retiredJobs;}
+    if(dynamic_cast<Ath10kSAEPrepareJob *>(object)){bytes=sizeof(Ath10kSAEPrepareJob);++retiredJobs;}
+    else if(dynamic_cast<Ath10kSAEJob *>(object)){bytes=sizeof(Ath10kSAEJob);++retiredJobs;}
     else if(dynamic_cast<Session *>(object)){bytes=sizeof(Session);++retiredSessions;}
     if(!bytes)return;
     const auto *p=reinterpret_cast<const uint8_t *>(object);
     for(size_t i=0;i+64<=bytes;++i)assert(memcmp(p+i,observedPWE,64));
     for(size_t i=0;i+32<=bytes;++i)assert(memcmp(p+i,observedPMK,32));
+}
+static unsigned prepareRandomCalls=0;
+static int prepareRandomMode=0;
+static Pause *pausePrepare=nullptr;
+static bool prepareRandom(uint8_t *out,size_t n){
+    assert(!heldLocks && !ownerGate && n==32);const unsigned call=prepareRandomCalls++;
+    if(pausePrepare)pausePrepare->waitHere();
+    memset(out,0,n);
+    if(prepareRandomMode==1 || (prepareRandomMode==4 && call==1))return false;
+    if(prepareRandomMode==2)return true; // Broken RNG: bounded rejection.
+    if(prepareRandomMode==3){out[31]=uint8_t(call%2?3:7);return true;}
+    static const auto order=decode<32>("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+    if(call%2){out[31]=call==9?3:(call==7?2:3);return true;}
+    switch(call){
+      case 0:return true;
+      case 2:out[31]=1;return true;
+      case 4:memcpy(out,order.data(),32);return true;
+      case 6:case 8:memcpy(out,order.data(),32);out[31]-=2;return true;
+      default:out[31]=7;return true;
+    }
 }
 int main(){
     void *lib=dlopen("/usr/lib/system/libcorecrypto.dylib",RTLD_NOW|RTLD_LOCAL);assert(lib);
@@ -79,6 +100,56 @@ int main(){
     assert(AthSecurity::saeGroup19Confirm<HMAC>(peerKeys.kck,32,1,peer.commit,96,request.commit,96,confirmation.confirm+2,32));
     const auto peerFrame=fromAP(peer),confirmFrame=fromAP(confirmation);
     auto worker=new Ath10kSAEWorker;assert(worker->init());auto call=latest;
+    { // Real off-gate preparation, not fixture-supplied random/mask/commit.
+      auto prepare=[&](uint32_t gen,uint64_t now,const uint8_t *point){
+        auto job=new Ath10kSAEPrepareJob;ownerGate=true;
+        const auto before=curveCalls;assert(job->initPWE(api,prepareRandom,point,64,true,local,ap,gen,now));
+        assert(before==curveCalls);ownerGate=false;return job;
+      };
+      auto submitPrepare=[&](Ath10kSAEPrepareJob *job){
+        ownerGate=true;assert(worker->submit(job));ownerGate=false;job->release();
+        run(call);ownerGate=true;auto item=worker->takeCompleted();ownerGate=false;
+        auto done=dynamic_cast<Ath10kSAEPrepareJob *>(item);assert(done);return done;
+      };
+      prepareRandomMode=0;prepareRandomCalls=0;
+      auto job=submitPrepare(prepare(70,6000,g.data()));assert(prepareRandomCalls==12);
+      job->execute();assert(prepareRandomCalls==12);
+      ownerGate=true;auto prepared=job->takePrepared(local,ap,70,6001);ownerGate=false;assert(prepared);
+      assert(!job->takePrepared(local,ap,70,6001));job->release();
+      AthSecurity::SAEGroup19CommitTx tx;assert(prepared->snapshotCommit(tx,1,70,6001));
+      uint8_t encoded[1536]{};size_t encodedBytes=0;
+      assert(AthSecurity::encodeSAEGroup19AuthBody(request,encoded+24,sizeof(encoded)-24,encodedBytes));
+      assert(tx.size()==encodedBytes+24 && !memcmp(tx.data()+24,encoded+24,encodedBytes));
+      assert(prepared->poll(70,6000+AthSecurity::SAEGroup19ClientExchange::DeadlineMs)==Action::Failed);
+      prepared->release();assert(objects==1);
+      for(unsigned scenario=0;scenario<5;++scenario){
+        prepareRandomMode=3;prepareRandomCalls=0;job=submitPrepare(prepare(71,7000,g.data()));
+        uint8_t other[6];memcpy(other,ap,6);other[5]^=1;
+        const auto now=scenario==3?7000+AthSecurity::SAEGroup19ClientExchange::DeadlineMs:(scenario==4?6999:7001);
+        assert(!job->takePrepared(scenario==0?other:local,scenario==1?other:ap,scenario==2?72:71,now));
+        assert(!job->takePrepared(local,ap,71,7001));job->release();assert(objects==1);
+      }
+      for(int mode : {1,2,4}){
+        prepareRandomMode=mode;prepareRandomCalls=0;job=submitPrepare(prepare(73,8000,g.data()));
+        assert(prepareRandomCalls==(mode==1?1u:(mode==4?2u:256u)));assert(!job->takePrepared(local,ap,73,8001));job->release();
+      }
+      uint8_t invalid[64]{};prepareRandomMode=3;prepareRandomCalls=0;
+      job=submitPrepare(prepare(74,9000,invalid));assert(prepareRandomCalls==0);
+      assert(!job->takePrepared(local,ap,74,9001));job->release();
+      // Cancellation while preparation is running: retained work owns its
+      // PWE/random snapshot and the queue discards it without owner callbacks.
+      prepareRandomCalls=0;Pause paused;pausePrepare=&paused;
+      job=prepare(75,10000,g.data());assert(worker->submit(job));job->release();
+      std::thread runner([&]{run(call);});paused.wait();ownerGate=true;worker->cancel();ownerGate=false;
+      paused.resume();runner.join();pausePrepare=nullptr;
+      assert(!worker->takeCompleted() && objects==1);
+      // Rejected initialization cannot execute RNG or publish a session.
+      job=new Ath10kSAEPrepareJob;prepareRandomCalls=0;
+      assert(!job->initPWE(api,prepareRandom,g.data(),64,true,local,ap,0,1));
+      assert(!job->initPWE(api,prepareRandom,g.data(),64,true,local,ap,1,~uint64_t(0)));
+      job->discard();assert(!job->initPWE(api,prepareRandom,g.data(),64,true,local,ap,1,1));
+      job->execute();assert(!prepareRandomCalls);job->release();assert(objects==1);
+    }
     auto create=[&](uint32_t generation,uint64_t now){
         auto s=new Session;const auto before=curveCalls;
         assert(s->initPrepared(api,random,32,g.data(),64,request,local,ap,generation,now));

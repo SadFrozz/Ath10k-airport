@@ -39,8 +39,8 @@ before the security dependency path is functional.
 | Path | Current source/model evidence | Still required for hardware support |
 | --- | --- | --- |
 | Native credentials | Sequoia 64-byte envelope decoded; explicit SAE rejection | Real SAE request binding and complete native admission |
-| SAE group 19/H2E | Independent crypto fixtures, retained jobs and commit/confirm state | Backend kernel/timing validation and native radio exchange |
-| AKM8 / IGTK | Opt-in four-way/EAPOL and IGTK fixtures; retained PMF epochs | Native authenticated key staging and end-to-end port barrier |
+| SAE group 19/H2E | Independent crypto fixtures, retained commit preparation and commit/confirm jobs/state | Backend kernel/timing validation and native radio exchange |
+| AKM8 / IGTK | Native export staging, deferred IGTK/key barriers and rekey fixtures | SAE-to-PMK native join wiring and physical port validation |
 | PMF RX | WMI consumer, bounded inbox, retained verification and authenticated dispatch | Exact QCA9377 RX layout and firmware negotiation |
 | PMF TX | Explicit hardware formatting, shared PN leases and DMA model | Firmware encryption/MIC and autonomous management PN ownership |
 | SA Query | Native requests/responses, retry/deadline, cancellation and priority | AP interoperability and scan/power timing under load |
@@ -303,7 +303,7 @@ No SAE/PMF capability is advertised and no native WPA3 join is enabled yet.
 ### AKM8 EAPOL and authenticated IGTK delivery (local, opt-in software)
 
 `Supplicant<Crypto,AllowSHA256,AllowSAE>` adds a separate default-false SAE option.
-Existing native `Supplicant<...,true>` still admits only its prior WPA2 profiles.
+At that revision the native `Supplicant<...,true>` admitted only its prior WPA2 profiles; the internal crypto option is enabled in the later key-bridge section, while native request admission still rejects SAE.
 Software AKM8 admission requires CCMP group/pairwise, AP MFPC and BIP-CMAC-128;
 unsupported capability/cipher/AKM combinations are rejected. The PMK must already
 come from authenticated SAE; the caller must bind it to the same association.
@@ -515,7 +515,7 @@ installed PTK. Before constructing the firmware peer-authorization command, it c
 readiness; its final controlled-port barrier checks again before setting
 portAuthorized. A present but incomplete/invalid PMF owner blocks
 that transition with an error. No PMF owner is created by current native joins,
-and the native supplicant still does not admit SAE, so these hooks do not enable
+and native request admission still rejects SAE, so these hooks do not enable
 WPA3/PMF or alter the previous no-PMF key path.
 
 NativeSecurity owns an optional retained PMF session. Reset/leave/sleep/stop
@@ -1172,3 +1172,131 @@ https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/
 https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/mac.c
 https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/wmi-tlv.c
 https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/wmi-tlv.h
+
+
+### Authenticated native IGTK export staging and key barriers (local source)
+
+NativeSecurity now uses the SAE-capable opt-in supplicant internally, so its
+result bridge can consume the already tested AKM8 exports. This does not change
+native request admission: SAE/password requests are still rejected before begin,
+SAE/PMF capabilities remain disabled, and no native join creates a PMF owner.
+The verified SAE-to-PMK/native radio exchange is still required before that gate
+can open. The prepared 0.0.99 stability-test candidate from commit 5d365c6 is
+immutable and does not contain this subsequent local source work.
+
+Authenticated key results now pass through nativeAcceptSecurityResult. It checks
+bounded reply length, data-key index/cipher and result/change-mask consistency
+before copying reply/data-key exports. IGTKChanged requires the current required
+PMF profile and a live owned PMF session; initial required-PMF keys must include
+IGTK. Reply/retransmit results explicitly ignore the previous successful result's
+keyChanges and managementKey fields. Malformed exports do not enqueue a reply or
+program data keys. The existing service caller closes the port and cancels on
+rejection, rather than acknowledging an uninstalled management key.
+
+A changed IGTK is held privately with the one-shot PMF owner and its connection
+generation. That owner pointer is borrowed only under the radio gate from this
+NativeSecurity's owned session; reset clears the stage before releasing the
+session. Required-profile port readiness rechecks the live firmware barrier and
+the exact owner/generation, then activates the software management epoch only
+after the data-key state has reached phase 3 or later with a pairwise key
+acknowledged. An early readiness query preserves a valid stage; a stale/cancelled
+owner rejects and wipes it. Activation also wipes the stage before authorization.
+No IGTK is sent to firmware key indices 4/5.
+
+Initial and combined GTK/IGTK results retain the existing data-key HTT/credit/ECHO
+transaction. GTK-only and pairwise rekey keep the existing management epochs when
+there is no IGTKChanged export. An IGTK-only ManagementKeys result requires an
+already authorized phase-5 pairwise association, commits its BIP epoch directly
+and queues its authenticated EAPOL acknowledgement without opening a firmware GTK
+transaction. It does not alter securityPhase or pretend to install a data key.
+Both IGTK slots retain their independent key epochs/replay floors.
+
+The native-key test executes the production NativeSecurity class, result bridge,
+PTK/port hooks and real retained PMF owner/jobs, using actual CommonCrypto SAE
+EAPOL fixtures. It composes M1/M3 exports, deferred hardware-key fences, initial
+IGTK publication, IGTK-only and combined rekeys, retransmitted M3, pairwise rekey,
+cancelled owners and malformed exports. Independent cryptography CMAC fixtures
+verify the resulting BIP keys/replay floors across both slots; accepted frames
+cannot be replayed after an EAPOL retransmission. A native SHA256-PSK composition
+checks the prior no-PMF data-key path. Native request-policy tests still reject
+SAE. The full 54-test development suite passes with ASan/UBSan halt-on-error;
+retained-owner/native-key ThreadSanitizer checks pass;
+native build/import/stack compilation passes. The result bridge and port helper
+use 56 and 40 bytes of optimized static stack respectively on this build.
+
+This is source/model integration, not firmware installation or a working native
+WPA3 association. Native credential/SAE exchange and verified PMK delivery,
+firmware protected RX layout/PN/wire behavior, kernel crypto backend validation
+and physical rekey/reconnect/sleep testing remain open. No live kext load/unload,
+EFI change or reboot is performed for this local key-bridge work.
+
+
+### Retained first-commit preparation from a derived PWE
+
+`Ath10kSAEPrepareJob` now fills the gap between a caller's derived group-19 PWE
+and `Ath10kSAESession::initPrepared`. Initialization copies the exact PWE,
+backend/RNG providers, station/BSSID, connection generation and initial deadline
+without invoking curve operations. Only the existing retained worker executes
+point validation, random/mask generation and commit calculation. This is not
+password derivation or native SAE admission; the caller must first prove the
+PWE belongs to those credentials/identities and validate the kernel backend.
+
+Random and mask are independently sampled as 32-byte strings; the existing
+scalar validator rejects 0, 1 and values at/above the group order. No modulo
+reduction biases the sample. The transmitted sum must also exceed 1. A maximum
+of 128 candidate pairs bounds a defective provider; RNG or curve backend failure
+fails preparation instead of silently replacing the provider or changing mode.
+This follows the rejection/commit constraints in hostap's `sae_get_rand` and
+`sae_derive_commit`; the retry bound is our explicit resource policy, not a claim
+that hostap has the same bound. Reference:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/3dbea20fb6570e548e831910e108b2307d6232ba/src/common/sae.c
+
+A completed job creates a one-shot session only for the original station,
+BSSID and generation, while still inside the original deadline. Completion
+collection cannot restart the authentication timer. Rejected collection,
+queue cancellation and final release erase retained PWE/random/commit material.
+The worker does not publish a PMK, invoke IO80211 or enter driver gates.
+
+The retained-session test runs actual userland CoreCrypto on the queue and
+compares the prepared commit with the independent scalar/point fixtures. It
+covers out-of-range scalars, sums 0/1, a failed RNG (first and second call), a
+bounded all-zero RNG, invalid PWE, repeated execution/collection, changed
+identities/generation, expired/backward clocks, and cancellation while running.
+Kernel compilation and import checks pass; optimized preparation uses 232 bytes
+of static stack and owner-side collection uses 56 bytes. This does not validate
+kernel CoreCrypto runtime behavior, native credential transport, physical SAE
+frames or a working WPA3 association. The prepared 0.0.99 boot candidate and EFI
+are unchanged by these source additions.
+
+
+### Remaining native SAE radio integration, checked against current source
+
+The retained preparation job is intentionally not sufficient to enable a join.
+The next implementation must replace these exact open-auth assumptions together:
+
+| Boundary | Current implementation | Required SAE behavior |
+| --- | --- | --- |
+| `setWCL_ASSOCIATE` | Rejects SAE; PSK path calls supplicant immediately | Decode the actual password/PWE envelope, bind generation/MAC/BSSID/mode and queue preparation; never treat password bytes as PMK |
+| `buildStationManagement` in `Ath10kConnection.hpp` | Auth builds algorithm 0, transaction 1 | SAE commit/confirm frames from the retained exchange, with its exact immutable TX reservation and actual HTT submission outcome |
+| `receiveStationManagementAuthenticated` | Auth accepts only algorithm 0, transaction 2 | Route bounded algorithm-3 frames to the SAE owner before this open-auth handler; no unauthenticated shortcut to `authReply` |
+| `serviceNative` | Drives EAPOL only after `sec->ready` and association | Collect preparation/key/confirm work without consuming a PMF job; validate original generation, identity and deadline after every handoff |
+| Auth-to-association transition | Common connection state consumes `authReply` | Set it only after local confirm handoff and verified peer confirm, then bind exported PMK/PMKID to AKM8 supplicant and mandatory PMF profile |
+| Cancellation/stop/sleep | NativeSecurity resets retained sessions and cancels the shared worker | Include preparation ownership and invalidate native join generation before late collection; preserve worker shutdown outside all gates |
+
+Auth stage timeout, management TX capacity and shared management DMA ownership
+must also be reviewed as part of that change. Neither a generic successful
+firmware event nor an accepted open-auth reply proves SAE authentication. The
+native SAE capability must stay disabled until these rows and firmware PMF
+validation are complete.
+
+The combined key-export/preparation source batch is development version 0.0.100.
+It is not installed. Full 54-test ASan/UBSan halt-on-error validation passes; the
+immutable 0.0.99 candidate is still the separately saved reboot candidate.
+
+The combined batch also passes ThreadSanitizer for `sae_session` (including
+preparation/cancellation) and `native_key_stage`. Development 0.0.100 builds,
+ad-hoc signature verification passes, and an offline diagnostic AuxKC contains
+this exact Mach-O UUID D2278F3E-3B30-3391-9990-46ADDCE15F20. For the offline link
+only, a copy has OSBundleRequired removed to make it AuxKC-eligible; deployed
+metadata is unchanged. This does not install a kernel collection, patch the OS
+or validate a running driver. No new external imports were introduced.

@@ -11,6 +11,8 @@
 struct Ath10kKernelCrypto {};
 static std::vector<unsigned> cleanup;
 struct Ath10kPMFSession {
+    UInt64 generation=9;UInt64 activeGeneration(){return generation;}
+    bool activateManagement(const AthSecurity::IGTKCMAC128 &){return true;}
     bool keyResult=true,portResult=true;unsigned keyCalls=0,portCalls=0;
     bool acknowledgePairwise(const UInt8 *,const UInt8 *,const UInt8 *){++keyCalls;return keyResult;}
     bool authorize(){++portCalls;return portResult;}
@@ -39,10 +41,12 @@ public:
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
     struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
-        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false;
+        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4;unsigned securityPhase=0;
         struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
     void discardIfStopped();
     void discardNativeSecurity();
+    bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
+    bool nativeAcceptSecurityResult(UInt32);
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
     bool firmwareReady=true;bool nativePMFFirmwareReady(){return firmwareReady;}

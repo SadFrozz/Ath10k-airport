@@ -64,3 +64,27 @@ public:
 };
 static_assert(sizeof(Ath10kSAEJob)<=4096,"Bounded heap-owned SAE job");
 static_assert(sizeof(Ath10kSAESession)<=8192,"Allocate the SAE owner off the kernel stack");
+
+// One-shot preparation from an already derived, identity-bound PWE. Password
+// derivation/admission and kernel backend validation remain caller prerequisites.
+// Inputs are immutable after init; execute is worker-only; takePrepared is owner-
+// gated only after taking the completed job. No callback enters an owner gate.
+class Ath10kSAEPrepareJob : public Ath10kSAEWorkItem {
+    OSDeclareDefaultStructors(Ath10kSAEPrepareJob)
+    AthSecurity::P256CoreCryptoAPI api{};
+    bool (*randomBytes)(uint8_t *,size_t)=nullptr;
+    AthSecurity::P256CoreCryptoWorkspace workspace{};
+    AthSecurity::SAEGroup19AuthMessage request{};
+    uint8_t pwe[64]{},random[32]{},local[6]{},ap[6]{};
+    uint32_t generation=0;
+    uint64_t started=0,deadline=0;
+    bool initialized=false,executed=false,prepared=false,consumed=false;
+public:
+    bool initPWE(const AthSecurity::P256CoreCryptoAPI &,bool (*)(uint8_t *,size_t),
+        const uint8_t *,size_t,bool,const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+    void execute() override;
+    void discard() override;
+    // Transfers a newly retained owner once, only to the exact admitted attempt.
+    Ath10kSAESession *takePrepared(const uint8_t *,const uint8_t *,uint32_t,uint64_t);
+};
+static_assert(sizeof(Ath10kSAEPrepareJob)<=4096,"Bounded heap-owned SAE preparation");

@@ -39,6 +39,8 @@ public:
     void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
     static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
     void discardNativeSecurity();
+    bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
+    bool nativeAcceptSecurityResult(UInt32);
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
