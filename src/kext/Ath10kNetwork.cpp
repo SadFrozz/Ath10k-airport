@@ -1254,11 +1254,15 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
         }else{
             const UInt64 age=nowMs>=slot.sinceMs?nowMs-slot.sinceMs:0;
             if(oldest==Ath10k::kDataTxSlots || age>oldestAge){oldest=i;oldestAge=age;}
-            // CE must consume the command even when radio transmission is
-            // paused. Teardown also keeps its original bounded drain policy.
-            if(age>=5000 && (!slot.ceConsumed || s.disconnect!=Ath10k::DisconnectStage::None ||
-                            s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized)){
-                ++s.dataTimeouts;report(!slot.ceConsumed?"ce-timeout":"drain-timeout",i,age);
+            // CE consumption is bounded by command age even during pauses.
+            // A firmware-retained payload may legitimately predate teardown:
+            // give Drain its own stage deadline instead of failing immediately
+            // when an old payload's controlled port closes.
+            const bool ceTimeout=!slot.ceConsumed && age>=5000;
+            const bool drainTimeout=s.disconnect!=Ath10k::DisconnectStage::None &&
+                nowMs>=s.sinceMs && nowMs-s.sinceMs>=5000;
+            if(ceTimeout || drainTimeout){
+                ++s.dataTimeouts;report(ceTimeout?"ce-timeout":"drain-timeout",i,age);
                 return "data-tx-completion-timeout";
             }
             if(age>=5000 && !slot.waitReported){

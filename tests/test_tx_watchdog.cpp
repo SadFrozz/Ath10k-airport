@@ -92,7 +92,26 @@ int main(){
     {
         WatchdogDriver d;d.submit(1800);assert(!d.serviceDataTX(1810));
         assert(Ath10k::requestDisconnect(d._connection,2000));
-        assert(d.serviceDataTX(6800) && d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        assert(!d.serviceDataTX(6999));
+        assert(d.serviceDataTX(7000) && d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        d.releaseWMIRuntime();
+    }
+    // Closing a long-lived link starts a fresh drain window. An old payload
+    // may still complete safely; packet age alone must not force quarantine.
+    for(bool complete:{false,true}){
+        WatchdogDriver d;const auto id=d.submit(1800);assert(!d.serviceDataTX(1810));
+        assert(!d.serviceDataTX(60000));
+        assert(Ath10k::requestDisconnect(d._connection,60001));
+        assert(!d.serviceDataTX(60001));
+        assert(d._connection.dataPending==1 && d._connection.dataTX[0].owned);
+        if(complete){
+            d.complete(id);assert(!d.serviceDataTX(60002));
+            assert(!d._connection.dataPending && !d._connection.dataTX[0].owned);
+        }else{
+            assert(!d.serviceDataTX(65000));
+            assert(!strcmp(d.serviceDataTX(65001),"data-tx-completion-timeout"));
+            assert(d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        }
         d.releaseWMIRuntime();
     }
     std::puts("TX watchdog passed: late HTT ownership, progressing traffic, CE stalls, full-queue stalls, bounded pauses, ID retention, wakeup and teardown.");

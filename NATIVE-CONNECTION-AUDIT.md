@@ -635,3 +635,17 @@ direct submission during the hold and recovery with no new completion event.
 The development/CI runner now also includes the pre-existing TX watchdog,
 security-disconnect and RX-security diagnostic scenarios. Hardware diagnosis
 remains outstanding; this source-level defect is not proof of a hang cause.
+
+## Retained payload and disconnect clock (2026-10-28)
+
+The data watchdog used a payload's original submission age as the teardown
+timeout as soon as the controlled port closed. A legitimate, firmware-retained
+payload older than five seconds could therefore fail the first disconnect tick,
+without receiving a drain interval. The transport CE deadline still uses command
+age. The teardown deadline now uses the existing disconnect-stage clock, matching
+serviceDisconnect. Closing the controlled port alone is not evidence of a DMA
+completion failure. No payload is freed or its ID reused before both CE and HTT
+completion; actual stuck drains remain bounded at five seconds. Tests cover a
+minute-old payload completing after disconnect and an identical payload that
+never completes, with the latter retaining ownership at the exact deadline.
+This is source/test evidence, not a verified explanation of a hardware hang.
