@@ -310,3 +310,16 @@ the object retain; foreign/null owners are rejected. This protects allocation
 lifetime, not attachment or already retired controller resources. A future PM
 completion guard must coordinate controller gate/WMI cleanup as well as native
 managers; deferring only native parent stop is insufficient.
+
+### Native PM/framework stop synchronization (2026-10-28)
+
+Stock native power-body admission is counted; didTerminate and finalize defer
+inherited stop scheduling until real body exit and a WCL fence. PMstop runs on
+a preallocated worker outside WCL/radio and the global termination worker; a
+platform timeout parks the job without detaching the native child or allowing
+controller cleanup. WCL then finalizes BSD before parent completion. Direct
+partial-start cleanup drains actual native bodies before event-worker/resources.
+A distinct native parent-start flag preserves mandatory parent stop after early
+radio retirement and avoids double stop. Host/threaded and sanitizer tests pass;
+kernel lifecycle/hardware not verified. Next audit is the PCI-controller's own
+setPowerState/root callback closure and resource-release barrier, then wake recovery.

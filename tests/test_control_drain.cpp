@@ -2,6 +2,8 @@
 #define ATH10K_NATIVE 1
 class Ath10kPCIDevice {
 public:
+    bool powerDrained=false;
+    struct Native {bool *done;void drainPowerCalls(){*done=true;}} native{&powerDrained};Native *_nativeInterface=&native;
     bool probePending=false,nativePending=false,nativeAllocated=false;
     bool nativeStopping=false,resourcesLive=true;
     unsigned probeCancels=0,nativeDrains=0;unsigned gateDepth=0;
@@ -14,7 +16,7 @@ public:
         probePending=false;
     }
     void stopNativeRequests(){
-        assert(!gateDepth && resourcesLive && !probePending);
+        assert(!gateDepth && resourcesLive && !probePending && powerDrained);
         ++nativeDrains;nativeStopping=true;nativePending=nativeAllocated=false;
     }
     void releaseRadio(){assert(!probePending && !nativePending && nativeStopping);resourcesLive=false;}

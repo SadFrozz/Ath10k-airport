@@ -50,7 +50,7 @@ class Ath10kNativeInterface:public IO80211InfraProtocol {
 public:
     void *_nativeBSDReference=nullptr;
     struct Owner {void release(){assert(false);}};Owner *_nativeBSDOwner=nullptr;
-    Controller *controller=nullptr;
+    Controller *controller=nullptr;bool _baseStarted=true;
     void releaseTerminationNotification(){}
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
     bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);

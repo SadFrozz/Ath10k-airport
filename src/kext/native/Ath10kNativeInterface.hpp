@@ -1,16 +1,26 @@
 #pragma once
 #include "Ath10kNativeABI.hpp"
 #include "Ath10kNativeOps.hpp"
+#include <kern/thread_call.h>
 class Ath10kPCIDevice;
 class Ath10kNativeInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(Ath10kNativeInterface)
 public:
     Ath10kPCIDevice *controller=nullptr;
+    bool _baseStarted=false;
     ifnet_t _nativeBSDReference=nullptr;
     IOService *_nativeBSDOwner=nullptr;
     bool initWithController(Ath10kPCIDevice *);
     IOReturn prepareBSDInterface(ifnet_t,unsigned int) override;
     bool prepareTerminationNotification();
+    IOReturn setPowerState(unsigned long,IOService *) override;
+    bool didTerminate(IOService *,IOOptionBits,bool *) override;
+    bool finalize(IOOptionBits) override;
+    void closePowerAdmission();
+    void drainPowerCalls();
+    static void terminationThread(thread_call_param_t,thread_call_param_t);
+    static IOReturn finalizeBSDAction(OSObject *,void *,void *,void *,void *);
+    static IOReturn resumeTerminationAction(OSObject *,void *,void *,void *,void *);
     void releaseTerminationNotification();
     static bool willTerminateNotification(void *,void *,IOService *,IONotifier *);
     bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
@@ -216,5 +226,14 @@ private:
     // Its typed owner outlives stop/deregister and releases it in base free().
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
     IONotifier *_terminationNotifier=nullptr;
+    IOLock *_terminationLock=nullptr;
+    thread_call_t _terminationCall=nullptr;
+    UInt32 _nativePowerCalls=0;
+    bool _powerAdmissionClosed=false,_terminationRequested=false;
+    bool _terminationScheduled=false,_terminationPMStopped=false,_terminationCompleted=false;
+    IOService *_terminationProvider=nullptr;
+    IOOptionBits _terminationOptions=0;
+    bool _terminationFinalizePending=false;
+    IOOptionBits _terminationFinalizeOptions=0;
 
 };

@@ -68,7 +68,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | Priority | Path | Evidence/status | Completion condition |
 | --- | --- | --- | --- |
 | P0 | Registration ownership | Candidate uses the stock typed factory, a borrowed Network prefix and cleanup hooks; host ownership and parent-vtable checks pass | Hardware stop/recovery retains one owner and no stale borrower |
-| P0 | Framework leaf termination | Candidate retires radio and requests PMstop outside workloop gates; actual callout-completion/lifetime protection remains pending | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
+| P0 | Framework leaf termination | Candidate counts admitted stock power bodies, defers didTerminate/finalize, then fences WCL and finalizes BSD before inherited completion; PCI-controller power path still needs its own audit | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
 | P0 | Event delivery errors | Candidate checks enqueue returns, keeps phase/cursors and retries with 10 ms backoff; host injection covers every stage | Verify system behavior during scan, rekey and failures on hardware |
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
@@ -358,3 +358,52 @@ The production notifier/setup/removal, controller preparation and atomic termina
 Automatic wake recovery remains incomplete. The next integration step is early controller PM scheduling so a fresh rematched instance boots firmware only when its parent permits it, followed by a retained recovery worker outside all driver/framework gates. A terminated native instance remains fail-closed rather than reusing old rings/keys. Physical notification delivery, restart, sleep/wake and sustained traffic require explicit-authorized hardware tests.
 
 The final timeout seam models PMstop returning with an unfinished callout; it verifies that diagnostics do not call this drained. This does not fix the remaining cleanup race. The next required P0 step is an admitted/in-flight PM wrapper plus delayed base cleanup with retained resource lifetime until all admitted calls have actually exited. In particular, inspect the borrowed BSD ifnet/manager lifetime before detaching the legacy interface; simply retaining the native object is not a sufficient general proof. This candidate remains unsuitable for a boot test until that completion/lifetime guard is finished.
+
+## Native PM completion and framework deferral candidate (current)
+
+This supersedes the preparatory outside-gate PMstop notifier described above.
+The native interface now counts entry/exit around the unmodified inherited
+setPowerState body. Closing admission rejects new bodies with Aborted; the short
+bookkeeping mutex is never held while calling a parent method or workloop gate.
+The notifier closes admission and retires radio but performs no PMstop wait on
+the global termination worker.
+
+The matching SDK documents didTerminate deferral for pending I/O. Matching XNU
+IOService::didTerminate schedules stop only when inherited completion is invoked;
+terminationWorker leaves a parent unfinalized while its child remains attached.
+The candidate defers inherited completion and retains the interface/provider
+while a preallocated ONCE thread call runs PMstop outside WCL/radio. If PMstop
+returns with an admitted body still running, that job parks with its references
+and attachment intact. The last real body exit queues it again. Thus controller
+gates/WMI resources and native managers remain available together, instead of
+merely keeping their enclosing allocations alive after an early controller stop.
+
+IOService::finalize has a second scheduling path when only this interface is
+terminated and its provider remains active; finalize is also deferred. Once
+admitted bodies have exited, the worker enters WCL, finalizes the matching BSD
+binding and only then marks completion and resumes inherited finalize/didTerminate.
+The WCL fence also drains earlier callers which might have passed native request
+admission before radio retirement. Completion cannot become visible while this
+worker is still waiting for WCL. A mismatched borrowed BSD binding parks without
+parent cleanup and reports a diagnostic instead of touching an unknown owner.
+
+Direct controller cleanup after partial startup closes native PM admission,
+retires radio, invokes PMstop and waits for the actual native body count outside
+WCL/radio, then finalizes BSD under WCL before draining the event bridge. Native
+parent-start ownership is tracked separately from radio readiness: early radio
+retirement must not suppress a still-required parent stop. Framework stop clears
+that ownership, preventing a second manual parent stop.
+
+Tests execute the production methods with a real blocked host power body,
+timeout-returning PMstop, a worker waiting for WCL, finalize arriving during
+that wait, repeated completion, direct cleanup, allocation failures and final
+self-release/free of the running call. References and parent return values are
+checked. Full host tests, ASan/UBSan, native build and exact-UUID auxiliary binary
+linking pass (8D6BC124-79CA-3194-A116-50482BEA2D39). Auxiliary input selection
+uses an isolated OSBundleRequired-removed copy; original OpenCore loading and
+actual kernel termination delivery remain untested.
+
+Still not ready for installation: the separate PCI-controller setPowerState and
+root power notification path needs terminal admission/barrier verification before
+its own PMstop/resource release. Automatic wake recovery also remains missing.
+No hardware stability or full-stack completion is established by these host tests.

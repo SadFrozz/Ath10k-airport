@@ -2,6 +2,18 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_power_completion_and_wcl_fence_precede_framework_stop(self):
+        native=(Path(__file__).resolve().parents[1]/'src/kext/native/Ath10kNative.cpp').read_text()
+        worker=native.split('void Ath10kNativeInterface::terminationThread(',1)[1].split('IOReturn Ath10kNativeInterface::finalizeBSDAction(',1)[0]
+        self.assertLess(worker.index('if(self->_nativePowerCalls)'),worker.index('runAction(resumeTerminationAction'))
+        self.assertNotIn('_terminationCompleted=true',worker)
+        resume=native.split('IOReturn Ath10kNativeInterface::resumeTerminationAction(',1)[1].split('bool Ath10kNativeInterface::willTerminateNotification(',1)[0]
+        self.assertLess(resume.index('finalizeBSDAction('),resume.index('_terminationCompleted=true'))
+        self.assertLess(resume.index('IOLockUnlock('),resume.index('IO80211InfraProtocol::didTerminate('))
+        self.assertLess(resume.index('finalizeBSDAction('),resume.index('IO80211InfraProtocol::finalize('))
+        stop=native.split('void Ath10kNativeInterface::stop(',1)[1].split('void Ath10kNativeInterface::free()',1)[0]
+        self.assertIn('if(_baseStarted)',stop)
+
     def test_bsd_reference_spans_parent_cleanup(self):
         native=(Path(__file__).resolve().parents[1]/'src/kext/native/Ath10kNative.cpp').read_text()
         prepare=native.split('IOReturn Ath10kNativeInterface::prepareBSDInterface(',1)[1].split('bool Ath10kNativeInterface::prepareTerminationNotification()',1)[0]
@@ -17,6 +29,8 @@ class NativeLockOrder(unittest.TestCase):
         source=(Path(__file__).resolve().parents[1]/"src/kext/Ath10kPCIDevice.cpp").read_text()
         drain=source.split("void Ath10kPCIDevice::drainControlWorkers()",1)[1].split("void Ath10kPCIDevice::stop",1)[0]
         self.assertLess(drain.index("cancelDeferredProbe();"),drain.index("stopNativeRequests();"))
+        self.assertLess(drain.index("cancelDeferredProbe();"),drain.index("drainPowerCalls()"))
+        self.assertLess(drain.index("drainPowerCalls()"),drain.index("stopNativeRequests();"))
         for entry in ["void Ath10kPCIDevice::stop(IOService *provider)","void Ath10kPCIDevice::free()"]:
             body=source.split(entry,1)[1].split("\nvoid ",1)[0]
             self.assertLess(body.index("drainControlWorkers();"),body.index("releasePowerNotifications();"))
@@ -78,7 +92,7 @@ class NativeLockOrder(unittest.TestCase):
         self.assertLess(setup.index("getWorkLoop()->addEventSource(_nativeGate)"),setup.index("_nativeInterface=new Ath10kNativeInterface"))
         release=native.split("void Ath10kPCIDevice::releaseNativeInterface()",1)[1].split("IOReturn Ath10kPCIDevice::nativeRequest(",1)[0]
         self.assertIn("_nativeInterface->getProvider()==this",release)
-        self.assertIn("if(_nativeStarted && stillAttached)",release)
+        self.assertIn("if(_nativeInterface->_baseStarted && stillAttached)",release)
         self.assertIn("if(stillAttached)_nativeInterface->detach(this)",release)
 
     def test_pm_termination_notification_runs_barrier_before_ungated_pmstop(self):
@@ -90,7 +104,8 @@ class NativeLockOrder(unittest.TestCase):
         self.assertIn('IOService::serviceMatching("Ath10kNativeInterface")',register)
         self.assertNotIn("registryEntryIDMatching(",register)
         callback=native.split("bool Ath10kNativeInterface::willTerminateNotification(",1)[1].split("bool Ath10kNativeInterface::prepareRegistrationInfo(",1)[0]
-        self.assertLess(callback.index("prepareNativeInterfaceTermination(self)"),callback.index("self->PMstop()"))
+        self.assertLess(callback.index("closePowerAdmission()"),callback.index("prepareNativeInterfaceTermination(self)"))
+        self.assertNotIn("self->PMstop()",callback)
         self.assertNotIn("runAction(",callback)
         prep=native.split("void Ath10kPCIDevice::prepareNativeInterfaceTermination(",1)[1].split("void Ath10kPCIDevice::stopNativeRequests()",1)[0]
         self.assertLess(prep.index("blockPowerIOForTermination()"),prep.index("IOLockLock(_probePowerLock)"))

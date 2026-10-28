@@ -7,9 +7,9 @@ static void IOLockFree(void *){assert(false);}
 #define OSSafeReleaseNULL(p) do{if(p){(p)->release();(p)=nullptr;}}while(0)
 namespace AthSecurity {static void wipe(void *p,unsigned n){auto *b=static_cast<volatile uint8_t *>(p);while(n--)*b++=0;}}
 struct Native {
-    void *provider=nullptr;unsigned stops=0,detaches=0,releases=0;
+    bool _baseStarted=true;void *provider=nullptr;unsigned stops=0,detaches=0,releases=0;
     void *getProvider(){return provider;}
-    void stop(void *owner){assert(provider==owner && !stops);++stops;events.push_back(3);}
+    void stop(void *owner){assert(provider==owner && !stops);++stops;_baseStarted=false;events.push_back(3);}
     void detach(void *owner){assert(provider==owner);provider=nullptr;++detaches;events.push_back(5);}
     void release(){++releases;events.push_back(6);}
 };
@@ -43,11 +43,11 @@ public:
 };
 #include "native_release_method.inc"
 int main(){
-    for(unsigned mode=0;mode<6;++mode){
+    for(unsigned mode=0;mode<7;++mode){
         events.clear();Ath10kPCIDevice d;Native native;BSD bsd;Gate radio{&d.radio},wcl{&d.wcl};
         d._nativeInterface=&native;d._networkInterface=&bsd;d._nativeGate=&radio;d._nativeBSDGate=&wcl;
         d._nativeSecurity=new Security;std::fill(std::begin(d._nativeJoin),std::end(d._nativeJoin),0xa5);
-        d._nativeStarted=mode!=2 && mode!=3;d._nativeAttached=mode!=3;
+        d._nativeStarted=mode!=2 && mode!=3 && mode!=6;native._baseStarted=mode!=2 && mode!=3;d._nativeAttached=mode!=3;
         d._nativeControllerAttached=mode!=3;native.provider=mode==3?nullptr:&d;
         if(mode==1){ // Framework actionStop already did stop + detach, flags remain stale.
             native.stop(&d);native.detach(&d);events.clear();
@@ -56,8 +56,8 @@ int main(){
         if(mode==4)native.provider=&foreign; // Never stop/detach a different provider's child.
         if(mode==5){native.detach(&d);events.clear();} // Detached without completed startup ownership.
         d.releaseNativeInterface();
-        const unsigned expectedStops=(mode==0 || mode==1)?1:0;
-        const unsigned expectedDetaches=(mode==0 || mode==1 || mode==2 || mode==5)?1:0;
+        const unsigned expectedStops=(mode==0 || mode==1 || mode==6)?1:0;
+        const unsigned expectedDetaches=(mode==0 || mode==1 || mode==2 || mode==5 || mode==6)?1:0;
         assert(native.stops==expectedStops && native.detaches==expectedDetaches && native.releases==1);
         assert(mode!=4 || native.provider==&foreign);
         assert(d.drains==1 && bsd.releases==1 && d.bsdDetaches==1);
@@ -72,7 +72,7 @@ int main(){
         // Repeated controller cleanup must not repeat the child's stock stop.
         d.releaseNativeInterface();assert(native.stops==expectedStops && native.releases==1 && d.drains==2);
     }
-    assert(securityDeletes==6);
+    assert(securityDeletes==7);
     Ath10kPCIDevice empty;empty.releaseNativeInterface();empty.releaseNativeInterface();
     assert(empty.drains==2 && !empty.controllerDetaches && !empty.bsdDetaches);
 }

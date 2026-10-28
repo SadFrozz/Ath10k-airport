@@ -213,6 +213,11 @@ IOReturn Ath10kNativeInterface::prepareBSDInterface(ifnet_t interface,unsigned i
 }
 bool Ath10kNativeInterface::prepareTerminationNotification() {
     if(_terminationNotifier)return true;
+    if(!_terminationLock)_terminationLock=IOLockAlloc();
+    if(!_terminationLock)return false;
+    if(!_terminationCall)_terminationCall=thread_call_allocate_with_options(terminationThread,this,
+        THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
+    if(!_terminationCall)return false;
     // A newly initialized entry gets its registry ID only when attached. Use
     // the class match before attachment, and filter this exact object below.
     auto *matching=IOService::serviceMatching("Ath10kNativeInterface");
@@ -223,21 +228,146 @@ bool Ath10kNativeInterface::prepareTerminationNotification() {
     return _terminationNotifier!=nullptr;
 }
 void Ath10kNativeInterface::releaseTerminationNotification() {
-    // remove synchronizes with outstanding handlers. The termination worker
-    // retains its victim through notification delivery; free is not the handler.
+    // Final-free/failed-init only. A deferred termination owns a self-reference
+    // until its last worker access, so it cannot reach here while queued.
     if(_terminationNotifier){_terminationNotifier->remove();_terminationNotifier=nullptr;}
+    if(_terminationCall){thread_call_free(_terminationCall);_terminationCall=nullptr;}
+    if(_terminationLock){IOLockFree(_terminationLock);_terminationLock=nullptr;}
+}
+void Ath10kNativeInterface::closePowerAdmission() {
+    if(!_terminationLock)return;
+    IOLockLock(_terminationLock);_powerAdmissionClosed=true;IOLockUnlock(_terminationLock);
+}
+IOReturn Ath10kNativeInterface::setPowerState(unsigned long ordinal,IOService *device) {
+    if(!_terminationLock)return kIOReturnNotReady;
+    IOLockLock(_terminationLock);
+    if(_powerAdmissionClosed){IOLockUnlock(_terminationLock);return kIOReturnAborted;}
+    ++_nativePowerCalls;IOLockUnlock(_terminationLock);
+    // Preserve the stock body/return value and its WCL ordering. Never hold our
+    // short bookkeeping lock across a framework call or a command gate.
+    const IOReturn result=IO80211InfraProtocol::setPowerState(ordinal,device);
+    IOLockLock(_terminationLock);
+    --_nativePowerCalls;
+    if(!_nativePowerCalls){
+        IOLockWakeup(_terminationLock,&_nativePowerCalls,false);
+        if(_terminationRequested && _terminationPMStopped && !_terminationScheduled && !_terminationCompleted){
+            _terminationScheduled=true;thread_call_enter(_terminationCall);
+        }
+    }
+    IOLockUnlock(_terminationLock);
+    return result;
+}
+void Ath10kNativeInterface::drainPowerCalls() {
+    // Controller stop/free call this after the probe, outside WCL/radio. The
+    // normal framework route has already completed deferred didTerminate.
+    // This also covers direct cleanup after a partially successful start.
+    if(!_terminationLock)return;
+    closePowerAdmission();
+    if(controller)controller->nativeInterfaceWillStop(this);
+    PMstop();
+    IOLockLock(_terminationLock);
+    while(_nativePowerCalls)IOLockSleep(_terminationLock,&_nativePowerCalls,THREAD_UNINT);
+    IOLockUnlock(_terminationLock);
+    if(auto loop=getWorkLoop())loop->runAction(finalizeBSDAction,this);
+}
+bool Ath10kNativeInterface::didTerminate(IOService *provider,IOOptionBits options,bool *defer) {
+    if(!provider || !defer)return false;
+    if(!_terminationLock || !_terminationCall)
+        return IO80211InfraProtocol::didTerminate(provider,options,defer);
+    IOLockLock(_terminationLock);_powerAdmissionClosed=true;
+    if(_terminationCompleted){*defer=false;IOLockUnlock(_terminationLock);return true;}
+    // Explicitly hold the inherited completion/close handshake until pending
+    // power I/O exits. Do not take provider arbitration from this workloop.
+    *defer=true;
+    if(!_terminationRequested){
+        _terminationRequested=true;_terminationProvider=provider;_terminationOptions=options;
+        retain();provider->retain(); // Keep the pending notification/job alive.
+        _terminationScheduled=true;thread_call_enter(_terminationCall);
+    }else if(_terminationPMStopped && !_terminationScheduled && !_nativePowerCalls){
+        _terminationScheduled=true;thread_call_enter(_terminationCall);
+    }
+    IOLockUnlock(_terminationLock);
+    // Do not invoke the inherited didTerminate yet: it schedules stop/detach.
+    // Leaving this child attached also holds off controller finalization/stop,
+    // preserving its command gates, WMI state and the native managers together.
+    return true;
+}
+bool Ath10kNativeInterface::finalize(IOOptionBits options) {
+    if(!_terminationLock)return IO80211InfraProtocol::finalize(options);
+    IOLockLock(_terminationLock);
+    if(_terminationCompleted){IOLockUnlock(_terminationLock);return IO80211InfraProtocol::finalize(options);}
+    _terminationFinalizePending=true;_terminationFinalizeOptions=options;
+    IOLockUnlock(_terminationLock);
+    // IOService::finalize can schedule stop independently when the provider is
+    // still active (termination of this interface alone). Defer that path too.
+    if(auto provider=getProvider()){
+        bool defer=false;didTerminate(provider,options,&defer);return true;
+    }
+    return IO80211InfraProtocol::finalize(options); // Unattached partial init.
+}
+void Ath10kNativeInterface::terminationThread(thread_call_param_t context,thread_call_param_t) {
+    auto self=static_cast<Ath10kNativeInterface *>(context);
+    IOLockLock(self->_terminationLock);
+    const bool stopPower=!self->_terminationPMStopped;
+    IOLockUnlock(self->_terminationLock);
+    if(stopPower)self->PMstop(); // Outside all driver/framework workloop gates.
+    IOLockLock(self->_terminationLock);self->_terminationPMStopped=true;
+    if(self->_nativePowerCalls){
+        // Platform PMstop can time out. Keep the child attached and all owned
+        // resources alive; the last admitted call queues us again on real exit.
+        self->_terminationScheduled=false;IOLockUnlock(self->_terminationLock);return;
+    }
+    auto provider=self->_terminationProvider;
+    IOLockUnlock(self->_terminationLock);
+    // Fence previously admitted WCL callers before scheduling provider-gated
+    // stop. Keep completion false until that fence and BSD cleanup actually run.
+    IOReturn result;
+    if(auto loop=self->getWorkLoop())result=loop->runAction(resumeTerminationAction,self);
+    else result=resumeTerminationAction(self,nullptr,nullptr,nullptr,nullptr);
+    if(result!=kIOReturnSuccess){
+        IOLockLock(self->_terminationLock);self->_terminationScheduled=false;IOLockUnlock(self->_terminationLock);
+        self->setProperty("Ath10kNativeTerminationPhase","bsd-binding-mismatch");
+        return; // Keep the child/job references; never clean up an unknown binding.
+    }
+    provider->release();
+    self->release(); // May free this object and our own thread call. No later access.
+}
+IOReturn Ath10kNativeInterface::finalizeBSDAction(OSObject *owner,void *,void *,void *,void *) {
+    auto self=static_cast<Ath10kNativeInterface *>(owner);
+    // Called only behind the WCL fence after admitted stock power bodies exit.
+    if(auto interface=self->getBSDInterface()){
+        if(interface!=self->_nativeBSDReference)return kIOReturnBadArgument;
+        self->IO80211InfraProtocol::finalizeBSDInterface(interface,0);
+    }
+    return kIOReturnSuccess;
+}
+IOReturn Ath10kNativeInterface::resumeTerminationAction(OSObject *owner,void *,void *,void *,void *) {
+    auto self=static_cast<Ath10kNativeInterface *>(owner);
+    const auto result=finalizeBSDAction(owner,nullptr,nullptr,nullptr,nullptr);
+    if(result!=kIOReturnSuccess)return result;
+    // Capture finalize requests only after entering WCL: finalize() may have
+    // arrived while the worker was waiting for the fence.
+    IOLockLock(self->_terminationLock);
+    auto provider=self->_terminationProvider;const auto options=self->_terminationOptions;
+    const bool finalize=self->_terminationFinalizePending;
+    const auto finalizeOptions=self->_terminationFinalizeOptions;
+    self->_terminationFinalizePending=false;self->_terminationProvider=nullptr;
+    self->_terminationCompleted=true;self->_terminationScheduled=false;
+    IOLockUnlock(self->_terminationLock);
+    bool defer=false;
+    if(finalize)self->IO80211InfraProtocol::finalize(finalizeOptions);
+    self->IO80211InfraProtocol::didTerminate(provider,options,&defer);
+    return kIOReturnSuccess;
 }
 bool Ath10kNativeInterface::willTerminateNotification(void *target,void *,IOService *service,IONotifier *) {
     auto *self=static_cast<Ath10kNativeInterface *>(target);
     if(!self || service!=self)return true;
     // XNU invokes this identity-filtered notification outside workloop gates
     // and the global notification lock, before leaf/provider stop is queued.
+    self->closePowerAdmission();
     if(self->controller)self->controller->prepareNativeInterfaceTermination(self);
-    self->setProperty("Ath10kNativeTerminationPhase","draining-power");
-    self->PMstop();
-    // PMstop has a bounded platform wait; return is not proof that every
-    // callback has exited. Explicit completion/lifetime guarding is still needed.
-    self->setProperty("Ath10kNativeTerminationPhase","pm-stop-returned");
+    self->setProperty("Ath10kNativeTerminationPhase","power-admission-closed");
+    // didTerminate defers the framework stop; no PM wait on this global worker.
     return true;
 }
 bool Ath10kNativeInterface::prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &registration) {
@@ -264,7 +394,7 @@ void Ath10kNativeInterface::detachRegistrationLoan() {
 void Ath10kNativeInterface::stop(IOService *provider) {
     if(controller)controller->nativeInterfaceWillStop(this);
     detachRegistrationLoan();
-    IO80211InfraProtocol::stop(provider);
+    if(_baseStarted){_baseStarted=false;IO80211InfraProtocol::stop(provider);}
 }
 void Ath10kNativeInterface::free() {
     // Includes partial initialization and a release without a preceding stop.
@@ -333,6 +463,7 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     if(!_nativeInterface->prepareRegistrationInfo(registration))return false;
     _nativeInterface->deferBSDAttach(true);
     if(!_nativeInterface->start(this))return false;
+    _nativeInterface->_baseStarted=true;
     _nativeStarted=true;_networkEnabled=true;
     _networkInterface->registerService();
     setProperty("Ath10kNativeABI","Sequoia-15.2-WCL-experimental");
@@ -415,7 +546,7 @@ void Ath10kPCIDevice::releaseNativeInterface() {
         // leaf clients before this controller stops. The cached startup flags
         // do not imply that our interface is still attached or needs stop().
         const bool stillAttached=_nativeAttached && _nativeInterface->getProvider()==this;
-        if(_nativeStarted && stillAttached)_nativeInterface->stop(this);
+        if(_nativeInterface->_baseStarted && stillAttached)_nativeInterface->stop(this);
         if(_nativeControllerAttached)IO80211Controller::detachInterface(_nativeInterface,true);
         if(stillAttached)_nativeInterface->detach(this);
         OSSafeReleaseNULL(_nativeInterface);

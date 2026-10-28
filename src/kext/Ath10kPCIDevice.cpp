@@ -365,6 +365,7 @@ void Ath10kPCIDevice::drainControlWorkers()
     // or cancel that producer before draining the worker it can create.
     cancelDeferredProbe();
 #ifdef ATH10K_NATIVE
+    if(_nativeInterface)_nativeInterface->drainPowerCalls();
     stopNativeRequests();
 #endif
 }
