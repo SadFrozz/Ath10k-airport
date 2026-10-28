@@ -165,7 +165,7 @@ P256_CHECK_BIN := $(CRYPTO_PROBE_DIR)/p256-userland-check
 sae-p256-userland-check: $(P256_CHECK_BIN)
 	$(P256_CHECK_BIN)
 
-$(P256_CHECK_BIN): tools/sae/p256-userland-check.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSAE.hpp src/shared/Ath10kSHA256.hpp src/shared/Ath10kSecurity.hpp src/shared/Ath10kRSN.hpp tests/p256_corecrypto_fixtures.hpp Makefile | $(CRYPTO_PROBE_DIR)
+$(P256_CHECK_BIN): tools/sae/p256-userland-check.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSAE.hpp src/shared/Ath10kSAEWire.hpp src/shared/Ath10kSAEExchange.hpp src/shared/Ath10kSHA256.hpp src/shared/Ath10kSecurity.hpp src/shared/Ath10kRSN.hpp tests/p256_corecrypto_fixtures.hpp Makefile | $(CRYPTO_PROBE_DIR)
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $< -o $@
 
 sae-p256-kernel-compile: $(CRYPTO_PROBE_DIR)/p256-kernel-compile.o

@@ -1,6 +1,8 @@
 // Executes only in an ordinary user process. Does not load or call a kernel module.
 #include "../../src/shared/Ath10kP256CoreCrypto.hpp"
 #include "../../src/shared/Ath10kSAE.hpp"
+#include "../../src/shared/Ath10kSAEWire.hpp"
+#include "../../src/shared/Ath10kSAEExchange.hpp"
 #include "../../tests/p256_corecrypto_fixtures.hpp"
 #include <dlfcn.h>
 #include <CommonCrypto/CommonHMAC.h>
@@ -341,6 +343,16 @@ int main(){
         AthSecurity::SAEGroup19Keys ka{},kb{};
         assert(AthSecurity::saeGroup19Commit(engine,ra,ma,32,pwe,64,ca,96,w));
         assert(AthSecurity::saeGroup19Commit(engine,rb,mb,32,pwe,64,cb,96,w));
+        { // Cross the actual authentication-body codec before key processing.
+          AthSecurity::SAEGroup19AuthMessage wire{};wire.kind=AthSecurity::SAEAuthKind::Commit;wire.h2e=true;
+          uint8_t body[1536]{};size_t bytes=0;
+          memcpy(wire.commit,ca,96);assert(AthSecurity::encodeSAEGroup19AuthBody(wire,body,sizeof(body),bytes));
+          assert(AthSecurity::decodeSAEGroup19AuthBody(body,bytes,true,0,wire)==AthSecurity::SAEWireResult::Valid);
+          memcpy(ca,wire.commit,96);
+          memcpy(wire.commit,cb,96);assert(AthSecurity::encodeSAEGroup19AuthBody(wire,body,sizeof(body),bytes));
+          assert(AthSecurity::decodeSAEGroup19AuthBody(body,bytes,true,0,wire)==AthSecurity::SAEWireResult::Valid);
+          memcpy(cb,wire.commit,96);
+        }
         assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,ra,32,ca,96,cb,96,pwe,64,true,a,b,nullptr,0,nullptr,0,ka,w));
         assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,rb,32,cb,96,ca,96,pwe,64,true,b,a,nullptr,0,nullptr,0,kb,w));
         assert(!memcmp(&ka,&kb,sizeof(ka)));
@@ -361,6 +373,14 @@ int main(){
           assert(!oa.copyPMK(ga,pmka,32,ida,16) && !ob.copyPMK(gb,pmkb,32,idb,16));
           assert(oa.snapshotLocal(ga,la) && ob.snapshotLocal(gb,lb));
           assert(la.makeLocal<H2ETestCrypto>(confirmA,34) && lb.makeLocal<H2ETestCrypto>(confirmB,34));
+          { AthSecurity::SAEGroup19AuthMessage wire{};wire.kind=AthSecurity::SAEAuthKind::Confirm;wire.h2e=true;
+            uint8_t body[40]{};size_t bytes=0;
+            for(auto confirm:{confirmA,confirmB}){
+              memcpy(wire.confirm,confirm,34);assert(AthSecurity::encodeSAEGroup19AuthBody(wire,body,40,bytes));
+              assert(AthSecurity::decodeSAEGroup19AuthBody(body,bytes,true,0,wire)==AthSecurity::SAEWireResult::Valid);
+              memcpy(confirm,wire.confirm,34);
+            }
+          }
           assert(oa.completeLocal(la,true) && ob.completeLocal(lb,true));
           assert(oa.snapshotPeer(ga,pa) && ob.snapshotPeer(gb,pb));
           assert(pa.verifyPeer<H2ETestCrypto>(confirmB,34) && pb.verifyPeer<H2ETestCrypto>(confirmA,34));
@@ -371,6 +391,89 @@ int main(){
           assert(!memcmp(ida,idb,16));oa.cancel();ob.cancel();
           assert(!oa.copyPMK(ga,pmka,32,ida,16) && !ob.copyPMK(gb,pmkb,32,idb,16));
           AthSecurity::wipe(pmka,sizeof(pmka));AthSecurity::wipe(pmkb,sizeof(pmkb));
+        }
+        { // Client coordinator: token retry, early confirms, real worker result and PMK.
+          using Client=AthSecurity::SAEGroup19ClientExchange;using Action=Client::Action;
+          Client client;uint64_t token=0;AthSecurity::SAEGroup19CommitTx tx;
+          AthSecurity::SAEGroup19KeyWork keyJob;AthSecurity::SAEGroup19ConfirmWork localJob,peerJob;
+          AthSecurity::SAEGroup19AuthMessage request{},reply{},tokenRequest{},peerConfirm{};
+          request.kind=reply.kind=AthSecurity::SAEAuthKind::Commit;request.h2e=reply.h2e=true;
+          memcpy(request.commit,ca,96);memcpy(reply.commit,cb,96);
+          request.identifierPresent=reply.identifierPresent=true;request.identifierBytes=reply.identifierBytes=7;
+          memcpy(request.identifier,id,7);memcpy(reply.identifier,id,7);
+          uint8_t frame[1536]{},body[34]{},pmk[32]{},pmkid[16]{};size_t frameBytes=0;
+          auto fromAP=[&](const AthSecurity::SAEGroup19AuthMessage &message){
+            memset(frame,0,24);frame[0]=0xb0;memcpy(frame+4,a,6);memcpy(frame+10,b,6);memcpy(frame+16,b,6);
+            size_t n=0;assert(AthSecurity::encodeSAEGroup19AuthBody(message,frame+24,sizeof(frame)-24,n));return n+24;
+          };
+          assert(client.begin(request,a,b,0,token));assert(client.snapshotCommit(tx,1,0));assert(client.completeCommit(tx,true,0));
+          tokenRequest.kind=AthSecurity::SAEAuthKind::TokenRequest;tokenRequest.h2e=true;
+          tokenRequest.tokenBytes=3;tokenRequest.token[0]=7;tokenRequest.token[1]=8;tokenRequest.token[2]=9;
+          frameBytes=fromAP(tokenRequest);assert(client.receiveFromAP(frame,frameBytes,1)==Action::SendCommit);
+          assert(client.snapshotCommit(tx,2,1));assert(client.completeCommit(tx,true,1));
+          assert(AthSecurity::saeGroup19ExchangeCandidate<H2ETestCrypto>(engine,rb,32,cb,96,ca,96,pwe,64,true,b,a,nullptr,0,nullptr,0,kb,w));
+          peerConfirm.kind=AthSecurity::SAEAuthKind::Confirm;peerConfirm.h2e=true;peerConfirm.confirm[0]=1;
+          assert(AthSecurity::saeGroup19Confirm<H2ETestCrypto>(kb.kck,32,1,cb,96,ca,96,peerConfirm.confirm+2,32));
+          peerConfirm.confirm[3]^=1;frameBytes=fromAP(peerConfirm);assert(client.receiveFromAP(frame,frameBytes,2)==Action::Ignore);
+          assert(client.phase()==Client::Phase::Committed); // Out-of-order confirm cannot skip commit/key processing.
+          frameBytes=fromAP(reply);assert(client.receiveFromAP(frame,frameBytes,3)==Action::ComputeKeys);
+          assert(client.snapshotKeys(keyJob,3));
+          peerConfirm.confirm[3]^=1;frameBytes=fromAP(peerConfirm);assert(client.receiveFromAP(frame,frameBytes,4)==Action::Ignore);
+          assert(client.receiveFromAP(frame,frameBytes,4)==Action::Ignore); // Exact duplicate is not queued twice.
+          for(unsigned i=1;i<=3;++i){peerConfirm.confirm[4]^=uint8_t(i);frameBytes=fromAP(peerConfirm);
+            assert(client.receiveFromAP(frame,frameBytes,4)==Action::Ignore);peerConfirm.confirm[4]^=uint8_t(i);}
+          assert(keyJob.compute<H2ETestCrypto>(engine,ra,32,pwe,64,w));
+          assert(client.completeKeys(keyJob,5)==Action::VerifyPeer);
+          assert(client.snapshotPeerConfirm(peerJob,body,34,5));assert(!peerJob.verifyPeer<H2ETestCrypto>(body,34));
+          assert(client.completePeerConfirm(peerJob,5)==Action::Ignore);
+          assert(client.snapshotPeerConfirm(peerJob,body,34,5));assert(peerJob.verifyPeer<H2ETestCrypto>(body,34));
+          assert(client.completePeerConfirm(peerJob,5)==Action::Ignore);
+          unsigned discarded=0;
+          while(client.snapshotPeerConfirm(peerJob,body,34,5)){
+            assert(!peerJob.verifyPeer<H2ETestCrypto>(body,34));assert(client.completePeerConfirm(peerJob,5)==Action::Ignore);++discarded;
+          }
+          assert(discarded==2); // Four owned slots; duplicate and fifth distinct frame were not retained.
+          for(unsigned i=4;i<Client::MaxPeerVerifications;++i){
+            peerConfirm.confirm[4]^=1;frameBytes=fromAP(peerConfirm);
+            assert(client.receiveFromAP(frame,frameBytes,5)==Action::VerifyPeer);
+            assert(client.snapshotPeerConfirm(peerJob,body,34,5));assert(!peerJob.verifyPeer<H2ETestCrypto>(body,34));
+            assert(client.completePeerConfirm(peerJob,5)==Action::Ignore);peerConfirm.confirm[4]^=1;
+          }
+          frameBytes=fromAP(peerConfirm);assert(client.receiveFromAP(frame,frameBytes,5)==Action::Ignore);
+          assert(!client.snapshotPeerConfirm(peerJob,body,34,5)); // Per-exchange verification budget exhausted.
+          assert(!client.copyPMK(token,pmk,32,pmkid,16,5));
+          assert(client.snapshotLocalConfirm(localJob,6));assert(localJob.makeLocal<H2ETestCrypto>(body,34));
+          assert(client.completeLocalConfirm(localJob,false,6)==Action::Ignore);
+          assert(!client.localConfirmReady(localJob,6)); // Failed submission also consumes its ticket.
+          assert(client.poll(755)==Action::Ignore && client.poll(756)==Action::SendConfirm);
+          assert(client.snapshotLocalConfirm(localJob,756));assert(localJob.makeLocal<H2ETestCrypto>(body,34));
+          assert(client.encodeLocalConfirm(localJob,3,frame,sizeof(frame),frameBytes,756));
+          assert(frameBytes==64 && frame[24]==3 && frame[26]==2);
+          uint16_t peerAccepted=0;
+          assert(AthSecurity::verifySAEGroup19PeerConfirm<H2ETestCrypto>(kb.kck,32,cb,96,ca,96,frame+30,34,false,0,peerAccepted));
+          assert(client.localConfirmReady(localJob,756));
+          assert(client.completeLocalConfirm(localJob,true,756)==Action::Accepted);
+          assert(!client.localConfirmReady(localJob,756)); // No second submission of a consumed result.
+          assert(client.copyPMK(token,pmk,32,pmkid,16,756));assert(!memcmp(pmk,expectedKeys.data()+32,32));
+          client.cancel();assert(!client.copyPMK(token,pmk,32,pmkid,16,757));
+          // Real key computation finishing after a replacement starts cannot publish.
+          assert(client.begin(request,a,b,20,token));assert(client.snapshotCommit(tx,4,20));assert(client.completeCommit(tx,true,20));
+          frameBytes=fromAP(reply);assert(client.receiveFromAP(frame,frameBytes,20)==Action::ComputeKeys);
+          assert(client.snapshotKeys(keyJob,20));client.cancel();assert(client.begin(request,a,b,30,token));
+          assert(keyJob.compute<H2ETestCrypto>(engine,ra,32,pwe,64,w));
+          assert(client.completeKeys(keyJob,21)==Action::Ignore && client.phase()==Client::Phase::Committed);
+          const auto *retired=reinterpret_cast<const uint8_t *>(&keyJob);
+          for(size_t i=0;i<sizeof(keyJob);++i)assert(retired[i]==0);
+          assert(client.poll(30)==Action::SendCommit);
+          assert(client.completeLocalConfirm(localJob,true,22)==Action::Ignore);
+          assert(client.completePeerConfirm(peerJob,22)==Action::Ignore);
+          assert(client.snapshotCommit(tx,5,30));assert(client.completeCommit(tx,true,30));
+          frameBytes=fromAP(reply);assert(client.receiveFromAP(frame,frameBytes,30)==Action::ComputeKeys);
+          assert(client.snapshotKeys(keyJob,30));assert(keyJob.compute<H2ETestCrypto>(engine,ra,32,pwe,64,w));
+          assert(client.completeKeys(keyJob,5030)==Action::Failed && client.failure()==Client::Failure::Timeout);
+          for(size_t i=0;i<sizeof(keyJob);++i)assert(retired[i]==0);
+          assert(!client.copyPMK(token,pmk,32,pmkid,16,5030));
+          AthSecurity::wipe(pmk,sizeof(pmk));AthSecurity::wipe(body,sizeof(body));
         }
         // A wrong password derives a different PWE; it cannot authenticate.
         uint8_t wrongPT[64]{},wrongPWE[64]{};const uint8_t wrongPassword[]="test-passwore";

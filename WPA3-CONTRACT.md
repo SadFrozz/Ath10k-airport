@@ -84,6 +84,106 @@ bind peer/mode/credentials to the same connection epoch, enforce deadlines,
 and revoke downstream EAPOL keys on leave/sleep/stop. Pending worker snapshots
 are wiped when drained/destroyed, not by concurrently writing into running jobs.
 
+### Authentication frame codec (local, not wired)
+
+`Ath10kSAEWire.hpp` adds owned, bounded group-19 authentication messages and
+client-to-AP frame construction/AP-to-client frame admission. SAE algorithm 3,
+transaction 1 commit, transaction 2 confirm, H2E status 126, anti-clogging status
+76 and rejected-group status 77 are distinct. Other failure statuses are
+reported as rejections, not authentication success. Confirm bodies are exactly
+34 bytes. Full frame admission requires the expected unicast receiver, AP
+source/BSSID and an ordinary unfragmented/unprotected authentication header;
+input excludes firmware metadata and FCS. It does not validate scalar/curve,
+confirm MIC, authentication phase, channel, replay or connection generation.
+
+Commit extensions retain exact password identifier octets, rejected-group
+payload and token, reject duplicates/reordering/truncation and fail explicitly
+on unknown extensions/extended-key AKMs. H2E tokens use extension 93; legacy
+tokens precede scalar/element with an explicit context-supplied length. The
+client's AP-reply decoder expects no legacy token prefix and never guesses a
+prefix from remaining bytes or switches mode based on token contents. The
+retained exchange's H2E choice must match the commit marker; mismatch cannot
+silently downgrade. Mode-specific challenge processing preserves opaque tokens.
+
+The codec caps H2E identifier/group/token payloads at 254 bytes, legacy tokens
+at 1024, full frames at 1536. Rejected-group payloads must be nonempty LE16
+groups, even length, with no zero/current-group entry. Scalar/point/session
+validation remains worker/FSM work. Decoder output and encoder output/length
+are unchanged on failure; messages own their bytes rather than retaining RX
+pointers. Serializer status is derived from kind/mode, not caller status data.
+
+This exposed a password-ID boundary error in the H2E expansion helper: its
+former 255-byte admission cannot fit extension length 255 plus extension ID.
+The shared H2E helper now admits at most 254 identifier bytes, with a tested
+254-success/255-reject boundary. Earlier historical notes of 255 are superseded.
+
+ASan/UBSan tests cover independent layout fixtures, incomplete fixed/IE fields,
+duplicate/reordered/unknown extensions, identities/header flags, token formats,
+mode mismatch, exact confirms, output guards, maximal payloads and 3000 seeded
+mutations. The synthetic two-party H2E test now crosses this body codec before
+key/confirmation publication. A kernel compile entry instantiates full frame
+encoding/decoding and passes stack/import checks. Real firmware RX/TX dispatch,
+anti-clogging retry state, timeouts and the complete SAE FSM remain unimplemented.
+Reference serialization/constants and client challenge interpretation:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/src/common/sae.c
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/src/common/ieee802_11_defs.h
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/4865f3ef1209f92405d03ced3c3986952244e0ef/wpa_supplicant/sme.c
+
+### Client exchange coordinator (local, not wired)
+
+`Ath10kSAEExchange.hpp` joins framing, a private candidate-key worker result and
+the confirmation fence from an already prepared/validated local group-19 commit.
+It is allocated/retained off the kernel stack. The native caller must bind the
+same immutable random/PWE/credential context to the key job; this coordinator
+does not derive the initial commit or provide IOKit ownership/queue scheduling.
+
+| Phase | Admitted work/events | Transition/effect |
+| --- | --- | --- |
+| Idle/Failed | explicit begin with validated local commit and identities | new monotonic exchange generation, fixed deadline |
+| Committed | current commit TX, token challenge, peer commit | revision-checked TX; opaque token retry; one key job on non-reflected matching-ID peer commit |
+| Computing | one retained key job; bounded early-confirm queue | duplicate/changed commits ignored; successful current keys enter Confirming; failure retires exchange |
+| Confirming | local confirm workers/TX and queued peer verification | both confirmations required for Accepted; no PMK on partial success |
+| Accepted | matching-generation PMK export | no authentication restart from unsolicited frames; explicit cancellation revokes retained keys |
+| any active phase | cancel, stale jobs, clock/timeout, explicit rejection | wipe/retire or discard; no replacement of a new generation by old completion |
+
+Initial prototype policy uses a 5000ms absolute deadline, 750ms retry interval,
+five commit attempts (including failed submission), five local-confirm worker
+reservations, three changed tokens, four owned queued peer confirms and sixteen
+peer-verification reservations per exchange. These are bounded implementation
+defaults, not claimed IEEE-mandated timer values. Challenges, RX noise and
+duplicates cannot extend the deadline. Same-token challenges are ignored;
+new tokens invalidate old TX revisions and reuse the exact original commit.
+No mode, group or open-auth fallback is performed on rejection. Commit mode
+mismatch fails explicitly; malformed/wrong-peer frames cannot advance state.
+
+Peer confirms may be held before peer commit/key completion without advancing
+authentication. Once keys exist, each candidate is verified off-gate; a bad
+queued confirm does not discard a later valid one. Consumed/failed local TX
+results cannot be resubmitted; timer retry reserves a new confirmation counter.
+Before actual submission, commit/confirm owner/generation/revision admission
+must be rechecked under the serialized owner context. Temporary encoding
+buffers and jobs must remain retained until the transport has consumed them.
+
+Pure ASan/UBSan tests cover fixed deadline/retry budgets, token revision races,
+reflection, duplicate job suppression, replacement/cancellation, clock checks,
+mode/identifier/group failures and unchanged PMK output. Actual userland
+CoreCrypto tests additionally exercise token retry, early invalid/valid confirms,
+queue dedup/capacity/verification budget, failed local TX then timed retry,
+successful PMK matching the independent H2E fixture, cancellation followed by
+real late key computation, and valid keys completed exactly after timeout.
+Stale/expired key results are wiped. A used kernel compile entry instantiates
+the complete coordinator, key worker and both confirmation worker paths;
+individual stack frames/import checks pass, not a live native call-stack audit.
+
+The coordinator is not dispatched by firmware RX/TX or native macOS joins yet.
+Outstanding requirements include retained kernel queue/drain/power integration,
+initial random/PWE preparation, kernel crypto runtime/timing validation, native
+credential/capability delivery, association PMKID/AKM8 EAPOL and mandatory PMF.
+Only group 19 is modeled; no fallback to groups 20/21, SAE-PK/extended-key/FT
+or accepted-session reauthentication is claimed. WPA3 remains disabled.
+The client source used for state-order comparison is the SME reference linked
+above; its synchronous key processing is deliberately moved into explicit jobs.
+
 ## Verified Sequoia credential envelope
 
 Matching local IO80211Family UUID: 0D5AC570-04D4-38B6-8577-9F21350CDD50.

@@ -157,8 +157,8 @@ template<class Crypto> inline bool saeGroup19H2EValues(const uint8_t *ssid,size_
  const uint8_t *password,size_t passwordBytes,const uint8_t *identifier,size_t identifierBytes,
  uint8_t *out,size_t capacity){
  if((!ssid && ssidBytes) || ssidBytes>32 || !password || !passwordBytes || passwordBytes>64 ||
-    (!identifier && identifierBytes) || identifierBytes>255 || !out || capacity<96)return false;
- uint8_t material[319]{},seed[32]{},values[96]{},message[64]{},digest[32]{},zero=0;
+    (!identifier && identifierBytes) || identifierBytes>254 || !out || capacity<96)return false;
+ uint8_t material[318]{},seed[32]{},values[96]{},message[64]{},digest[32]{},zero=0;
  copy(material,password,passwordBytes);if(identifierBytes)copy(material+passwordBytes,identifier,identifierBytes);
  bool ok=Crypto::hmac256(ssid?ssid:&zero,ssidBytes,material,passwordBytes+identifierBytes,seed);
  static constexpr char labels[2][sizeof("SAE Hash to Element u1 P1")]={"SAE Hash to Element u1 P1","SAE Hash to Element u2 P2"};

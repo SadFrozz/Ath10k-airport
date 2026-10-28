@@ -113,6 +113,12 @@ static void checkSAEConfirmationFence(){
 }
 int main(){
  checkSAEConfirmationFence();
+ { uint8_t identifier[255]{},out[96];const uint8_t password[]={1},ssid[]={2};
+   assert(AthSecurity::saeGroup19H2EValues<Crypto>(ssid,1,password,1,identifier,254,out,sizeof(out)));
+   memset(out,0xa5,sizeof(out));
+   assert(!AthSecurity::saeGroup19H2EValues<Crypto>(ssid,1,password,1,identifier,255,out,sizeof(out)));
+   for(auto v:out)assert(v==0xa5);
+ }
  { const uint8_t ssid[]="test-ssid",password[]="test-password",identifier[]="test-id";
    const uint8_t expected[]={249,239,103,234,204,133,139,5,13,32,186,157,203,224,93,10,220,76,193,147,96,119,105,182,73,35,87,23,97,206,85,112,99,126,163,154,183,174,116,36,195,96,182,24,61,196,224,15,143,143,121,0,176,36,28,161,23,203,147,154,176,212,168,196,232,83,250,14,196,44,227,225,81,240,25,92,61,103,133,245,136,22,105,167,192,115,215,103,166,194,255,85,199,96,166,211};uint8_t out[104];memset(out,0xa5,sizeof(out));
    assert(AthSecurity::saeGroup19H2EValues<Crypto>(ssid,9,password,13,identifier,7,out,sizeof(out)));

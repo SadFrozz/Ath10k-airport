@@ -1,6 +1,17 @@
 // Compile-only: no kmod entrypoint, no direct crypto imports, no runtime execution.
 #include "../../src/shared/Ath10kP256CoreCrypto.hpp"
 #include "../../src/shared/Ath10kSAE.hpp"
+#include "../../src/shared/Ath10kSAEWire.hpp"
+#include "../../src/shared/Ath10kSAEExchange.hpp"
+extern "C" __attribute__((used)) bool ath10k_sae_wire_compile_check(
+    const AthSecurity::SAEGroup19AuthMessage *message,AthSecurity::SAEGroup19AuthMessage *decoded,
+    const uint8_t *frame,size_t frameBytes,const uint8_t *local,const uint8_t *ap,
+    uint8_t *out,size_t capacity,size_t *bytes)
+{
+    if(!message || !decoded || !bytes)return false;
+    return AthSecurity::encodeSAEGroup19ToAP(*message,local,ap,0,out,capacity,*bytes) &&
+        AthSecurity::decodeSAEGroup19FromAP(frame,frameBytes,local,ap,message->h2e,*decoded)==AthSecurity::SAEWireResult::Valid;
+}
 // Compile-only indirection instantiates the complete H2E templates without
 // importing a crypto implementation. This object is never linked or executed.
 struct CompileOnlyHMAC {
@@ -10,6 +21,36 @@ struct CompileOnlyHMAC {
         return function && function(key,keyBytes,input,bytes,out);
     }
 };
+extern "C" __attribute__((used)) bool ath10k_sae_client_compile_check(
+    AthSecurity::SAEGroup19ClientExchange *owner,AthSecurity::SAEGroup19CommitTx *tx,
+    AthSecurity::SAEGroup19KeyWork *keys,AthSecurity::SAEGroup19ConfirmWork *localJob,
+    AthSecurity::SAEGroup19ConfirmWork *peerJob,const AthSecurity::P256CoreCryptoAPI *api,
+    AthSecurity::P256CoreCryptoWorkspace *workspace,CompileOnlyHMAC::Function hmac,
+    const AthSecurity::SAEGroup19AuthMessage *request,const uint8_t *local,const uint8_t *ap,
+    const uint8_t *peerCommit,size_t commitBytes,const uint8_t *peerConfirm,size_t confirmBytes,
+    const uint8_t *random,const uint8_t *pwe,uint8_t *frame,size_t capacity,size_t *frameBytes,
+    uint8_t *pmk,uint8_t *pmkid)
+{
+    if(!owner || !tx || !keys || !localJob || !peerJob || !api || !workspace || !request || !frameBytes)return false;
+    uint64_t token=0;uint8_t body[34]{};CompileOnlyHMAC::function=hmac;
+    AthSecurity::P256CoreCryptoCandidate engine(*api);
+    bool ok=owner->begin(*request,local,ap,0,token) && owner->snapshotCommit(*tx,0,0) && owner->completeCommit(*tx,true,0);
+    if(ok){
+        owner->receiveFromAP(peerCommit,commitBytes,0);
+        ok=owner->snapshotKeys(*keys,0) && keys->compute<CompileOnlyHMAC>(engine,random,32,pwe,64,*workspace);
+    }
+    if(ok){
+        owner->completeKeys(*keys,0);
+        ok=owner->snapshotLocalConfirm(*localJob,0) && localJob->makeLocal<CompileOnlyHMAC>(body,sizeof(body)) &&
+            owner->encodeLocalConfirm(*localJob,1,frame,capacity,*frameBytes,0);
+    }
+    if(ok){
+        owner->completeLocalConfirm(*localJob,true,0);owner->receiveFromAP(peerConfirm,confirmBytes,0);
+        ok=owner->snapshotPeerConfirm(*peerJob,body,sizeof(body),0) && peerJob->verifyPeer<CompileOnlyHMAC>(body,sizeof(body));
+    }
+    if(ok){owner->completePeerConfirm(*peerJob,0);ok=owner->copyPMK(token,pmk,32,pmkid,16,0);}
+    owner->cancel();CompileOnlyHMAC::function=nullptr;AthSecurity::wipe(body,sizeof(body));return ok;
+}
 extern "C" __attribute__((used)) bool ath10k_sae_confirmation_compile_check(
     AthSecurity::SAEGroup19Confirmation *owner,AthSecurity::SAEGroup19ConfirmWork *job,
     AthSecurity::SAEGroup19Keys *keys,CompileOnlyHMAC::Function hmac,

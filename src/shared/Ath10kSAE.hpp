@@ -14,19 +14,24 @@ class SAEGroup19ConfirmWork {
  uint64_t generation=0;
  uint16_t counter=0,previousPeer=0;
  bool peerPreviouslyVerified=false,verified=false;
- uint8_t kck[32]{},local[96]{},peer[96]{};
+ uint8_t kck[32]{},local[96]{},peer[96]{},localBody[34]{};
  void clear(){wipe(this,sizeof(*this));}
 public:
  SAEGroup19ConfirmWork()=default;
  SAEGroup19ConfirmWork(const SAEGroup19ConfirmWork &)=delete;
  SAEGroup19ConfirmWork &operator=(const SAEGroup19ConfirmWork &)=delete;
  ~SAEGroup19ConfirmWork(){clear();}
+ uint16_t localSequence() const {return kind==Kind::Local && verified?counter:0;}
+ bool copyLocalBody(uint8_t *out,size_t capacity) const {
+  if(!out || capacity<34 || kind!=Kind::Local || !verified)return false;
+  copy(out,localBody,34);return true;
+ }
  template<class Crypto> bool makeLocal(uint8_t *out,size_t capacity){
-  verified=false;
+  verified=false;wipe(localBody,sizeof(localBody));
   if(kind!=Kind::Local || !out || capacity<34)return false;
   uint8_t body[34]{};body[0]=uint8_t(counter);body[1]=uint8_t(counter>>8);
   verified=saeGroup19Confirm<Crypto>(kck,32,counter,local,96,peer,96,body+2,32);
-  if(verified)copy(out,body,34);
+  if(verified){copy(out,body,34);copy(localBody,body,34);}
   wipe(body,sizeof(body));return verified;
  }
  template<class Crypto> bool verifyPeer(const uint8_t *body,size_t bytes){
@@ -93,6 +98,8 @@ public:
  }
  bool snapshotLocal(uint64_t token,SAEGroup19ConfirmWork &job){return snapshot(token,job,true);}
  bool snapshotPeer(uint64_t token,SAEGroup19ConfirmWork &job){return snapshot(token,job,false);}
+ bool ownsWork(const SAEGroup19ConfirmWork &job) const {return job.owner==this && confirming(job.generation);}
+ bool accepted(uint64_t token) const {return current(token) && state.phase==Phase::Accepted;}
  // Recheck under the owner gate before submitting the frame. A queued TX must
  // retain/recheck this same owner/generation at its actual submission boundary.
  bool localReadyToTransmit(const SAEGroup19ConfirmWork &job) const {
