@@ -15,7 +15,21 @@ struct Ath10kKernelCrypto : PersonalTestCrypto {
  static bool encrypt(const uint8_t *key,const uint8_t *in,uint8_t *out){assert(!ownerGate && !heldLocks);return PersonalTestCrypto::encrypt(key,in,out);}
 };
 #include "pmf_session.inc"
+#ifdef ATH10K_NATIVE_REAL_SAE
+#include "../src/shared/Ath10kSAEExchange.hpp"
+#include <CommonCrypto/CommonHMAC.h>
+static const void *ccsha256_di(){assert(!ownerGate && !heldLocks);return reinterpret_cast<const void *>(1);}
+static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *data,void *out){
+ assert(!ownerGate && !heldLocks);CCHmac(kCCHmacAlgSHA256,key,kl,data,n,out);
+}
+#include "sae_session.inc"
+#else
 struct Ath10kSAESession {void cancel(){}void release(){delete this;}};
+#include "mock_native_sae_radio.hpp"
+#endif
+static uint64_t nativeSAEClockMS=0;
+namespace Ath10k {inline uint64_t uptimeNS(){return nativeSAEClockMS*1000000u;}}
+
 class Ath10kPCIDevice {
 public:
  class NativeSecurity;NativeSecurity *_nativeSecurity=nullptr;Ath10k::ConnectionState _connection;
@@ -25,19 +39,27 @@ public:
  struct {bool active=true;} _wmiLive;
  Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
  bool _runtimeActive=true;
+ bool _nativeJoinPending=false,_nativeRadioOn=true,_networkEnabled=true;
  bool _dmaQuarantine=false,blocked=false,failSubmit=false;
  std::vector<std::vector<uint8_t>> transmitted;
  bool powerIOBlocked(){return blocked;}
+ unsigned saeDiscards=0;
+ void discardNativeSecurity();
+ bool advanceSAEAuth(UInt64);
+ const char *serviceNativeSAE(UInt64);
  bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
  bool nativeAcceptSecurityResult(UInt32);
  bool nativePMFPairwiseAcknowledged(const UInt8 *);
  bool nativePMFPortReady();
  bool nativePMFFirmwareReady();
  bool nativePMFTransportReady();
- const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode){
-  assert(ownerGate && mgmt && mode==AthSecurity::ManagementTX::HardwareCCMP && nativePMFTransportReady());
+ const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode=AthSecurity::ManagementTX::Plain){
+  assert(ownerGate && mgmt);
+  if(mode==AthSecurity::ManagementTX::HardwareCCMP)assert(nativePMFTransportReady());
+  else assert(mode==AthSecurity::ManagementTX::Plain && bytes>=30 && frame[24]==3);
   assert(Ath10k::packetProtectionAllowed(frame,bytes,_connection,mgmt,mode));
   if(failSubmit)return "test-submit-failed";
+  if(mode==AthSecurity::ManagementTX::Plain){_connection.txOwned=true;_connection.txComplete=false;_connection.lastTxSAE=true;_connection.txStatus=0;}
   transmitted.emplace_back(frame,frame+bytes);return nullptr;
  }
  void serviceNativePMF(UInt64);
@@ -45,6 +67,8 @@ public:
 #include "native_security_class.inc"
 #include "native_pmf_receive.inc"
 #include "native_pmf_key_hooks.inc"
+void Ath10kPCIDevice::discardNativeSecurity(){++saeDiscards;_nativeSecurity->reset();}
+#include "native_sae_stage.inc"
 static Ath10kPCIDevice *create(){
  auto d=new Ath10kPCIDevice;auto &s=d->_connection;s.stage=Ath10k::LinkStage::Connected;
  s.secure=s.pmfRequired=s.pairInstalled=s.portAuthorized=true;s.securityPhase=5;s.pmfQoSTransported=true;for(auto &qos:d->_wmiRadio)qos.completed=qos.txConsumed=qos.creditReturned=true;randomCalls=0;memcpy(s.local,c_sta,6);memcpy(s.bssid,c_ap,6);
@@ -65,6 +89,19 @@ int main(){
  { auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
    assert(sec->saeWorker->submit(job));run(latest);service(d);
    assert(sec->saeWorker->takeCompleted()==job);job->release();job->release();stop(d);
+ }
+ // Stale PMF producer state cannot consume an SAE/preparation completion.
+ for(bool rx : {true,false}){
+   auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
+   sec->pmfRXInFlight=rx;sec->pmfTXInFlight=!rx;
+   assert(sec->saeWorker->submit(job));run(latest);const auto refs=job->references();service(d);
+   assert(job->references()==refs && sec->pmfRXInFlight==rx && sec->pmfTXInFlight==!rx);
+   assert(!sec->pmfPendingTX && !sec->pmfRXVerified && d->transmitted.empty());
+   assert(sec->saeWorker->takeCompletedFor(job)==job);job->release();job->release();
+   service(d);assert(!sec->pmfRXInFlight && !sec->pmfTXInFlight);
+   // The same queue remains usable for a real, correctly owned PMF result.
+   sec->pmfLayoutVerified=true;assert(deliver(d,c_deauth_wire,sizeof(c_deauth_wire)));roundtrip(d);
+   assert(d->_connection.cancelRequested && sec->pmfRXVerified==1);stop(d);
  }
  { auto d=create();auto sec=d->_nativeSecurity;
    // A protected action's first IV byte is not a plaintext action category.

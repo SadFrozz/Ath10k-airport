@@ -39,6 +39,7 @@ public:
     void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
     static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
     void discardNativeSecurity();
+    const char *serviceNativeSAE(UInt64);
     bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
     bool nativeAcceptSecurityResult(UInt32);
     bool nativePMFPairwiseAcknowledged(const UInt8 *);

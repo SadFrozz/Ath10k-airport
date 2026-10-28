@@ -35,6 +35,38 @@ int main(){
       assert(b->discarded==1 && !b->executed && b->references()==1);
       p->shutdown();assert(!p->submit(b));p->shutdown();p->release();a->release();b->release();clean();
     }
+    { // Independent consumers must not steal a completed owner's job.
+      auto p=create();auto call=latest;auto a=new Job;auto b=new Job;
+      unsigned ownerA=1,ownerB=2;
+      assert(p->submit(a,&ownerA));assert(!p->takeCompletedFor(&ownerA));run(call);
+      const auto refs=a->references();ownerGate=true;
+      assert(!p->takeCompletedFor(nullptr) && !p->takeCompletedFor(&ownerB));ownerGate=false;
+      assert(a->references()==refs && !a->discarded && !p->available() && !p->submit(b,&ownerB));
+      auto result=p->takeCompletedFor(&ownerA);assert(result==a);result->release();
+      assert(p->available() && !p->takeCompletedFor(&ownerA));
+      assert(p->submit(b,&ownerB));run(call);assert(!p->takeCompletedFor(&ownerA));
+      result=p->takeCompletedFor(&ownerB);assert(result==b);result->release();
+      // Default-owner jobs are collected by their own retained identity.
+      assert(p->submit(a));run(call);assert(!p->takeCompletedFor(&ownerA));
+      result=p->takeCompletedFor(a);assert(result==a);result->release();
+      p->shutdown();p->release();a->release();b->release();clean();
+    }
+    { // Simultaneous polling consumers transfer exactly one retained reference.
+      auto p=create();auto a=new Job;unsigned ownerA=1,ownerB=2;assert(p->submit(a,&ownerA));run(latest);
+      std::atomic<bool> go{false};Ath10kSAEWorkItem *result=nullptr;
+      std::thread wrong([&]{while(!go)std::this_thread::yield();for(unsigned i=0;i<1000;++i)assert(!p->takeCompletedFor(&ownerB));});
+      std::thread right([&]{while(!go)std::this_thread::yield();result=p->takeCompletedFor(&ownerA);});
+      go=true;wrong.join();right.join();assert(result==a && !p->takeCompletedFor(&ownerA));result->release();
+      p->shutdown();p->release();a->release();clean();
+    }
+    { // Cancel and same-slot reuse must retire the previous binding.
+      auto p=create();auto a=new Job;auto b=new Job;unsigned ownerA=1,ownerB=2;
+      assert(p->submit(a,&ownerA));run(latest);ownerGate=true;p->cancel();ownerGate=false;
+      assert(a->discarded==1 && !p->takeCompletedFor(&ownerA));
+      assert(p->submit(b,&ownerB));run(latest);assert(!p->takeCompletedFor(&ownerA));
+      auto result=p->takeCompletedFor(&ownerB);assert(result==b);result->release();
+      p->shutdown();p->release();a->release();b->release();clean();
+    }
     { // Cancel returns false after dispatch but before callback; drain must wait.
       auto p=create();auto call=latest;auto a=new Job;assert(p->submit(a));claim(call);
       ownerGate=true;p->cancel();ownerGate=false;assert(!a->discarded && !p->takeCompleted());

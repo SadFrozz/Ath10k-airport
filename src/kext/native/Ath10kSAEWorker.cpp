@@ -12,12 +12,12 @@ bool Ath10kSAEWorker::init() {
     _call=thread_call_allocate_with_options(dispatch,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
     return _call!=nullptr;
 }
-bool Ath10kSAEWorker::submit(Ath10kSAEWorkItem *job) {
+bool Ath10kSAEWorker::submit(Ath10kSAEWorkItem *job,const void *owner) {
     if(!job || !_lock)return false;
     IOLockLock(_lock);
     if(_stopping || !_call || _state!=State::Idle || _retiring){IOLockUnlock(_lock);return false;}
     job->retain();retain(); // Job ownership and one queue reference per callback.
-    _job=job;_state=State::Queued;_cancelled=false;
+    _job=job;_completionOwner=owner?owner:job;_state=State::Queued;_cancelled=false;
     thread_call_enter(_call);
     IOLockUnlock(_lock);return true;
 }
@@ -28,17 +28,25 @@ bool Ath10kSAEWorker::available() {
     IOLockUnlock(_lock);return ready;
 }
 Ath10kSAEWorkItem *Ath10kSAEWorker::takeCompleted() {
+    return takeCompletedMatching(nullptr);
+}
+Ath10kSAEWorkItem *Ath10kSAEWorker::takeCompletedFor(const void *owner) {
+    return owner?takeCompletedMatching(owner):nullptr;
+}
+Ath10kSAEWorkItem *Ath10kSAEWorker::takeCompletedMatching(const void *owner) {
     if(!_lock)return nullptr;
     IOLockLock(_lock);
     Ath10kSAEWorkItem *job=nullptr;
-    if(!_stopping && _state==State::Complete){job=_job;_job=nullptr;_state=State::Idle;}
+    if(!_stopping && _state==State::Complete && (!owner || owner==_completionOwner)){
+        job=_job;_job=nullptr;_completionOwner=nullptr;_state=State::Idle;
+    }
     IOLockUnlock(_lock);return job;
 }
 Ath10kSAEWorker::Retirement Ath10kSAEWorker::cancelLocked() {
     Retirement result;_cancelled=true;
     if(_state==State::Complete || (_state==State::Queued && _call && thread_call_cancel(_call))){
         result.job=_job;result.callbackRetain=_state==State::Queued;
-        _job=nullptr;_state=State::Idle;++_retiring;
+        _job=nullptr;_completionOwner=nullptr;_state=State::Idle;++_retiring;
     }
     // False cancellation can mean dispatch has started before callback entry.
     // Keep Queued + its retained job/queue until dispatch observes cancellation.
@@ -50,6 +58,12 @@ void Ath10kSAEWorker::retire(Retirement item) {
     item.job->discard();item.job->release();
     IOLockLock(_lock);--_retiring;IOLockWakeup(_lock,&_state,false);IOLockUnlock(_lock);
     if(item.callbackRetain)release(); // Cancelled callback will not release it.
+}
+bool Ath10kSAEWorker::cancelFor(const void *owner) {
+    if(!owner || !_lock)return false;
+    IOLockLock(_lock);
+    if(_completionOwner!=owner || !_job){IOLockUnlock(_lock);return false;}
+    const auto retired=cancelLocked();IOLockUnlock(_lock);retire(retired);return true;
 }
 void Ath10kSAEWorker::cancel() {
     if(!_lock)return;
@@ -78,7 +92,7 @@ void Ath10kSAEWorker::dispatch(thread_call_param_t context,thread_call_param_t) 
     if(!self->_cancelled && !self->_stopping){
         self->_state=State::Complete;IOLockWakeup(lock,&self->_state,false);IOLockUnlock(lock);
     }else{
-        self->_job=nullptr;
+        self->_job=nullptr;self->_completionOwner=nullptr;
         IOLockUnlock(lock);
         job->discard();job->release();
         IOLockLock(lock);self->_state=State::Idle;

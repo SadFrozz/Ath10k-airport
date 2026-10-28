@@ -599,6 +599,7 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     // packet in flight so a late duplicate cannot complete the next packet.
     _connection.txId=static_cast<UInt16>((_connection.txId+1)%1056);_connection.txComplete=false;_connection.txStatus=0;_connection.txManagement=mgmt;
     _connection.lastTxPMF=mgmt && protection==AthSecurity::ManagementTX::HardwareCCMP;
+    _connection.lastTxSAE=mgmt && bytes>=30 && (data[0]&0xfcu)==0xb0u && Ath10k::htcReadLE16(data+24)==3;
     _connection.lastTxSpectrum=mgmt && _connection.spectrum.inFlight && data==_connection.spectrum.frame;
     _connection.lastTxProbe=mgmt && _connection.probe.active && bytes>=24 && Ath10k::htcReadLE16(data)==0x40;
     UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(_packetCommand.virtualAddress()),256,data,bytes,
@@ -635,7 +636,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(s.txStatus){
                 if(s.lastTxEAPOL)s.eapolTxFailed=true;
                 ++s.txErrors;
-                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum && !s.lastTxPMF){
+                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum && !s.lastTxPMF && !s.lastTxSAE){
                     const bool mlme=s.stage==LinkStage::Auth || s.stage==LinkStage::Assoc;
                     const bool reply=s.stage==LinkStage::Auth?s.authReply:s.assocReply;
                     if(!mlme || (!reply && s.managementAttempts>=3)){s.error="management-tx-failed";s.cancelRequested=true;}
@@ -818,6 +819,13 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         s.stage=LinkStage::Start;s.sinceMs=nowMs;
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return "connection-command-allocation";
     }
+#ifdef ATH10K_NATIVE
+    if(s.stage==LinkStage::Auth && s.securityAKM==8){
+        const char *error=serviceNativeSAE(nowMs);
+        if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();return nullptr;}
+        if(!s.authReply || s.txOwned || !s.txComplete)return nullptr;
+    }
+#endif
     if(nowMs-s.sinceMs>=5000 && !s.wmiOwned && !s.txOwned){
         Ath10k::connectionFailure(s,"connection-stage-timeout");s.cancelRequested=true;
         IOLog("Ath10kMac: CONNECTION timeout stage=%u cmd=0x%x start-reply=%u peer-mapped=%u echo-reply=%u peers=%u\n",

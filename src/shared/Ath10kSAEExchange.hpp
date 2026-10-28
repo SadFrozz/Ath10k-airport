@@ -43,6 +43,7 @@ public:
  SAEGroup19CommitTx(const SAEGroup19CommitTx &)=delete;
  SAEGroup19CommitTx &operator=(const SAEGroup19CommitTx &)=delete;
  ~SAEGroup19CommitTx(){clear();}
+ void retire(){clear();}
  const uint8_t *data() const {return frame;}
  size_t size() const {return bytes;}
 };

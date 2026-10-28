@@ -47,7 +47,7 @@ Ath10kPMFSession::Submission Ath10kPMFSession::queue(Ath10kSAEWorker *worker,con
         job->kind=Kind::Pairwise;
     }
     AthSecurity::copy(job->frame,frame,bytes);job->bytes=bytes;
-    const bool submitted=worker->submit(job);job->release();
+    const bool submitted=worker->submit(job,this);job->release();
     // RX has not reserved any owner mutation. A busy/terminal race drops this
     // frame without retiring a valid association or consuming replay state.
     return submitted?Submission::Queued:Submission::Aborted;
@@ -78,7 +78,7 @@ Ath10kPMFSession::Submission Ath10kPMFSession::queueProtect(Ath10kSAEWorker *wor
     job->session=this;retain();job->connection=connection;job->kind=Kind::ProtectTX;job->txMode=mode;
     if(mode==AthSecurity::ManagementTX::HardwareCCMP)AthSecurity::wipe(job->pairwise.key,sizeof(job->pairwise.key));
     AthSecurity::copy(job->frame,frame,bytes);job->bytes=bytes;
-    const uint64_t reserved=job->txPN;const bool submitted=worker->submit(job);
+    const uint64_t reserved=job->txPN;const bool submitted=worker->submit(job,this);
     // A terminal submit failure burns the reserved PN but no pending lease.
     if(submitted)pendingTXPN=reserved;
     job->release();return submitted?Submission::Queued:Submission::Aborted;

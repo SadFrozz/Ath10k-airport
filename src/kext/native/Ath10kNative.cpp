@@ -77,6 +77,7 @@ class Ath10kPCIDevice::NativeSecurity {
 public:
     Ath10kSAEWorker *saeWorker=nullptr;
     Ath10kSAESession *saeSession=nullptr;
+    Ath10kSAERadio *saeRadio=nullptr;
     Ath10kPMFSession *pmfSession=nullptr;
     AthNative::PMFInbox pmfInbox;
     AthSecurity::PMFCCMPRXLayout pmfRXLayout=AthSecurity::PMFCCMPRXLayout::Ciphertext;
@@ -137,6 +138,7 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
         clearManagement();
         pmfSpectrumGeneration=pmfSpectrumEpoch=pmfSpectrumDeadlineUS=0;
         clearQueries();pmfTXInFlight=false;pmfTXKind=PMFTXKind::None;
@@ -517,6 +519,14 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
 bool Ath10kPCIDevice::nativePMFManagement(void *context,const UInt8 *frame,UInt32 bytes,UInt32 status,UInt32 channel,UInt32 snr){
     auto self=static_cast<Ath10kPCIDevice *>(context);if(!self)return false;
     auto &s=self->_connection;
+    // A selected SAE join must never fall back to the open-auth RX handler,
+    // including on an algorithm-0 reply or before its owner is ready.
+    if(frame && bytes>=24 && (frame[0]&0xfcu)==0xb0u && s.securityAKM==8 && s.stage==Ath10k::LinkStage::Auth){
+        auto sec=self->_nativeSecurity;
+        if(sec && sec->saeRadio && !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None && !self->powerIOBlocked())
+            sec->saeRadio->receive(frame,bytes,status,Ath10k::uptimeNS()/1000000u);
+        return true;
+    }
     if(!s.pmfRequired || !s.pairInstalled || !AthSecurity::robustManagementFrame(frame,bytes))return false;
     auto sec=self->_nativeSecurity;
     if(!sec || !sec->pmfSession)return true;
@@ -568,7 +578,7 @@ void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
     }
     if(sec->pmfQueryTrigger){sec->pmfQuery.start(nowUS);sec->pmfQueryTrigger=false;}
     if(sec->pmfRXInFlight){
-        auto item=sec->saeWorker->takeCompleted();
+        auto item=sec->saeWorker->takeCompletedFor(pmf);
         if(item){
             Ath10kPMFSession::Message message;
             const bool accepted=sec->pmfRXGeneration==generation && pmf->consume(item,generation,message);
@@ -595,7 +605,7 @@ void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
             item->release();
         }else if(sec->saeWorker->available())sec->pmfRXInFlight=false;
     }else if(sec->pmfTXInFlight){
-        if(auto item=sec->saeWorker->takeCompleted()){sec->pmfPendingTX=item;sec->pmfTXInFlight=false;}
+        if(auto item=sec->saeWorker->takeCompletedFor(pmf)){sec->pmfPendingTX=item;sec->pmfTXInFlight=false;}
         else if(sec->saeWorker->available()){
             sec->pmfTXInFlight=false;pmf->abandonProtected();
             if(sec->pmfTXKind==NativeSecurity::PMFTXKind::QueryRequest)sec->pmfQuery.submitted(sec->pmfQueryTX,false,nowUS);
@@ -697,6 +707,43 @@ void Ath10kPCIDevice::serviceNativePMF(UInt64 nowMs){
     // neither SA Query nor its priority flag acquires firmware ownership itself.
     if(pending && !_wmiScan.completed)_wmiScan.cancelRequested=true;
 }
+// Called by the common radio state machine in Auth. Admission remains disabled
+// until native credentials/backend/firmware PMF are validated together.
+const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || !sec->saeRadio || !sec->saeSession || !sec->pmfSession || !_nativeJoinPending ||
+       !_nativeRadioOn || !_networkEnabled || s.securityAKM!=8 || !s.secure || !s.pmfRequired ||
+       s.groupCipher!=AthSecurity::cipherCCMP || !nativePMFFirmwareReady())return "native-sae-profile-not-ready";
+    const UInt64 generation=sec->pmfSession->activeGeneration();
+    if(!generation || generation>0xffffffffu || !sec->saeRadio->boundTo(sec->saeSession,static_cast<UInt32>(generation)))return "native-sae-owner-mismatch";
+    if(s.stage!=Ath10k::LinkStage::Auth || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None || powerIOBlocked())return "native-sae-cancelled";
+    const auto state=sec->saeRadio->service(now);
+    if(state==Ath10kSAERadio::State::Failed || state==Ath10kSAERadio::State::Idle)return "native-sae-exchange-failed";
+    if(state==Ath10kSAERadio::State::Accepted){
+        // The host must first retire both real HTT completion and CE ownership.
+        if(s.txOwned || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
+        if(!s.txComplete || s.txStatus)return "native-sae-confirm-tx-failed";
+        if(!sec->ready){UInt8 nonce[32]{};
+            const bool ok=Ath10kKernelCrypto::random(nonce,sizeof(nonce)) &&
+                sec->saeRadio->beginEAPOL(sec->supplicant,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,now);
+            AthSecurity::wipe(nonce,sizeof(nonce));if(!ok)return "native-sae-pmk-handoff-failed";
+            sec->ready=true;
+        }
+        s.authReply=true;s.submitted=true;return nullptr;
+    }
+    if(s.txOwned || s.wmiOwned || s.dataPending || s.txPauseMask || s.maintenance.step || s.csa.blocked ||
+       s.radio.step || s.radio.blocked || s.radio.powerBlocked || !_wmiScan.completed || _wmiScan.txOwned ||
+       _wmi.credits.outstanding)return nullptr;
+    const UInt8 *frame=nullptr;size_t bytes=0;
+    if(!sec->saeRadio->prepareTX(s.sequence,now,frame,bytes))return nullptr;
+    if(!frame || bytes<30 || bytes>Ath10k::kEthernetFrameMax)return "native-sae-frame-size";
+    const char *error=submitNetworkPacket(frame,static_cast<UInt32>(bytes),true,now);
+    const bool recorded=sec->saeRadio->completeTX(!error,now);
+    if(error)return error;
+    if(!recorded)return "native-sae-tx-reservation-stale";
+    ++s.sequence;s.submitted=true;return nullptr;
+}
+
 // Invoked by the radio-gated data-key state machine, only at its actual
 // PTK acknowledgement, before firmware authorization and at the final
 // controlled-port barrier. An optional PMF
@@ -1219,7 +1266,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
     if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
-               sec->saeSession || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
+               sec->saeSession || sec->saeRadio || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.

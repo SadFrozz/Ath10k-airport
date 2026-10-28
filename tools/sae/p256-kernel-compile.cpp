@@ -7,6 +7,7 @@
 #include "../../src/shared/Ath10kSAQuery.hpp"
 #include "../../src/shared/Ath10kPMFCCMP.hpp"
 #include "../../src/shared/Ath10kPMFTransport.hpp"
+#include "../../src/kext/native/Ath10kSAESession.hpp"
 // Preserve both layouts and arbitrary acknowledged key epochs in kernel code.
 struct CompileOnlyPMFAES {
  using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);
@@ -265,4 +266,15 @@ extern "C" __attribute__((used)) bool ath10k_sae_h2e_scalar_compile_check(
     const uint8_t *hash,uint8_t *out)
 {
     return AthSecurity::saeGroup19H2EScalar(hash,32,out,32);
+}
+
+// Instantiate the retained SAE -> AKM8 handoff with the kernel toolchain;
+// begin performs framing/policy/copies only, not provider cryptography.
+struct CompileOnlySAECrypto {};
+extern "C" __attribute__((used,noinline)) bool ath10k_sae_eapol_handoff_compile_check(
+    Ath10kSAESession *owner,AthSecurity::Supplicant<CompileOnlySAECrypto,true,true> *eapol,
+    const uint8_t *nonce,const uint8_t *station,const uint8_t *ap,const uint8_t *rsn,
+    size_t bytes,uint32_t generation,uint64_t now)
+{
+    return owner && eapol && owner->beginEAPOL(*eapol,nonce,station,ap,rsn,bytes,generation,now);
 }

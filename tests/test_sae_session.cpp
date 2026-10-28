@@ -160,14 +160,68 @@ int main(){
         assert(s->snapshotCommit(tx,1,gen,now));assert(s->commitReady(tx,gen,now));assert(s->completeCommit(tx,true,gen,now));
         assert(s->receive(peerFrame.data(),peerFrame.size(),gen,now)==Action::ComputeKeys);ownerGate=false;
     };
-    auto take=[&](){run(call);auto result=worker->takeCompleted();assert(result);return result;};
+    auto take=[&](const void *owner=nullptr){run(call);
+        auto result=owner?worker->takeCompletedFor(owner):worker->takeCompleted();assert(result);return result;};
     auto submit=[&](Session *s,Kind kind,uint32_t gen,uint64_t now){
         ownerGate=true;assert(s->queue(worker,kind,gen,now)==Submission::Queued);ownerGate=false;
     };
+    { // Real radio coordinator owns work, TX reservations and PMK publication.
+      using Radio=Ath10kSAERadio;using State=Radio::State;
+      Radio radio;auto owner=create(301,30000);assert(radio.bind(owner,worker,301,30000));owner->release();
+      assert(radio.service(30000)==State::Progress);
+      const uint8_t *tx=nullptr;size_t txBytes=99;
+      ownerGate=true;assert(radio.prepareTX(1,30000,tx,txBytes));ownerGate=false;
+      assert(txBytes==128 && tx[0]==0xb0 && tx[24]==3 && tx[26]==1);
+      assert(radio.completeTX(true,30000) && !radio.completeTX(true,30000));
+      assert(radio.receive(peerFrame.data(),peerFrame.size(),0x39,30001)==Action::Ignore);
+      assert(radio.receive(peerFrame.data(),peerFrame.size(),0,30001)==Action::ComputeKeys);
+      ownerGate=true;assert(radio.service(30001)==State::Progress);ownerGate=false;run(call);
+      ownerGate=true;assert(radio.service(30002)==State::Progress);ownerGate=false;run(call);
+      ownerGate=true;assert(radio.service(30003)==State::Progress);
+      assert(radio.prepareTX(2,30003,tx,txBytes));ownerGate=false;
+      assert(txBytes==64 && tx[26]==2);
+      assert(radio.completeTX(true,30003));
+      assert(radio.receive(confirmFrame.data(),confirmFrame.size(),0,30004)==Action::VerifyPeer);
+      ownerGate=true;assert(radio.service(30004)==State::Progress);ownerGate=false;run(call);
+      ownerGate=true;assert(radio.service(30005)==State::Accepted);ownerGate=false;
+      using E=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;E eapol;
+      assert(radio.beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),30005));
+      assert(eapol.receive(w_m1,sizeof(w_m1))==E::Reply && eapol.receive(w_m3,sizeof(w_m3))==E::Keys);
+      assert(!memcmp(eapol.keys,w_ptk+32,16) && !memcmp(eapol.managementKey.key,w_igtk,16));
+      assert(!radio.beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),30005));
+      radio.cancel();assert(radio.service(30006)==State::Idle && objects==1);
+    }
+    { // TX blocked until the original deadline must never reach the channel.
+      Ath10kSAERadio radio;auto owner=create(302,40000);assert(radio.bind(owner,worker,302,40000));owner->release();
+      const uint8_t *tx=nullptr;size_t txBytes=0;assert(radio.prepareTX(1,40000,tx,txBytes));
+      assert(!radio.completeTX(true,40000+AthSecurity::SAEGroup19ClientExchange::DeadlineMs));
+      assert(radio.service(50000)==Ath10kSAERadio::State::Failed);
+      assert(!radio.prepareTX(2,50000,tx,txBytes) && !tx && !txBytes);radio.cancel();assert(objects==1);
+    }
+    { // Revocation by the native owner cannot leave an idle protocol alive.
+      Ath10kSAERadio radio;auto owner=create(305,55000);assert(radio.bind(owner,worker,305,55000));
+      owner->cancel();owner->release();assert(radio.service(55001)==Ath10kSAERadio::State::Failed);
+      radio.cancel();assert(objects==1);
+    }
+    { // Cancelling this attempt must not cancel another shared queue owner.
+      Ath10kSAERadio radio;auto owner=create(303,60000);assert(radio.bind(owner,worker,303,60000));owner->release();
+      auto foreign=new Blocker;assert(worker->submit(foreign));run(call);
+      radio.cancel();assert(worker->takeCompletedFor(foreign)==foreign);foreign->release();foreign->release();assert(objects==1);
+    }
+    { // Cancel during actual key crypto, without waiting or wiping its snapshot.
+      Ath10kSAERadio radio;auto owner=create(304,70000);assert(radio.bind(owner,worker,304,70000));owner->release();
+      const uint8_t *tx=nullptr;size_t txBytes=0;assert(radio.prepareTX(1,70000,tx,txBytes) && radio.completeTX(true,70000));
+      assert(radio.receive(peerFrame.data(),peerFrame.size(),0,70001)==Action::ComputeKeys);
+      assert(radio.service(70001)==Ath10kSAERadio::State::Progress);
+      Pause paused;pauseHMAC=&paused;std::thread runner([&]{run(call);});paused.wait();
+      ownerGate=true;radio.cancel();ownerGate=false;paused.resume();runner.join();pauseHMAC=nullptr;
+      assert(radio.service(70002)==Ath10kSAERadio::State::Idle && !worker->takeCompleted() && objects==1);
+    }
     uint8_t pmk[32],id[16];memset(pmk,0xa5,32);memset(id,0xa5,16);
     { // Reject invalid/double initialization without cryptography or replacement.
       auto bad=new Session;API incomplete{};assert(!bad->initPrepared(incomplete,random,32,g.data(),64,request,local,ap,1,0));
-      assert(!bad->initPrepared(api,random,31,g.data(),64,request,local,ap,1,0));bad->release();
+      assert(!bad->initPrepared(api,random,31,g.data(),64,request,local,ap,1,0));
+      assert(!bad->initPrepared(api,random,32,g.data(),64,request,local,ap,0,0));bad->release();
     }
     auto s=new Session;uint8_t mutableRandom[32],mutablePWE[64];auto mutableRequest=request;
     memcpy(mutableRandom,random,32);memcpy(mutablePWE,g.data(),64);
@@ -180,22 +234,25 @@ int main(){
     auto unrelated=take();assert(s->consume(unrelated,11,1)==Action::Ignore);unrelated->release();blocker->release();
     failObjectInit=true;assert(s->queue(worker,Kind::Keys,11,1)==Submission::NoMemory);
     submit(s,Kind::Keys,11,1);assert(s->queue(worker,Kind::Keys,11,1)==Submission::Busy);
-    auto result=take();auto other=create(11,0);
+    auto result=take(s);auto other=create(11,0);
     assert(other->consume(result,11,2)==Action::Ignore);other->release();
     assert(s->consume(result,12,2)==Action::Ignore);
     ownerGate=true;assert(s->consume(result,11,2)==Action::SendConfirm);ownerGate=false;
     assert(s->consume(result,11,2)==Action::Ignore);result->release();
     assert(s->receive(confirmFrame.data(),confirmFrame.size(),11,3)==Action::VerifyPeer);
-    submit(s,Kind::PeerConfirm,11,3);result=take();assert(s->consume(result,11,3)==Action::Ignore);result->release();
+    submit(s,Kind::PeerConfirm,11,3);result=take(s);assert(s->consume(result,11,3)==Action::Ignore);result->release();
     assert(!s->copyPMK(pmk,32,id,16,11,3));for(auto v:pmk)assert(v==0xa5);
+    {AthSecurity::Supplicant<PersonalTestCrypto,true,true> notReady;
+     assert(!s->beginEAPOL(notReady,w_snonce,local,ap,w_rsn,sizeof(w_rsn),11,3));
+     assert(notReady.receive(w_m1,sizeof(w_m1))==decltype(notReady)::Ignore);}
     // Provider failure consumes no authentication success; timed retry gets a new job.
-    submit(s,Kind::LocalConfirm,11,4);failDigest=true;result=take();failDigest=false;
+    submit(s,Kind::LocalConfirm,11,4);failDigest=true;result=take(s);failDigest=false;
     assert(s->consume(result,11,4)==Action::Ignore && !s->confirmReady(result,11,4));result->release();
     assert(s->poll(11,753)==Action::Ignore && s->poll(11,754)==Action::SendConfirm);
-    submit(s,Kind::LocalConfirm,11,754);auto failedTX=take();
+    submit(s,Kind::LocalConfirm,11,754);auto failedTX=take(s);
     assert(s->consume(failedTX,11,754)==Action::SendConfirm);
     assert(s->completeConfirm(failedTX,false,11,754)==Action::Ignore && !s->confirmReady(failedTX,11,754));
-    assert(s->poll(11,1504)==Action::SendConfirm);submit(s,Kind::LocalConfirm,11,1504);result=take();
+    assert(s->poll(11,1504)==Action::SendConfirm);submit(s,Kind::LocalConfirm,11,1504);result=take(s);
     uint8_t frame[128]{};size_t bytes=999;
     assert(s->encodeConfirm(result,3,frame,sizeof(frame),bytes,11,1504) && bytes==64);
     uint16_t accepted=0;
@@ -205,14 +262,49 @@ int main(){
     assert(s->copyPMK(pmk,32,id,16,11,1504) && !memcmp(pmk,expected.data(),32));
     { // Real queued SAE output feeds opt-in AKM8 EAPOL without password/PSK substitution.
       using E=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;E eapol;
-      assert(eapol.begin(pmk,w_snonce,local,ap,w_rsn,sizeof(w_rsn),8,id,16));
+      uint8_t otherAP[6];memcpy(otherAP,ap,6);otherAP[5]^=1;
+      assert(!s->beginEAPOL(eapol,w_snonce,local,otherAP,w_rsn,sizeof(w_rsn),11,1504));
+      assert(!s->beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),12,1504));
+      assert(!s->beginEAPOL(eapol,nullptr,local,ap,w_rsn,sizeof(w_rsn),11,1504));
+      assert(s->beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),11,1504));
+      assert(!s->copyPMK(pmk,32,id,16,11,1504));
       assert(eapol.receive(w_m1,sizeof(w_m1))==E::Reply);
       assert(eapol.outputLength==sizeof(w_m2) && !memcmp(eapol.output,w_m2,sizeof(w_m2)));
       assert(eapol.receive(w_m3,sizeof(w_m3))==E::Keys && eapol.keyChanges==7);
+      // Repeated handoff must preserve the already authenticated EAPOL state.
+      assert(!s->beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),11,1504));
+      assert(eapol.receive(w_m3,sizeof(w_m3))==E::Reply);
       assert(!memcmp(eapol.keys,w_ptk+32,16) && !memcmp(eapol.managementKey.key,w_igtk,16));
     }
     assert(!s->copyPMK(pmk,32,id,16,12,1504));s->cancel();assert(!s->confirmReady(result,11,1505));
     assert(!s->copyPMK(pmk,32,id,16,11,1505));s->release();result->release();assert(objects==1);
+    for(unsigned scenario=0;scenario<3;++scenario){
+      // Compose actual worker preparation -> SAE confirms -> AKM8 M1/M3.
+      const uint32_t gen=100+scenario;const uint64_t now=20000+1000*scenario;
+      prepareRandomMode=3;prepareRandomCalls=0;
+      auto preparation=new Ath10kSAEPrepareJob;
+      assert(preparation->initPWE(api,prepareRandom,g.data(),64,true,local,ap,gen,now));
+      assert(worker->submit(preparation));preparation->release();auto item=take(preparation);
+      preparation=dynamic_cast<Ath10kSAEPrepareJob *>(item);assert(preparation);
+      auto bound=preparation->takePrepared(local,ap,gen,now+1);item->release();assert(bound);
+      start(bound,gen,now+1);submit(bound,Kind::Keys,gen,now+2);item=take(bound);
+      assert(bound->consume(item,gen,now+2)==Action::SendConfirm);item->release();
+      submit(bound,Kind::LocalConfirm,gen,now+3);item=take(bound);assert(bound->consume(item,gen,now+3)==Action::SendConfirm);
+      assert(bound->completeConfirm(item,true,gen,now+3)==Action::Ignore);item->release();
+      assert(bound->receive(confirmFrame.data(),confirmFrame.size(),gen,now+4)==Action::VerifyPeer);
+      submit(bound,Kind::PeerConfirm,gen,now+4);item=take(bound);assert(bound->consume(item,gen,now+4)==Action::Accepted);item->release();
+      using E=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;E eapol;
+      ownerGate=true;
+      const uint64_t handoffNow=scenario==2?now+AthSecurity::SAEGroup19ClientExchange::DeadlineMs:now+4;
+      const bool ok=bound->beginEAPOL(eapol,w_snonce,local,ap,scenario==1?nullptr:w_rsn,scenario==1?0:sizeof(w_rsn),gen,handoffNow);
+      ownerGate=false;assert(ok==!scenario);
+      if(ok){assert(eapol.receive(w_m1,sizeof(w_m1))==E::Reply);assert(eapol.receive(w_m3,sizeof(w_m3))==E::Keys);
+        assert(!memcmp(eapol.keys,w_ptk+32,16) && !memcmp(eapol.managementKey.key,w_igtk,16));}
+      else {assert(bound->poll(gen,now+4)==Action::Ignore);
+        assert(!bound->beginEAPOL(eapol,w_snonce,local,ap,w_rsn,sizeof(w_rsn),gen,now+4));
+        assert(eapol.receive(w_m1,sizeof(w_m1))==E::Ignore);}
+      assert(!bound->copyPMK(pmk,32,id,16,gen,now+4));bound->release();assert(objects==1);
+    }
     { // A transferred old result retains its old session; replacement cannot consume it.
       auto old=create(20,2000);start(old,20,2000);submit(old,Kind::Keys,20,2001);result=take();
       old->cancel();old->release();auto replacement=create(20,2002);

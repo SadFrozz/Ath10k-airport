@@ -39,7 +39,7 @@ before the security dependency path is functional.
 | Path | Current source/model evidence | Still required for hardware support |
 | --- | --- | --- |
 | Native credentials | Sequoia 64-byte envelope decoded; explicit SAE rejection | Real SAE request binding and complete native admission |
-| SAE group 19/H2E | Independent crypto fixtures, retained commit preparation and commit/confirm jobs/state | Backend kernel/timing validation and native radio exchange |
+| SAE group 19/H2E | Independent crypto fixtures, retained preparation and native Auth RX/TX source hooks | Credential/admission, association RSN, kernel/timing and physical radio validation |
 | AKM8 / IGTK | Native export staging, deferred IGTK/key barriers and rekey fixtures | SAE-to-PMK native join wiring and physical port validation |
 | PMF RX | WMI consumer, bounded inbox, retained verification and authenticated dispatch | Exact QCA9377 RX layout and firmware negotiation |
 | PMF TX | Explicit hardware formatting, shared PN leases and DMA model | Firmware encryption/MIC and autonomous management PN ownership |
@@ -1300,3 +1300,165 @@ this exact Mach-O UUID D2278F3E-3B30-3391-9990-46ADDCE15F20. For the offline lin
 only, a copy has OSBundleRequired removed to make it AuxKC-eligible; deployed
 metadata is unchanged. This does not install a kernel collection, patch the OS
 or validate a running driver. No new external imports were introduced.
+
+
+### Identity-bound SAE-to-EAPOL publication (local follow-up)
+
+`Ath10kSAESession::beginEAPOL` transfers verified SAE PMK/PMKID directly to an
+AKM8 supplicant once. The session keeps its original station/BSSID separately
+from the key worker context (which is erased after key-job submission). The
+handoff checks the retained identities, nonzero connection generation, both SAE
+confirmation fences and the original authentication deadline. Accepted SAE state
+does not grant an unlimited delayed handoff or a fresh authentication lifetime.
+No unverified password bytes enter a PMK slot. Temporary PMK/PMKID storage is
+wiped on return; successful handoff prevents subsequent raw key copies or an
+EAPOL reinitialization through this session. A rejected target initialization
+cancels the session rather than retrying its PMK under another profile. Wrong
+identity/generation or a null nonce leaves the existing target untouched.
+
+The real retained-session test now composes queued first-commit preparation,
+key computation, local-confirm submission, peer-confirm verification, this
+handoff and authenticated AKM8 M1/M3 processing, checking exported PTK/IGTK.
+It also covers premature publication, wrong identity/generation, retransmitted
+M3 after a rejected repeated handoff, invalid RSN and delayed publication after
+the original deadline. Kernel compile-only code instantiates the exact helper;
+its optimized static frame is 104 bytes. Focused ASan/UBSan tests pass for
+sae_session, sae_eapol and native_key_stage; the previous full 54-test result
+belongs to published 5db129c and is not a new full-suite claim for this follow-up.
+
+This is a local follow-up to 5db129c, saved separately for the next publication
+batch. Native request admission still rejects SAE. The controller still needs
+the real credential/PWE binding and SAE authentication radio exchange, followed
+by firmware PMF validation. No kext installation or reboot is performed.
+
+Focused ThreadSanitizer retained-session/preparation/handoff tests also pass.
+
+
+### Shared completion routing by retained session (local follow-up)
+
+The shared worker now records an immutable opaque completion-owner identity at
+submission and offers `takeCompletedFor(owner)`. SAE and PMF jobs submit the
+retained session as owner; a preparation job defaults to its own retained job
+identity. No owner pointer is dereferenced and no callback/crypto/allocator runs
+beneath the bookkeeping lock. A mismatching/null typed request leaves the
+completed job, slot and reference count unchanged; the rightful owner or normal
+cancellation must retire it. Unfiltered `takeCompleted()` remains available to a
+sole dispatcher/test harness, but both native PMF collectors now use their exact
+PMF session. This is routing, not authentication: session/generation/key-epoch
+checks in each consumer remain mandatory.
+
+The binding clears with collection, queued/completed cancellation and running
+cancellation retirement. It cannot leak into the next slot use. Worker tests
+cover wrong/null/default owners, unchanged references, blocked replacement while
+a foreign completion is pending, cancel/reuse and simultaneous matching and
+nonmatching consumers. Native PMF tests inject stale RX/TX producer flags while
+a foreign job is complete: neither branch consumes/releases the foreign result,
+and a subsequent genuine PMF job still verifies/dispatches normally. Actual SAE
+preparation -> confirm -> EAPOL composition also collects by the retained owner.
+
+Focused halt-on-error ASan/UBSan validation passes for sae_worker, sae_session,
+pmf_session, native_pmf_receive and native_key_stage. ThreadSanitizer passes for
+sae_worker, sae_session, pmf_session and native_pmf_receive. Native and kernel
+compile-only builds pass with unchanged external imports; completion matching
+uses 24 bytes static stack and serviceNativePMF uses 712 bytes on this build.
+The earlier full-suite claim still belongs to published 5db129c, not these local
+follow-ups. Hardware SAE/PMF, credential/radio admission and physical traffic
+validation remain open. No source follow-up here installs a kext or reboots.
+
+
+### Retained SAE management-channel coordinator (local follow-up)
+
+`Ath10kSAERadio` now coordinates an exclusively owned prepared SAE session,
+shared retained worker, validated RX inputs, commit/confirm TX reservations and
+one-shot AKM8 handoff. It is compiled into the native driver sources but the
+controller's request/WMI/HTT hooks are not wired to it yet. This is model/source
+integration, not an on-radio SAE association or enabled native capability.
+
+The owner polls the original exchange deadline even while the channel is busy.
+It collects only its retained session's work, queues bounded key/confirm jobs,
+and holds an immutable commit snapshot or completed confirm until channel
+admission. Prepare, the actual channel copy/admission and complete must share
+the radio gate. A failed submission consumes the exchange's bounded attempt,
+not a fictitious successful send; an expired/revoked TX cannot complete. TX
+bytes are borrowed only until the next owner method. Cryptography stays entirely
+on the worker. A session revoked externally cannot remain silently in Progress.
+
+New `cancelFor(session)` retires only that owner's queued/running/completed
+work, without waiting or disturbing another producer. The transport retains
+both queue and session; running work keeps independent snapshots. Cancel,
+failure and destruction erase prepared TX bytes and release retained results.
+Acceptance drains pending work before PMK handoff. The existing exchange still
+owns anti-clogging/retry/confirmation policy; the adapter does not infer success
+from arbitrary firmware events.
+
+The actual userland CoreCrypto test now drives the radio coordinator through
+commit admission, peer commit RX, worker key/local-confirm jobs, confirm
+admission, peer confirmation and AKM8 M1/M3, checking PTK/IGTK. Additional tests
+cover bad RX status, duplicate completion, TX expiration, external revocation,
+foreign completed work surviving cancellation, and cancellation during actual
+key HMAC. Focused ASan/UBSan and TSan pass; native and kernel compile-only builds
+pass without new external imports. Optimized static frames are 56 bytes for
+service and 72 for prepareTX. These focused results do not replace a full-suite
+or physical hardware validation claim.
+
+Next controller integration must bind the admitted credential/PWE generation,
+route validated algorithm-3 WMI frames into this owner, bypass open-auth frame
+building/retries in Auth, use actual HTT admission and DMA completion ownership,
+and set authReply only after this coordinator's accepted PMK/profile handoff.
+The existing 1522-byte packet limit versus 1536-byte SAE frame-buffer limit,
+accepted-state confirm retransmissions, join/auth deadlines and worker shutdown
+must be reviewed before enabling native SAE/PMF. No install or reboot occurs.
+
+
+### Native WMI/Auth/HTT source hooks (development 0.0.101)
+
+The controller now owns an optional Ath10kSAERadio alongside its retained SAE
+session. The validated WMI management consumer routes Auth frames for a selected
+AKM8/Auth attempt to it. This consumes even algorithm-0 replies, preventing the
+open-auth handler from setting authReply for an SAE join. Other management and
+ordinary PSK authentication retain their existing handlers. Reset/terminal
+cleanup cancels and deletes the coordinator before releasing its session.
+
+The common connection state machine calls serviceNativeSAE in Auth/AKM8 and
+returns before open-auth construction/retry until authenticated handoff is ready.
+The handler checks the native join/radio/profile, PMF firmware readiness and
+exact SAE/PMF owner generation. It schedules retained work before considering
+TX availability, then uses the existing submitNetworkPacket/HTT admission with
+plain algorithm-3 commit/confirm frames. Scan, pause, credit, CE/data ownership,
+radio/power and maintenance fences postpone TX without extending the exchange.
+A separate lastTxSAE discriminator prevents the legacy three-attempt open-auth
+TX failure logic from taking over SAE retries. Common CE/HTT DMA retirement and
+its existing timeout remain unchanged.
+
+Accepted exchange state alone cannot publish authReply: the real outstanding
+HTT/CE ownership must retire, the last TX must complete successfully, and the
+verified PMK/PMKID must initialize the AKM8 supplicant. The handler then permits
+the common Auth-to-Assoc transition. Any handler error marks cancellation and
+immediately discards native crypto under the radio gate, independently of WCL
+terminal-event allocation; driver-owned packet DMA still retires normally.
+
+The new native_sae_radio test executes the production NativeSecurity, WMI
+management callback, serviceNativeSAE and extracted common Auth dispatch, with
+actual retained SAE/PMF sessions and userland CoreCrypto. Only hardware packet
+admission/completion is simulated. It checks algorithm-0 suppression, real
+commit/confirm bytes, scan deferral, HTT-vs-CE ownership, authenticated handoff,
+M1/M3 PTK output, failed profile/generation/power/TX/cancel cases and immediate
+terminal cleanup. The PSK guard bypasses the new path. This is not physical
+firmware validation or evidence of a successful native WPA3 association.
+
+Native request policy/capabilities remain disabled for SAE. prepareBSSCandidate
+still accepts only PSK AKMs, and the generic association builder still needs an
+SAE/PMF/PMKID RSN matching the supplicant. These are explicit next integration
+requirements, together with credential/PWE admission, accepted-state confirm
+retransmissions and firmware PMF/RX/PN/backend checks. No kext is installed and
+no reboot is performed. The immutable 0.0.99 boot candidate remains unchanged.
+
+The combined development 0.0.101 batch passes the full 55-test ASan/UBSan suite
+with halt-on-error and focused ThreadSanitizer for sae_worker, sae_session,
+pmf_session, native_pmf_receive and native_sae_radio. Native/kernel compilation,
+strict ad-hoc signature verification and exact offline AuxKC inclusion pass.
+Mach-O UUID is 62791364-F0F4-3790-B9FB-D2AA27F8899D; no new external imports are
+introduced. The offline AuxKC uses only a diagnostic copy without OSBundleRequired
+for eligibility; the actual bundle metadata and OS kernel collections are not
+changed. serviceNativeSAE uses 88 bytes optimized static stack. Hardware packet
+completion remains simulated in the host test; this is not an on-device result.

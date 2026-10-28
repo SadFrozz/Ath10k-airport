@@ -23,6 +23,7 @@ struct Ath10kSAESession {
     void cancel(){cleanup.push_back(1);}
     void release(){cleanup.push_back(4);delete this;}
 };
+#include "mock_native_sae_radio.hpp"
 struct Ath10kSAEWorkItem {
     void discard(){cleanup.push_back(2);}
     void release(){cleanup.push_back(3);delete this;}
