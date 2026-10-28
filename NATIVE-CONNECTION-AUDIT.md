@@ -199,3 +199,10 @@ legitimate key replacement and the contradictory success/failure outcome at a
 join deadline. Deadline failure now wins and performs data-port/crypto cleanup
 once even if its notification must retry. Hardware validation is pending; these
 source-level corrections are not a claim that all prior hangs are resolved.
+
+
+### Control-worker teardown ordering (2026-10-28)
+
+The deferred probe can create the native interface and service thread call while cancellation waits for it. Both stop() and partial-initialization free() now drain that producer first, then stop/drain native requests, before releasing power notifications, runtime, IRQ or DMA resources. This closes late-worker creation after cancellation and access to already released radio resources. A host test executes the production drain helper with an in-flight producer; source guards check both resource-release call sites. Full host tests, ASan/UBSan and the native build pass. This is an offline candidate, not a verified fix for the observed hardware freeze.
+
+Wake remains incomplete: the current power path blocks I/O after wake pending a full restart, and sleep notification registration happens after deferred firmware initialization. Automatic native recovery must coordinate in-progress initialization, sleep acknowledgement, DMA quiescence and provider rematch; simply clearing the block or replaying notifications is unsafe. No automatic recovery is claimed here.

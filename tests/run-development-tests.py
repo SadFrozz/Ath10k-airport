@@ -42,6 +42,8 @@ def main():
             '#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;'
             'using UInt32=uint32_t;using UInt64=uint64_t;\n')
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
+        driver=(ROOT/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        (include/'control_drain_method.inc').write_text(driver[driver.index('void Ath10kPCIDevice::drainControlWorkers()'):driver.index('void Ath10kPCIDevice::stop(IOService *provider)')])
         protocol=native[native.index('IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const'):native.index('IOReturn Ath10kNativeInterface::perform')]
         bsd=native.split('class Ath10kBSDInterface',1)[1].split('    static IOReturn prepare(',1)[0]
         bsd=bsd.split('    IOWorkLoop *getWorkLoop() const override {',1)[1].rsplit('    }',1)[0]
@@ -50,7 +52,7 @@ def main():
         (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        names=['native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         for name in names:
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))

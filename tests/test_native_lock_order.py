@@ -2,6 +2,16 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_stop_and_partial_free_drain_all_control_work_before_radio_release(self):
+        source=(Path(__file__).resolve().parents[1]/"src/kext/Ath10kPCIDevice.cpp").read_text()
+        drain=source.split("void Ath10kPCIDevice::drainControlWorkers()",1)[1].split("void Ath10kPCIDevice::stop",1)[0]
+        self.assertLess(drain.index("cancelDeferredProbe();"),drain.index("stopNativeRequests();"))
+        for entry in ["void Ath10kPCIDevice::stop(IOService *provider)","void Ath10kPCIDevice::free()"]:
+            body=source.split(entry,1)[1].split("\nvoid ",1)[0]
+            self.assertLess(body.index("drainControlWorkers();"),body.index("releasePowerNotifications();"))
+            self.assertLess(body.index("drainControlWorkers();"),body.index("releaseWMIRuntime();"))
+            self.assertLess(body.index("drainControlWorkers();"),body.index("stopDMAForRelease();"))
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()

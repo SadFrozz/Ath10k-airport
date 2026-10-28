@@ -67,6 +67,7 @@ private:
     IOUserClient *_controlOwner=nullptr;
     bool _reprobeRequested=false,_systemSuspended=false;
     bool requestDeviceRestart();
+    void drainControlWorkers();
     Ath10k::PowerState _power{};
     // Atomic: 0 active, 1 suspending/suspended, 2 awake but clean restart required.
     volatile UInt32 _powerIOBlock=0;

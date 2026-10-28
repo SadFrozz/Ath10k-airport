@@ -342,14 +342,19 @@ bool Ath10kPCIDevice::stopDMAForRelease()
     return true;
 }
 
-void Ath10kPCIDevice::stop(IOService *provider)
+void Ath10kPCIDevice::drainControlWorkers()
 {
+    // The probe may still create the native interface and its worker. Finish
+    // or cancel that producer before draining the worker it can create.
+    cancelDeferredProbe();
 #ifdef ATH10K_NATIVE
-    // Drain accepted Wi-Fi requests before shutting down radio resources.
     stopNativeRequests();
 #endif
-    // Do not release BAR, DMA, or PCI state while the deferred probe uses it.
-    cancelDeferredProbe();
+}
+
+void Ath10kPCIDevice::stop(IOService *provider)
+{
+    drainControlWorkers();
     // Rematching is queued only after every old DMA mapping/IRQ has been
     // stopped and detached. Retain provider until registerService returns.
     IOService *rematch=_reprobeRequested?provider:nullptr;
@@ -431,7 +436,8 @@ void Ath10kPCIDevice::stop(IOService *provider)
 
 void Ath10kPCIDevice::free()
 {
-    cancelDeferredProbe();
+    // free() also covers partial initialization without a preceding stop().
+    drainControlWorkers();
     releasePowerNotifications();
     if (_powerManaged) { PMstop(); _powerManaged=false; }
     releaseWMIRuntime();
