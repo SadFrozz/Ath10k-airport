@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstring>
+#include <vector>
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
@@ -7,6 +8,23 @@
 // No crypto operation is invoked: begin stores the fixture and reset must
 // wipe it. Definitions are deliberately absent to catch accidental operations.
 struct Ath10kKernelCrypto {};
+static std::vector<unsigned> cleanup;
+struct Ath10kSAESession {
+    void cancel(){cleanup.push_back(1);}
+    void release(){cleanup.push_back(4);delete this;}
+};
+struct Ath10kSAEWorkItem {
+    void discard(){cleanup.push_back(2);}
+    void release(){cleanup.push_back(3);delete this;}
+};
+struct Ath10kSAEWorker {
+    static inline unsigned created=0,cancelled=0,drained=0,released=0;
+    static inline bool failInit=false;
+    bool init(){++created;return !failInit;}
+    void cancel(){++cancelled;cleanup.push_back(5);}
+    void shutdown(){++drained;}
+    void release(){++released;delete this;}
+};
 class Ath10kPCIDevice {
 public:
     class NativeSecurity;
@@ -17,6 +35,17 @@ public:
 #include "native_security_class.inc"
 #include "native_security_discard.inc"
 int main(){
+    { auto s=new Ath10kPCIDevice::NativeSecurity;
+      Ath10kSAEWorker::failInit=true;assert(!s->prepareSAEWorker() && !s->saeWorker);
+      assert(Ath10kSAEWorker::created==1 && Ath10kSAEWorker::released==1);
+      Ath10kSAEWorker::failInit=false;assert(s->prepareSAEWorker());assert(s->prepareSAEWorker());
+      assert(Ath10kSAEWorker::created==2);
+      s->saeSession=new Ath10kSAESession;s->saePendingTX=new Ath10kSAEWorkItem;
+      s->reset();assert(Ath10kSAEWorker::cancelled==1 && !Ath10kSAEWorker::drained);
+      assert(!s->saeSession && !s->saePendingTX && cleanup==std::vector<unsigned>({1,2,3,4,5}));
+      s->drainSAEWorker();assert(Ath10kSAEWorker::drained==1);delete s;
+      assert(Ath10kSAEWorker::released==2 && Ath10kSAEWorker::cancelled==2);
+    }
     Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;
     d._nativeSecurity=&security;
     assert(security.supplicant.begin(s_pmk,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));

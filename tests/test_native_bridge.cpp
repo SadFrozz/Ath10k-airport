@@ -45,6 +45,8 @@ struct Gate {
 };
 class Ath10kPCIDevice:public OSObject {
 public:
+ struct Security {unsigned drains=0;void drainSAEWorker(){assert(rank==0);++drains;}} security;
+ Security *_nativeSecurity=&security;
  bool blocked=false;bool powerIOBlocked(){return blocked;}
  Ath10kNativeInterface interface;Ath10kNativeInterface *_nativeInterface=&interface;
  unsigned runtimeStops=0;

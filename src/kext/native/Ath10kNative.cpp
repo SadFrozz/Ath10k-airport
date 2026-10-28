@@ -6,6 +6,8 @@
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
 #include "Ath10kNativeMAC.hpp"
+#include "Ath10kSAEWorker.hpp"
+#include "Ath10kSAESession.hpp"
 #include <kern/clock.h>
 #include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
@@ -101,6 +103,9 @@ struct Ath10kKernelCrypto {
 };
 class Ath10kPCIDevice::NativeSecurity {
 public:
+    Ath10kSAEWorker *saeWorker=nullptr;
+    Ath10kSAESession *saeSession=nullptr;
+    Ath10kSAEWorkItem *saePendingTX=nullptr;
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
     AthNative::CandidateCache candidates;
     UInt32 cachedGeneration=~0u;
@@ -115,9 +120,22 @@ public:
         // keys and the authenticated M3/M4 retry cache remain in the supplicant.
         AthSecurity::wipe(reply,sizeof(reply));replyLength=0;replyPending=false;
     }
-    void reset(){supplicant.reset();AthSecurity::wipe(reply,sizeof(reply));AthSecurity::wipe(keys,sizeof(keys));
+    bool prepareSAEWorker(){
+        if(saeWorker)return true;
+        auto worker=new Ath10kSAEWorker;if(!worker)return false;
+        if(!worker->init()){worker->release();return false;}
+        saeWorker=worker;return true;
+    }
+    // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
+    void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
+    void reset(){
+        if(saeSession)saeSession->cancel();
+        if(saePendingTX){saePendingTX->discard();saePendingTX->release();saePendingTX=nullptr;}
+        if(saeSession){saeSession->release();saeSession=nullptr;}
+        if(saeWorker)saeWorker->cancel();
+        supplicant.reset();AthSecurity::wipe(reply,sizeof(reply));AthSecurity::wipe(keys,sizeof(keys));
         ready=replyPending=keysPending=authorizePending=false;replyLength=keyOperation=0;pairDeadline=0;}
-    ~NativeSecurity(){reset();}
+    ~NativeSecurity(){reset();if(saeWorker){saeWorker->release();saeWorker=nullptr;}}
 };
 
 IO80211WorkQueue *Ath10kPCIDevice::getWorkQueue() const {
@@ -456,6 +474,9 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     if(!_nativeBSDGate || !getWorkQueue() ||
        getWorkQueue()->addEventSource(_nativeBSDGate)!=kIOReturnSuccess)return false;
     _nativeSecurity=new NativeSecurity;if(!_nativeSecurity)return false;
+    // Optional SAE resources must not disable existing WPA2 under allocation
+    // pressure. Future SAE admission must require this worker, never downgrade.
+    setProperty("Ath10kSAEWorkerReady",_nativeSecurity->prepareSAEWorker());
     _nativeInterface=new Ath10kNativeInterface;
     if(!_nativeInterface || !_nativeInterface->initWithController(this))return false;
     _nativeInterface->setInterfaceRole(1);_nativeInterface->setInterfaceId(1);
@@ -539,6 +560,9 @@ void Ath10kPCIDevice::stopNativeRequests() {
         // Keep the lock until final interface cleanup: repeated stop is valid.
     }
     _nativeServicePending=false;
+    // Radio stop has already cancelled SAE and the service producer is drained.
+    // Crypto callbacks never enter either gate, so wait only from this context.
+    if(_nativeSecurity)_nativeSecurity->drainSAEWorker();
 }
 void Ath10kPCIDevice::releaseNativeInterface() {
     // stop() has already cancelled the runtime worker under its workloop.

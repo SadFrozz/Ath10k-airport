@@ -21,6 +21,7 @@ public:
  SAEGroup19KeyWork(const SAEGroup19KeyWork &)=delete;
  SAEGroup19KeyWork &operator=(const SAEGroup19KeyWork &)=delete;
  ~SAEGroup19KeyWork(){clear();}
+ void retire(){clear();} // Only after exclusive worker ownership returns.
  template<class Crypto> bool compute(const P256CoreCryptoCandidate &engine,const uint8_t *random,size_t randomBytes,
      const uint8_t *pwe,size_t pweBytes,P256CoreCryptoWorkspace &workspace){
   wipe(&keys,sizeof(keys));computed=false;

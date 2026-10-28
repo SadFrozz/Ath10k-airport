@@ -184,6 +184,96 @@ or accepted-session reauthentication is claimed. WPA3 remains disabled.
 The client source used for state-order comparison is the SME reference linked
 above; its synchronous key processing is deliberately moved into explicit jobs.
 
+### Kernel worker lifecycle (source-integrated, not boot-verified)
+
+`Ath10kSAEWorker` is now compiled/linked into the native kext and allocated by
+NativeSecurity initialization when allocation succeeds. An unavailable SAE queue
+is reported as a readiness property and does not disable existing WPA2; future
+SAE admission must fail explicitly rather than downgrade. Radio-gated reset cancels without waiting;
+stopNativeRequests drains the existing service producer and then shuts the crypto
+queue down outside radio/WCL. Partial allocation and repeated stop are supported.
+The queue is idle in the native join path: concrete session/job adapters are
+described below, but native dispatch and WPA3 admission/capabilities remain disabled.
+
+The queue owns one retained job through pending/running/unconsumed completion and
+retains itself for each scheduled callback. Jobs must own immutable session data,
+never borrowed NativeSecurity pointers. Final free is sealed in the work-item
+base and invokes the job's idempotent discard hook even after normal consumption;
+concrete jobs must wipe/release their private session material there. A result
+is pulled by its owner, which must still check session/generation before use.
+execute/discard/free must not enter driver gates or drain the queue. No callback
+enters WCL/radio or allocates another unbounded queue of pending crypto jobs.
+
+Cancellation preserves pending state after false thread-call cancellation: kernel
+dispatch may have begun before callback entry. Running jobs are not concurrently
+wiped. Queued/completed cancellation disposes outside the bookkeeping lock; a
+retirement counter also makes shutdown wait for preempted disposal. Shutdown
+permanently blocks admission, drains queued/running/retiring ownership and frees
+the callout. Sleep/reset cancellation permits later reuse. The final callback has
+no queue access after dropping its retained reference.
+
+The installed kernel identifies xnu-11417.140.69. Its published thread_call source
+confirms cancellation and allocated ONCE callout lifetime rules used by this design;
+the queue uses no cancel_wait export. This source comparison is not live execution.
+https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/thread_call.c
+
+Tests compile the production queue declarations/definitions with an explicitly
+modeled ONCE scheduler, locks and reference counts. ASan/UBSan and ThreadSanitizer
+pass allocation failure, bounded admission/result transfer, queued cancel,
+dispatch-before-callback cancel, cancellation during execution, delayed disposal,
+shutdown outside owner gates, callback retention after last external release and
+requeue/cancel before kernel callback return. Production NativeSecurity and bridge
+tests cover init failure, nonblocking reset and outside-gate drain order. Native
+kext compilation/link/import checks pass. Actual IOKit scheduling, sleep/stop,
+crypto backend calls and a complete retained native SAE session remain unverified.
+
+### Retained native session and concrete jobs (compiled, host-executed)
+
+`Ath10kSAESession` and `Ath10kSAEJob` now compile/link into the kext. A one-shot
+prepared session owns the client coordinator and connection-generation identity.
+The factory requires an already prepared/validated local commit/random/PWE and
+an externally validated callable P-256 API. It does no expensive crypto under
+the owner gate and does not establish that backend validation itself.
+
+Key calculation, local-confirm generation and peer-confirm verification are
+concrete retained jobs submitted through Ath10kSAEWorker. Each job owns its
+metadata/body/workspace and a private context copy; it retains its session for
+owner identity/lifetime, without borrowing NativeSecurity or IO80211 pointers.
+The worker never reads mutable session state. Prepared owner secrets are erased
+after successful key-job admission or cancellation; private random/PWE copies
+and workspace are erased after execution and again by idempotent disposal.
+Confirmation snapshots/results are disposed on final job release.
+
+Owner consumption checks session pointer, native connection generation and
+worker execution/consumption state before touching the coordinator. Keys/peer
+results are single-use. Local confirm results retain their identity until actual
+TX admission/completion; failed/consumed results cannot be resubmitted. PMK
+export still requires both confirmations and the current connection generation.
+
+Busy queue admission happens before coordinator snapshot/reservation. Object
+initialization/allocation failure leaves work unreserved. If admission loses a
+terminal race after snapshot, the session cancels instead of stranding a key
+reservation or popped confirm. A transferred result remains caller-owned until
+release. NativeSecurity reset cancels the session, discards/releases its pending
+TX result, releases the session and only then cancels the worker; stop drains it
+outside owner gates. Concrete native joins do not yet create these sessions.
+
+Production session/job methods run in host tests with the real userland P-256
+CoreCrypto adapter and a CommonCrypto HMAC substitute for kernel ccsha256/cchmac.
+ASan/UBSan checks pass prepared-input copying, busy/no-memory admission without
+lost reservations, terminal admission race, cross-session/generation rejection,
+real key/confirm flow through the queue, provider failure and timed/failed-TX
+retries, current-generation PMK fixture, cancellation while HMAC is paused, and
+retained old-result cleanup. A pre-delete observer scans job/session storage for
+the known PWE/PMK fixtures after disposal and finds neither. Production queue and
+session race tests also pass ThreadSanitizer. Kernel build/link/import checks
+pass; actual kernel P-256 execution and live IOKit scheduling remain unverified.
+
+The owner/queue/job lifetime path now exists in kext sources. Initial credential
+preparation, verified kernel backend binding, native join/firmware dispatch,
+association PMKID/AKM8 EAPOL, mandatory PMF and hardware validation remain open.
+No SAE/PMF capability is advertised and no native WPA3 join is enabled yet.
+
 ## Verified Sequoia credential envelope
 
 Matching local IO80211Family UUID: 0D5AC570-04D4-38B6-8577-9F21350CDD50.

@@ -21,6 +21,7 @@ public:
  SAEGroup19ConfirmWork(const SAEGroup19ConfirmWork &)=delete;
  SAEGroup19ConfirmWork &operator=(const SAEGroup19ConfirmWork &)=delete;
  ~SAEGroup19ConfirmWork(){clear();}
+ void retire(){clear();} // Only after exclusive worker ownership returns.
  uint16_t localSequence() const {return kind==Kind::Local && verified?counter:0;}
  bool copyLocalBody(uint8_t *out,size_t capacity) const {
   if(!out || capacity<34 || kind!=Kind::Local || !verified)return false;
