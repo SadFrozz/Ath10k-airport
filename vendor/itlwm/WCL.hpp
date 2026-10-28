@@ -180,7 +180,8 @@ struct DeauthEvent {
     int32_t driverReason;
     uint16_t reason;
     uint8_t bssid[6];
-    uint8_t disassociation;
+    // Sequoia WCLDeauthDisassoc: nonzero dispatches handleDeauth.
+    uint8_t deauthentication;
     uint8_t reserved[3];
 };
 
@@ -211,6 +212,9 @@ static_assert(sizeof(AssociationEvent) == 0x1c, "AssociationEvent size");
 static_assert(sizeof(FirstBeaconEvent) == 0x14, "FirstBeaconEvent size");
 static_assert(sizeof(ConnectionEvent) == 0xa4, "ConnectionEvent size");
 static_assert(sizeof(DeauthEvent) == 0x14, "DeauthEvent size");
+static_assert(offsetof(DeauthEvent, reason) == 8, "DeauthEvent reason offset");
+static_assert(offsetof(DeauthEvent, bssid) == 10, "DeauthEvent BSSID offset");
+static_assert(offsetof(DeauthEvent, deauthentication) == 0x10, "DeauthEvent subtype offset");
 static_assert(sizeof(ChannelInfo) == 0xc86, "ChannelInfo size");
 
 struct NativeChannelInfo {

@@ -1003,7 +1003,10 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
     }
     if((_nativeWasUp || (_nativeLinkUpSent && !_nativeJoinPending)) && !up){
         if(!_nativeDeauthSent){
-            AirportWCL::DeauthEvent event{};bcopy(_nativeLastBSSID,event.bssid,6);event.reason=3;
+            AirportWCL::DeauthEvent event{};bcopy(_nativeLastBSSID,event.bssid,6);event.reason=3;event.deauthentication=1;
+            if(s.apDisconnect.valid && Ath10k::sameMAC(s.apDisconnect.bssid,_nativeLastBSSID)){
+                event.reason=s.apDisconnect.reason;event.deauthentication=!s.apDisconnect.disassociation;
+            }
             if(post(AirportWCL::Deauth,&event,sizeof(event)))_nativeDeauthSent=true;
         }
         if(_nativeDeauthSent){

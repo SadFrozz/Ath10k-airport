@@ -168,6 +168,11 @@ struct ConnectionState {
         bool active=false,startPending=false,echoPending=false;
         UInt32 echoCookie=0;
     } rollback{};
+    // Terminal AP metadata survives radio cleanup until native delivery.
+    struct APDisconnect {
+        bool valid=false,disassociation=false;
+        UInt16 reason=0;UInt8 bssid[6]{};
+    } apDisconnect{};
     struct ConnectionDiagnostics {
         UInt32 maps=0,unmaps=0,unknownUnmaps=0,peerBefore=0,peerAfter=0;
         UInt16 peer=0xffff;UInt8 vdev=255,peerMAC[6]{};bool own=false;
@@ -279,6 +284,7 @@ inline void resetDisconnected(ConnectionState &s) {
     const auto securityDiagnostics=s.rxSecurity;
     const auto securityInd=s.securityInd;
     const auto diagnostics=s.diagnostics;
+    const auto apDisconnect=s.apDisconnect;
     UInt8 mac[6];for(unsigned i=0;i<6;++i)mac[i]=s.local[i];
     AthSecurity::wipe(&s,sizeof(s));resetInPlace(s);
     s.regulatory=regulatory;s.csa.completed=csaCompleted;s.csa.rejected=csaRejected;
@@ -292,6 +298,7 @@ inline void resetDisconnected(ConnectionState &s) {
     s.rxLastReason=lastReason;
     s.rxSecurity=securityDiagnostics;
     s.securityInd=securityInd;
+    s.apDisconnect=apDisconnect;
     s.diagnostics=diagnostics;s.diagnostics.cancelOrigin="none";
     for(unsigned i=0;i<6;++i)s.local[i]=mac[i];
 }
@@ -564,6 +571,7 @@ inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
         if(!limit)return "invalid-channel-definition";
         if(!s.txPowerHalfDbm)return "invalid-tx-power";
         if(s.txPowerHalfDbm>limit)s.txPowerHalfDbm=limit;
+        s.apDisconnect={}; // New accepted candidate cannot inherit an old AP cause.
         return nullptr;
     }
     return "configured-bss-not-found";
@@ -1112,6 +1120,11 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
     if((subtype==0xc0 || subtype==0xa0) && bytes>=26){
         ++s.diagnostics.mlmeCount;s.diagnostics.mlmeSubtype=static_cast<UInt8>(subtype);
         s.diagnostics.mlmeReason=htcReadLE16(f+24);s.diagnostics.mlmeChannel=rxChannel;
+        if(!s.cancelRequested && !s.apDisconnect.valid){
+            s.apDisconnect.valid=true;s.apDisconnect.disassociation=subtype==0xa0;
+            s.apDisconnect.reason=htcReadLE16(f+24);
+            for(UInt32 i=0;i<6;++i)s.apDisconnect.bssid[i]=s.bssid[i];
+        }
         connectionFailure(s,"ap-disconnected");s.portAuthorized=false;s.cancelRequested=true;return;
     }
     if((subtype==0x80 || (subtype==0x50 && s.probe.active)) && bytes>=36){

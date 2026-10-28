@@ -156,6 +156,36 @@ int main(){
         assert((ids(*d)==std::vector<UInt32>{213,203,216}));
         assert(!d->_nativeJoinPending && !d->_nativeLinkUpSent);
     }
+    for(UInt8 subtype:{UInt8(0xc0),UInt8(0xa0)}){ // Real AP reason survives teardown and enqueue failure.
+        auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);d->serviceNativeNotifications(100);
+        UInt8 frame[26]{};frame[0]=subtype;
+        memcpy(frame+4,d->_connection.local,6);memcpy(frame+10,d->_connection.bssid,6);memcpy(frame+16,d->_connection.bssid,6);
+        Ath10k::htcWriteLE16(frame+24,15);
+        Ath10k::receiveStationManagement(d->_connection,frame,sizeof(frame),0,52);
+        assert(d->_connection.apDisconnect.valid && d->_connection.apDisconnect.reason==15);
+        // Repeated terminal frames cannot overwrite the first reason/subtype.
+        frame[0]=subtype==0xc0?0xa0:0xc0;Ath10k::htcWriteLE16(frame+24,4);
+        Ath10k::receiveStationManagement(d->_connection,frame,sizeof(frame),0,52);
+        Ath10k::resetDisconnected(d->_connection);d->_networkLinkUp=false;
+        d->events.clear();d->attempts=0;d->failAt=1;
+        d->serviceNativeNotifications(110);assert(d->events.empty());
+        d->serviceNativeNotifications(120);assert((ids(*d)==std::vector<UInt32>{203,216}));
+        auto event=reinterpret_cast<const AirportWCL::DeauthEvent *>(d->events[0].data.data());
+        assert(event->reason==15 && event->deauthentication==(subtype==0xc0));
+        assert(d->events[0].data[8]==15 && d->events[0].data[9]==0);
+        assert(d->events[0].data[0x10]==(subtype==0xc0?1:0));
+        assert(event->bssid[5]==0x55);
+        d->serviceNativeNotifications(130);assert(d->events.size()==2);
+    }
+    { // Foreign/stale AP metadata must not describe a local disconnect.
+        auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);d->serviceNativeNotifications(100);
+        d->_connection.apDisconnect.valid=true;d->_connection.apDisconnect.reason=15;
+        memset(d->_connection.apDisconnect.bssid,0xaa,6);
+        d->_connection.cancelRequested=true;d->_networkLinkUp=false;d->events.clear();
+        d->serviceNativeNotifications(110);
+        auto event=reinterpret_cast<const AirportWCL::DeauthEvent *>(d->events[0].data.data());
+        assert(event->reason==3 && event->deauthentication==1);
+    }
     { // Permanent allocation pressure advances no delivery phase and stop is immediate.
         auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);d->failAlways=true;
         for(unsigned n=0;n<200;++n)d->serviceNativeNotifications(100+n*10);

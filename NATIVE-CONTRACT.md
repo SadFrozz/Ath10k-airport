@@ -68,7 +68,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | Priority | Path | Evidence/status | Completion condition |
 | --- | --- | --- | --- |
 | P0 | Registration ownership | Candidate uses the stock typed factory, a borrowed Network prefix and cleanup hooks; host ownership and parent-vtable checks pass | Hardware stop/recovery retains one owner and no stale borrower |
-| P0 | Framework leaf termination | Candidate counts admitted stock power bodies, defers didTerminate/finalize, then fences WCL and finalizes BSD before inherited completion; PCI-controller power path still needs its own audit | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
+| P0 | Framework leaf termination | Candidate counts admitted stock power bodies, defers didTerminate/finalize, then fences WCL and finalizes BSD before inherited completion; controller power closure/quiescence barrier and internal wake worker are candidates | No PMstop/WCL/radio cycle during controller/interface termination and recovery |
 | P0 | Event delivery errors | Candidate checks enqueue returns, keeps phase/cursors and retries with 10 ms backoff; host injection covers every stage | Verify system behavior during scan, rekey and failures on hardware |
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
@@ -77,7 +77,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | P1 | Autojoin | About 32 seconds after login on previous boot | Trace and reduce avoidable retries without router changes |
 | P1 | Visibility | Beacon metadata adjusted; saved profile still has Hidden=true | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
-| P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences and security cleanup are candidates; automatic wake recovery missing | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
+| P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences, security cleanup and guarded automatic wake rematch are candidates | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
 | P2 | Queries and capabilities | 190 inline callbacks: 29 forward, 161 reject | Classify every rejection by actual system caller; implement mandatory contracts |
 | P2 | IPv6/multicast and statistics | Partial implementation | Multicast filter and counters reflect delivered traffic; no fabricated metrics |
 | P2 | WPA3/PMF | SAE and mandatory PMF/BIP not implemented | Implement and test complete authentication/protection, not an AKM label change |
@@ -512,3 +512,43 @@ collection (UUID DC4B47B7-6C93-3FA3-A6E9-767266BB174C). Auxiliary validation use
 a separate selection-only Info.plist copy; this proves binary binding, not
 OpenCore loading or runtime stability. Hardware sleep/wake is not verified.
 The frozen e105f82 installation candidate has not been replaced or installed.
+
+
+## AP disconnect cause and continuous reconnect regressions (2026-10-28)
+
+The native Deauth event previously always used IEEE reason 3 and left its
+subtype byte zero, even after a validated AP frame carried another reason
+and subtype. ConnectionState now retains the first AP terminal reason, subtype
+and BSSID independently of cumulative diagnostics. Radio resetDisconnected keeps
+this nonsecret event metadata while wiping old keys/rings state; successful
+candidate selection clears it for the next association. A repeated terminal frame
+cannot replace the first cause. Native delivery uses the retained record only
+for the BSSID whose LinkUp was published; absent/mismatched AP metadata retains
+the existing local reason 3. Enqueue failure does not consume the record.
+
+Production receive/reset/notification tests inject AP deauthentication and
+disassociation with reason 15, a subsequent conflicting reason/subtype, complete
+radio cleanup and a failed first enqueue. They check the exact native event,
+BSSID and single terminal delivery. A separate selection assertion verifies
+that the next accepted candidate cannot inherit the old cause. This does not
+implement protected management frames or prove hardware disconnect handling.
+
+The normal development runner now includes the existing connection, reconnect,
+station/AP maintenance, channel switch, runtime power and WMI notification tests.
+The production extractor bounds DMA release before the separate control-drain
+method and excludes controller PM-drain from the single-thread runtime seam;
+actual controller/PM concurrency stays covered by test_power. The runtime seam
+uses production atomic admission/power actions and counts recovery scheduling,
+while test_wake_recovery separately executes the actual retained worker.
+
+
+Sequoia subtype ABI was checked against the matching local IO80211Family image,
+UUID 0D5AC570-04D4-38B6-8577-9F21350CDD50. The dispatch at
+0xffffff80021f4b10 reads payload byte 0x10: nonzero calls handleDeauth at
+0xffffff80021f4b9e; zero calls handleDisassoc at 0xffffff80021f52bc.
+The main handler reads the reason word at offset 8 (0xffffff80021f45b1).
+The imported header named byte 0x10 `disassociation`, reversing its meaning.
+It is now named `deauthentication`, with a fixed offset assertion; AP subtype
+0xc0 and local reason-3 fallback set it to 1, subtype 0xa0 sets it to 0.
+These are manually reconstructed observations of the Sequoia binary, not
+recovered Apple C source or a claim for other macOS adapters.

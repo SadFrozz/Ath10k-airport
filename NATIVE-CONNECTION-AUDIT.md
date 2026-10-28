@@ -1,7 +1,8 @@
 # Native connection audit (2026-10-28)
 
 Hardware-confirmed: firmware starts, macOS creates en1 and shows scanned networks.
-Association/data traffic are not yet confirmed. WCLJoinManager was observed aborting
+Earlier e2b8293 hardware testing confirmed association and bidirectional traffic,
+but later watchdogs/stalls prevent a current stability claim. Initially WCLJoinManager aborted
 on unsupported WCL_LOW_LATENCY_INFO before dispatching the association callback.
 
 This revision answers that query with the actual zero session mask, applies scan
@@ -384,3 +385,43 @@ collection (UUID DC4B47B7-6C93-3FA3-A6E9-767266BB174C). Auxiliary validation use
 a separate selection-only Info.plist copy; this proves binary binding, not
 OpenCore loading or runtime stability. Hardware sleep/wake is not verified.
 The frozen e105f82 installation candidate has not been replaced or installed.
+
+
+## AP disconnect cause and continuous reconnect regressions (2026-10-28)
+
+The native Deauth event previously always used IEEE reason 3 and left its
+subtype byte zero, even after a validated AP frame carried another reason
+and subtype. ConnectionState now retains the first AP terminal reason, subtype
+and BSSID independently of cumulative diagnostics. Radio resetDisconnected keeps
+this nonsecret event metadata while wiping old keys/rings state; successful
+candidate selection clears it for the next association. A repeated terminal frame
+cannot replace the first cause. Native delivery uses the retained record only
+for the BSSID whose LinkUp was published; absent/mismatched AP metadata retains
+the existing local reason 3. Enqueue failure does not consume the record.
+
+Production receive/reset/notification tests inject AP deauthentication and
+disassociation with reason 15, a subsequent conflicting reason/subtype, complete
+radio cleanup and a failed first enqueue. They check the exact native event,
+BSSID and single terminal delivery. A separate selection assertion verifies
+that the next accepted candidate cannot inherit the old cause. This does not
+implement protected management frames or prove hardware disconnect handling.
+
+The normal development runner now includes the existing connection, reconnect,
+station/AP maintenance, channel switch, runtime power and WMI notification tests.
+The production extractor bounds DMA release before the separate control-drain
+method and excludes controller PM-drain from the single-thread runtime seam;
+actual controller/PM concurrency stays covered by test_power. The runtime seam
+uses production atomic admission/power actions and counts recovery scheduling,
+while test_wake_recovery separately executes the actual retained worker.
+
+
+Sequoia subtype ABI was checked against the matching local IO80211Family image,
+UUID 0D5AC570-04D4-38B6-8577-9F21350CDD50. The dispatch at
+0xffffff80021f4b10 reads payload byte 0x10: nonzero calls handleDeauth at
+0xffffff80021f4b9e; zero calls handleDisassoc at 0xffffff80021f52bc.
+The main handler reads the reason word at offset 8 (0xffffff80021f45b1).
+The imported header named byte 0x10 `disassociation`, reversing its meaning.
+It is now named `deauthentication`, with a fixed offset assertion; AP subtype
+0xc0 and local reason-3 fallback set it to 1, subtype 0xa0 sets it to 0.
+These are manually reconstructed observations of the Sequoia binary, not
+recovered Apple C source or a claim for other macOS adapters.

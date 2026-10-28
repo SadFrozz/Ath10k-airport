@@ -16,3 +16,9 @@ jobs:
         run: make NATIVE=1 kext -j2
       - name: Portable native protocol regressions
         run: python3 tests/run-development-tests.py
+      - name: Host regressions with address and undefined-behavior sanitizers
+        env:
+          # IOKit host models do not emulate framework lifetime reclamation.
+          # This disables leak accounting only, not invalid-access detection.
+          ASAN_OPTIONS: detect_leaks=0
+        run: python3 tests/run-development-tests.py --cxx 'clang++ -fsanitize=address,undefined -fno-omit-frame-pointer'

@@ -3,6 +3,11 @@ static bool OSCompareAndSwap(UInt32 old,UInt32 next,volatile UInt32 *address){
     if(*address!=old)return false;
     *address=next;return true;
 }
+static UInt32 OSAddAtomic(int amount,volatile UInt32 *address){return __sync_fetch_and_add(address,amount);}
+// Single-thread runtime seam; concurrency is exercised in test_power.
+using IOLock=int;
+static void IOLockLock(IOLock *){}
+static void IOLockUnlock(IOLock *){}
 class Ath10kPCIDevice;
 using OSObject=Ath10kPCIDevice;
 using IOService=Ath10kPCIDevice;

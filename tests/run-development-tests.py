@@ -40,10 +40,10 @@ def main():
     flags = ['-std=c++17', '-O2', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', '-Wno-nullability-completeness']
     with tempfile.TemporaryDirectory(prefix='ath10k-tests-') as tmp:
         include = Path(tmp)
-        (include / 'IOKit').mkdir()
-        (include / 'IOKit/IOTypes.h').write_text(
-            '#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;'
-            'using UInt32=uint32_t;using UInt64=uint64_t;\n')
+        (include/'IOKit').mkdir()
+        (include/'IOKit/IOLib.h').write_bytes((ROOT/'tests/mock_iolib.h').read_bytes())
+        (include/'IOKit/IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+        run('extract-production', [sys.executable, 'tests/extract-production.py', str(include/'driver_methods.inc')])
         power=(ROOT/'src/kext/Ath10kPower.cpp').read_text()
         (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
@@ -81,7 +81,7 @@ def main():
         (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        names=['restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['connection', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         if args.only:
             unknown = sorted(set(args.only) - set(names))
@@ -91,7 +91,7 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['power','native_termination','native_bridge','first_probe','wake_recovery'] else []) + ['-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
+            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['power','native_termination','native_bridge','first_probe','wake_recovery','connection','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
                 'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({

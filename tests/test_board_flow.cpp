@@ -194,6 +194,12 @@ public:
     void *_powerNotifier=nullptr;
     bool powerIOBlocked();
     bool powerRestartAllowed();
+    void beginPowerSuspend();void finishPowerSuspend();void blockPowerIOForTermination();
+    bool controllerPowerClosed();volatile UInt32 _controllerPowerClosed=0;
+    IOLock *_probePowerLock=nullptr;bool _deferredProbeStarted=true;
+    unsigned firstProbes=0,wakeRecoveries=0;
+    void queueDeferredProbe(){++firstProbes;}
+    void queueWakeRecovery(){++wakeRecoveries;}
     void requestPowerEvent(Ath10k::PowerEvent);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);

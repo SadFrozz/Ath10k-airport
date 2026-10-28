@@ -917,7 +917,9 @@ int main(){
     ConnectionDriver adjacent;adjacent._wmiBSS.entries[0].rxChannel=3;
     adjacent._wmiBSS.entries[0].advertisedChannel=1;
     auto &cs=adjacent._connection;
+    cs.apDisconnect.valid=true;cs.apDisconnect.reason=15;cs.apDisconnect.disassociation=true;
     assert(!Ath10k::selectOpenBSS(cs,adjacent._wmiBSS));
+    assert(!cs.apDisconnect.valid && !cs.apDisconnect.reason && !cs.apDisconnect.disassociation);
     assert(cs.operatingChannel==1 && cs.ap.rxChannel==3 && cs.ap.advertisedChannel==1);
     UInt8 wire[256];cs.stage=LinkStage::Start;
     assert(Ath10k::buildConnectionWMI(wire,sizeof(wire),2,cs)==120);
