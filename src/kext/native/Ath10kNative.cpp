@@ -216,6 +216,7 @@ void Ath10kNativeInterface::detachRegistrationLoan() {
     _registrationLoan=nullptr;
 }
 void Ath10kNativeInterface::stop(IOService *provider) {
+    if(controller)controller->nativeInterfaceWillStop(this);
     detachRegistrationLoan();
     IO80211InfraProtocol::stop(provider);
 }
@@ -294,6 +295,27 @@ IOReturn Ath10kPCIDevice::nativeStopAction(OSObject *owner,void *,void *,void *,
     if(self->_nativeMACWaiting){self->_nativeMACResult=kIOReturnAborted;self->_nativeGate->commandWakeup(&self->_nativeMACResult);}
     return kIOReturnSuccess;
 }
+IOReturn Ath10kPCIDevice::nativeInterfaceStopAction(OSObject *owner,void *interface,void *,void *,void *) {
+    auto self=OSDynamicCast(Ath10kPCIDevice,owner);
+    if(!self || !interface || self->_nativeInterface!=interface)return kIOReturnNotAttached;
+    // IOService can stop this leaf before it stops our controller. Exclude all
+    // protocol work before the base interface destroys its managers/context.
+    nativeStopAction(owner,nullptr,nullptr,nullptr,nullptr);
+    self->_nativeStarted=false;
+    self->endWMIRuntime("native-interface-stopped");
+    return kIOReturnSuccess;
+}
+void Ath10kPCIDevice::nativeInterfaceWillStop(Ath10kNativeInterface *interface) {
+    if(_nativeGate && _nativeGate->getWorkLoop())
+        _nativeGate->runAction(nativeInterfaceStopAction,interface);
+    else if(interface && _nativeInterface==interface){
+        // Interface construction follows gate installation; only a partial
+        // teardown can reach this fallback. Do not schedule or touch hardware.
+        _nativeStopping=true;_nativeStarted=false;discardNativeSecurity();
+    }
+    // Do not wait for the service thread here: IOService may hold the radio
+    // gate. Controller stop/free later drain it outside that gate.
+}
 void Ath10kPCIDevice::stopNativeRequests() {
     if(_nativeGate && _nativeGate->getWorkLoop())_nativeGate->runAction(nativeStopAction);
     else _nativeStopping=true;
@@ -313,9 +335,13 @@ void Ath10kPCIDevice::releaseNativeInterface() {
         OSSafeReleaseNULL(_networkInterface);
     }
     if(_nativeInterface){
-        if(_nativeStarted)_nativeInterface->stop(this);
+        // Normal IOService termination has already stopped and detached its
+        // leaf clients before this controller stops. The cached startup flags
+        // do not imply that our interface is still attached or needs stop().
+        const bool stillAttached=_nativeAttached && _nativeInterface->getProvider()==this;
+        if(_nativeStarted && stillAttached)_nativeInterface->stop(this);
         if(_nativeControllerAttached)IO80211Controller::detachInterface(_nativeInterface,true);
-        if(_nativeAttached)_nativeInterface->detach(this);
+        if(stillAttached)_nativeInterface->detach(this);
         OSSafeReleaseNULL(_nativeInterface);
     }
     _nativeStarted=_nativeAttached=_nativeControllerAttached=_nativeReadyPublished=false;

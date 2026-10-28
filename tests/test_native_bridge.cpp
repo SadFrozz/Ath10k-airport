@@ -2,12 +2,13 @@
 #include <cstdint>
 #include <vector>
 using UInt64=uint64_t;using IOReturn=int;using thread_call_param_t=void *;
-constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4,kIOReturnNoMemory=5;
+constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4,kIOReturnNoMemory=5,kIOReturnNotAttached=6;
 using AbsoluteTime=UInt64;constexpr unsigned kMillisecondScale=1;
 static void clock_interval_to_deadline(unsigned n,unsigned,AbsoluteTime *out){*out=n;}
 static unsigned delayed=0;
 static void thread_call_enter_delayed(void *,AbsoluteTime deadline){assert(deadline==10);++delayed;}
 struct OSObject {};
+struct Ath10kNativeInterface {};
 #define OSDynamicCast(type,obj) static_cast<type *>(obj)
 namespace Ath10k {inline UInt64 uptimeNS(){return 123000000u;}}
 static unsigned scheduled=0,rank=0,cancelled=0,freed=0;static std::vector<unsigned> order;
@@ -19,14 +20,19 @@ struct Gate {
  unsigned ownRank;OSObject *owner;bool busy=false;
  IOReturn attemptAction(Action action){return busy?kIOReturnCannotLock:runAction(action);}
  Gate *getWorkLoop(){return this;}void commandWakeup(void *){}
- IOReturn runAction(Action action){
+ IOReturn runAction(Action action,void *argument=nullptr){
   assert(ownRank>rank);unsigned previous=rank;rank=ownRank;order.push_back(rank);
-  auto result=action(owner,nullptr,nullptr,nullptr,nullptr);rank=previous;return result;
+  auto result=action(owner,argument,nullptr,nullptr,nullptr);rank=previous;return result;
  }
 };
 class Ath10kPCIDevice:public OSObject {
 public:
  bool blocked=false;bool powerIOBlocked(){return blocked;}
+ Ath10kNativeInterface interface;Ath10kNativeInterface *_nativeInterface=&interface;
+ unsigned runtimeStops=0;
+ void endWMIRuntime(const char *){assert(rank==2 && _nativeStopping && !_nativeStarted);++runtimeStops;_wmiLive.active=false;}
+ void nativeInterfaceWillStop(Ath10kNativeInterface *);
+ static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
  void discardNativeSecurity(){++securityDiscards;}unsigned securityDiscards=0;
  bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
  bool _nativeLinkUpSent=false,_nativeAbortRequested=false,failPost=false;
@@ -99,5 +105,23 @@ int main(){
  power._wmiLive.active=false;power.requestNativeService();power.nativeServiceThread(&power,nullptr);
  assert(power.services==1);
  assert(stopping.securityDiscards==2 && cancelledRetry.securityDiscards==1);
+
+ // Framework leaf stop retires protocol/radio under the radio gate, without
+ // waiting for a service callback which may need that same gate.
+ Ath10kPCIDevice leaf;leaf.requestNativeService();
+ unsigned cancelsBefore=cancelled,freesBefore=freed;
+ leaf.nativeInterfaceWillStop(&leaf.interface);
+ assert(leaf._nativeStopping && !leaf._nativeStarted && !leaf._wmiLive.active && leaf.runtimeStops==1);
+ assert(cancelled==cancelsBefore && freed==freesBefore && leaf._nativeServiceCall);
+ unsigned servicesBefore=leaf.services;leaf.nativeServiceThread(&leaf,nullptr);
+ assert(leaf.services==servicesBefore);
+ leaf.stopNativeRequests();assert(cancelled==cancelsBefore+1 && freed==freesBefore+1);
+ Ath10kPCIDevice wrong;Ath10kNativeInterface unrelated;
+ wrong.nativeInterfaceWillStop(&unrelated);
+ assert(!wrong._nativeStopping && wrong._nativeStarted && !wrong.runtimeStops && !wrong.securityDiscards);
+ assert(Ath10kPCIDevice::nativeInterfaceStopAction(nullptr,nullptr,nullptr,nullptr,nullptr)==kIOReturnNotAttached);
+ Ath10kPCIDevice partial;partial._nativeGate=nullptr;
+ partial.nativeInterfaceWillStop(&partial.interface);
+ assert(partial._nativeStopping && !partial._nativeStarted && partial.securityDiscards==1 && !partial.runtimeStops);
 
 }

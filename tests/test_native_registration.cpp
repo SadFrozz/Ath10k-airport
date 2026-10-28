@@ -44,8 +44,10 @@ public:
     virtual IOReturn deregisterLogicalLink(){++deregisters;freeNetwork();return deregisterResult;}
     virtual ~IO80211InfraProtocol(){assert(!network.fRegistrationInfo && !ethernet.fRegistrationInfo);}
 };
+struct Controller {unsigned interfaceStops=0;void nativeInterfaceWillStop(void *){++interfaceStops;}};
 class Ath10kNativeInterface:public IO80211InfraProtocol {
 public:
+    Controller *controller=nullptr;
     IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
     bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
     void detachRegistrationLoan();void stop(IOService *) override;void free() override;
@@ -58,7 +60,7 @@ int main(){
     uint32_t version=1,length=sizeof(registration);
     memcpy(registration.bytes,&version,4);memcpy(registration.bytes+4,&length,4);
     for(unsigned route=0;route<3;++route){
-        Ath10kNativeInterface d;assert(d.prepareRegistrationInfo(registration));
+        Ath10kNativeInterface d;Controller controller;d.controller=&controller;assert(d.prepareRegistrationInfo(registration));
         assert(d.copies==1 && d.network.fRegistrationInfo==d._registrationLoan);
         assert(reinterpret_cast<void *>(d.network.fRegistrationInfo)==d.ethernet.fRegistrationInfo);
         auto *reader=d.network.fRegistrationInfo;auto *owned=d.ethernet.fRegistrationInfo;
@@ -66,6 +68,7 @@ int main(){
         assert(!d.prepareRegistrationInfo(registration) && d.copies==1);
         if(route==0){
             d.stop(nullptr);d.stop(nullptr); // Checks our detach; mock base is intentionally repeatable.
+            assert(controller.interfaceStops==2);
             assert(!d.network.fRegistrationInfo && !d._registrationLoan && d.ethernet.fRegistrationInfo==owned);
             assert(!memcmp(reader,&registration,sizeof(*reader))); // Old reader storage remains live.
         }else if(route==1){

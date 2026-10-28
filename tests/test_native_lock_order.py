@@ -55,6 +55,21 @@ class NativeLockOrder(unittest.TestCase):
         header=(root/"vendor/itlwm/Airport/macOS15/IOSkywalkNetworkInterface.h").read_text()
         self.assertIn("uint8_t bytes[0x108]",header)
 
+    def test_framework_leaf_stop_retires_radio_before_inherited_cleanup(self):
+        root=Path(__file__).resolve().parents[1]
+        native=(root/"src/kext/native/Ath10kNative.cpp").read_text()
+        stop=native.split("void Ath10kNativeInterface::stop(",1)[1].split("void Ath10kNativeInterface::free()",1)[0]
+        self.assertLess(stop.index("nativeInterfaceWillStop(this)"),stop.index("detachRegistrationLoan()"))
+        self.assertLess(stop.index("nativeInterfaceWillStop(this)"),stop.index("IO80211InfraProtocol::stop"))
+        hook=native.split("void Ath10kPCIDevice::nativeInterfaceWillStop(",1)[1].split("void Ath10kPCIDevice::stopNativeRequests",1)[0]
+        self.assertNotIn("thread_call_cancel_wait(",hook)
+        setup=native.split("bool Ath10kPCIDevice::prepareNativeInterface()",1)[1].split("void Ath10kPCIDevice::discardNativeSecurity()",1)[0]
+        self.assertLess(setup.index("getWorkLoop()->addEventSource(_nativeGate)"),setup.index("_nativeInterface=new Ath10kNativeInterface"))
+        release=native.split("void Ath10kPCIDevice::releaseNativeInterface()",1)[1].split("IOReturn Ath10kPCIDevice::nativeRequest(",1)[0]
+        self.assertIn("_nativeInterface->getProvider()==this",release)
+        self.assertIn("if(_nativeStarted && stillAttached)",release)
+        self.assertIn("if(stillAttached)_nativeInterface->detach(this)",release)
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()
