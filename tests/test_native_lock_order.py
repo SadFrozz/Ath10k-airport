@@ -2,6 +2,23 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_initial_power_worker_has_no_eager_hardware_fallback(self):
+        source=(Path(__file__).resolve().parents[1]/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        start=source.split('bool Ath10kPCIDevice::start(IOService *provider)',1)[1].split('bool Ath10kPCIDevice::preparePoweredPCI()',1)[0]
+        self.assertLess(start.index('_power.deviceOn=false;_powerIOBlock=1'),start.index('PMinit()'))
+        self.assertLess(start.index('thread_call_allocate_with_options'),start.index('registerPowerDriver'))
+        self.assertIn('THREAD_CALL_OPTIONS_ONCE',start)
+        self.assertNotIn('runDeferredProbe()',start)
+        queue=source.split('void Ath10kPCIDevice::queueDeferredProbe()',1)[1].split('void Ath10kPCIDevice::deferredProbeCall(',1)[0]
+        self.assertIn('!_deferredProbeStopping',queue)
+        self.assertIn('!_deferredProbeStarted',queue)
+        tail=source.split('void Ath10kPCIDevice::deferredProbeCall(',1)[1].split('void Ath10kPCIDevice::runDeferredProbe()',1)[0]
+        self.assertLess(tail.index('_deferredProbePending = false'),tail.index('thread_call_enter'))
+        cancel=source.split('void Ath10kPCIDevice::cancelDeferredProbe()',1)[1].split('bool Ath10kPCIDevice::stopDMAForRelease()',1)[0]
+        self.assertNotIn('IOLockFree',cancel)
+        free=source.split('void Ath10kPCIDevice::free()',1)[1].split('bool Ath10kPCIDevice::prepareDeviceDMAMapper()',1)[0]
+        self.assertLess(free.index('super::free()'),free.index('IOLockFree(deferredProbeLock)'))
+
     def test_pci_matching_uses_cached_identity_and_actual_profile_is_rechecked(self):
         source=(Path(__file__).resolve().parents[1]/'src/kext/Ath10kPCIDevice.cpp').read_text()
         probe=source.split('IOService *Ath10kPCIDevice::probe(',1)[1].split('bool Ath10kPCIDevice::start(',1)[0]
@@ -67,13 +84,18 @@ class NativeLockOrder(unittest.TestCase):
     def test_sleep_interest_precedes_probe_and_barrier_excludes_pm_calls(self):
         root=Path(__file__).resolve().parents[1]
         driver=(root/"src/kext/Ath10kPCIDevice.cpp").read_text()
-        start=driver.split("bool Ath10kPCIDevice::start(IOService *provider)",1)[1].split("void Ath10kPCIDevice::deferredProbeCall",1)[0]
-        self.assertLess(start.index("preparePowerNotifications()"),start.index("thread_call_enter(_deferredProbeCall)"))
+        start=driver.split("bool Ath10kPCIDevice::start(IOService *provider)",1)[1].split("bool Ath10kPCIDevice::preparePoweredPCI()",1)[0]
+        self.assertLess(start.index("thread_call_allocate_with_options("),start.index("preparePowerNotifications()"))
+        self.assertLess(start.index("preparePowerNotifications()"),start.index("PMinit()"))
+        self.assertNotIn("configRead",start)
+        self.assertNotIn("mapBAR0()",start)
+        self.assertNotIn("runDeferredProbe()",start)
         probe=driver.split("void Ath10kPCIDevice::runDeferredProbe()",1)[1].split("void Ath10kPCIDevice::cancelDeferredProbe()",1)[0]
         self.assertLess(probe.index("IOLockLock(_probePowerLock)"),probe.index("powerIOBlocked()"))
         self.assertLess(probe.index("powerIOBlocked()"),probe.index("probeTarget()"))
         self.assertLess(probe.index("prepareNetwork()"),probe.rindex("IOLockUnlock(_probePowerLock)"))
-        self.assertLess(probe.rindex("IOLockUnlock(_probePowerLock)"),probe.index("PMinit()"))
+        self.assertNotIn("PMinit()",probe)
+        self.assertLess(probe.index("powerIOBlocked()"),probe.index("preparePoweredPCI()"))
         free=driver.split("void Ath10kPCIDevice::free()",1)[1].split("\nvoid ",1)[0]
         self.assertLess(free.index("super::free()"),free.index("IOLockFree(probePowerLock)"))
         arm=driver.split("IOReturn Ath10kPCIDevice::controlWMIRuntime(",1)[1].split("void Ath10kPCIDevice::",1)[0]

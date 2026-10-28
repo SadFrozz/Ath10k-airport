@@ -240,11 +240,14 @@ private:
 
     bool probeTarget();
     static void deferredProbeCall(thread_call_param_t, thread_call_param_t);
+    bool preparePoweredPCI();
+    void queueDeferredProbe();
     void runDeferredProbe();
     void cancelDeferredProbe();
     thread_call_t _deferredProbeCall=nullptr;
     IOLock *_deferredProbeLock=nullptr;
-    bool _deferredProbePending=false;
+    bool _deferredProbePending=false,_deferredProbeStarted=false,_deferredProbeStopping=false;
+    bool _pciConfigured=false;
     bool wakeTarget(bool &assertedWake);
     void releaseTargetWake(bool assertedWake);
     bool coldResetTarget();

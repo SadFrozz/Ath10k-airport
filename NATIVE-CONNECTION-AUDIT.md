@@ -344,3 +344,13 @@ setPowerState call when the table lacks kIOPMInitialDeviceState; this is not a
 guarantee on allocation failure. Parent current-state polling is invalid during
 child power-up. Early PM registration, first-probe admission/tail races and the
 internal native recovery worker remain pending (INITIAL-POWER-CONTRACT.md).
+
+### Early PM and admitted hardware start (2026-10-28)
+
+Controller PM setup moved before the driver's real PCI configuration/BAR/firmware
+work. Unknown/off admission blocks the first producer until On; pre-hardware
+sleep/cancellation can resume a first probe without reusing old state. The queue
+tail preserves On after an aborted attempt, and cancellation keeps scheduler
+storage alive until final PM-closed free. Command restore is ownership-guarded.
+Production host entry/PCI/queue/power methods and targeted race tests pass; kernel
+delivery and automatic recovery/rematch after initialized sleep remain pending.

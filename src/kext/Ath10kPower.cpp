@@ -110,6 +110,7 @@ void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
     auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
     if(loop)loop->runAction(controlPowerState,this,
         reinterpret_cast<void *>(static_cast<uintptr_t>(event)));
+    if(!_deferredProbeStarted && !powerIOBlocked())queueDeferredProbe();
     if(_probePowerLock)IOLockUnlock(_probePowerLock);
 }
 IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void *,void *,void *)
@@ -127,6 +128,15 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
     if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff)
         self->finishPowerSuspend();
     const bool suspended=p.rootSleeping || !p.deviceOn;
+    if(!self->_deferredProbeStarted){
+        // No configuration, BAR or DMA work has begun. This is first-power
+        // admission, not recovery of an old firmware/ring/security instance.
+        self->_systemSuspended=suspended;
+        if(!suspended)OSCompareAndSwap(1,0,&self->_powerIOBlock);
+        p.status=suspended?"awaiting-initial-power":
+            (self->powerIOBlocked()?"initial-suspend-pending":"initial-power-ready");
+        self->publishPowerState();return kIOReturnSuccess;
+    }
     if(suspended){
         const bool firstSuspend=!self->_systemSuspended;
         if(firstSuspend)++p.sleeps;

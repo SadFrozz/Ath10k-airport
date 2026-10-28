@@ -1,7 +1,7 @@
 # Initial power and recovery contract
 
-Status: investigation plus cached-identity matching implemented, 2026-10-28.
-Automatic wake recovery and early powered initialization are not implemented.
+Status: cached matching and early powered-initialization candidate implemented,
+2026-10-28. Automatic wake recovery and kernel/hardware validation remain pending.
 The separately staged e105f82 boot candidate remains frozen pending permission.
 
 ## Evidence from the matching kernel
@@ -44,12 +44,12 @@ no configuration, MMIO or open API. They cover retained property ownership,
 number/data encoding, missing/wrong types, malformed lengths, null data, overflow,
 wrong vendor/device/subsystem, unsupported ABI and probe-only diagnostics.
 
-## Required startup integration, still pending
+## Startup integration and remaining recovery work
 
 1. Allocate all producer/cancellation state before joining the power plane.
 2. Establish controller PM before BAR/register access and firmware/DMA work.
-   Current `start` still enables/maps PCI first and registers PM after firmware;
-   cached matching alone does not repair this gap.
+   The candidate now moves real identity/configuration, bus mastering, BAR mapping
+   and target initialization into a producer admitted by the actual On callback.
 3. Start with power permission unknown. An actual admitted On callback can queue
    the first producer once; root/device Off must block it before MMIO starts.
 4. Distinguish power loss before any hardware work from power loss after a probe
@@ -67,7 +67,44 @@ wrong vendor/device/subsystem, unsupported ABI and probe-only diagnostics.
 8. Only verified DMA release permits PCI rematch. A fresh instance must obey its
    parent's power domain even if it missed an earlier root sleep notification.
 
-The first remaining implementation is early PM/first-probe admission, followed
-by guarded recovery/rematch. Kernel callback delivery, initial-off matching,
+Items 1–6 are implemented as an offline candidate and tested with production
+entry, PCI preparation, scheduler/cancellation and power methods. Items 7–8 still
+need the internal recovery worker and hardware verification. The first remaining
+implementation is guarded recovery/rematch. Kernel callback delivery, initial-off matching,
 sleep cancellation, repeated sleep/wake and traffic restoration require hardware
 validation. macOS 11–26 support is not established by this Sequoia investigation.
+
+## Implemented first-probe sequence
+
+Start opens the IOKit provider, initializes permission as unknown/off, allocates
+the producer mutex/call and root interest, then registers the controller's PM
+table and joins its parent's power tree. It performs no direct configuration
+reads, bus-master enable or BAR access there. Allocation/registration/power-request
+failure stops setup; there is no unadmitted synchronous initialization fallback.
+The framework's IOPCIDevice open/PM machinery remains responsible for its own
+provider operations; this claim concerns the driver's configuration/MMIO work.
+
+An On/root-state action can restore exact blocked phase 1 to active phase 0 only
+before the first powered hardware attempt, when root/device state permit it. A
+pending suspend changes the atomic word and prevents that CAS; permanent stop
+phase 3 also cannot be cleared. After a hardware attempt starts, the previous
+full-restart requirement stays in force and old DMA/keys are never resumed.
+
+The ONCE producer has separate pending/started/stopping state. Entry takes the
+initialization mutex, verifies permission, and latches started before real PCI
+configuration. Its tail checks permission again after an aborted run so an On
+which arrived before pending clears is resubmitted rather than lost. Cancellation
+closes scheduling and drains pending execution with public APIs. The scheduler
+mutex survives until final controller free after PM closure, preventing late
+callbacks from reaching a freed scheduling lock. PCI command restoration is
+guarded by actual command ownership, avoiding a write of an unread default value
+when setup stops before power admission.
+
+Host tests execute the production entry guard and powered PCI preparation with
+hardware-access traps while blocked, plus the actual queue/cancel/tail methods.
+They cover coalescing, aborted-run/On tail ordering, dispatch-before-entry cancel,
+wrong powered profile, failed BAR mapping and retained scheduler-lock lifetime.
+Production power tests cover initial Off/On, root sleep/cancel before hardware,
+pending suspend intent and permanent stop. These are models of kernel primitives,
+not executed kernel initial-power transitions. The frozen e105f82 candidate
+awaiting permission has not been replaced by this new build.

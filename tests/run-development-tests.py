@@ -62,6 +62,12 @@ def main():
         prefix=native[native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('):native.index('    auto &s=_connection;using N=AthNativeOp;')]
         (include/'native_request_admission.inc').write_text(request+prefix+'    (void)op;(void)data;++accepted;return kIOReturnSuccess;\n}\n')
 
+        entry=driver[driver.index('void Ath10kPCIDevice::runDeferredProbe()'):driver.index('    ATH10K_TRACE("Ath10kMac: deferred target probe begin') ]
+        (include/'first_probe_run.inc').write_text(entry+'    ++starts;IOLockUnlock(_probePowerLock);\n}\n')
+        (include/'first_probe_pci.inc').write_text(driver[driver.index('bool Ath10kPCIDevice::preparePoweredPCI()'):driver.index('void Ath10kPCIDevice::queueDeferredProbe()')])
+        (include/'first_probe_scheduler.inc').write_text(driver[driver.index('void Ath10kPCIDevice::queueDeferredProbe()'):driver.index('void Ath10kPCIDevice::deferredProbeCall(')])
+        (include/'first_probe_callback.inc').write_text(driver[driver.index('void Ath10kPCIDevice::deferredProbeCall('):driver.index('void Ath10kPCIDevice::runDeferredProbe()')])
+        (include/'first_probe_cancel.inc').write_text(driver[driver.index('void Ath10kPCIDevice::cancelDeferredProbe()'):driver.index('bool Ath10kPCIDevice::stopDMAForRelease()')])
         (include/'pci_match_method.inc').write_text(driver[driver.index('static bool ath10kRegistryPCIID('):driver.index('bool Ath10kPCIDevice::start(')])
         (include/'control_drain_method.inc').write_text(driver[driver.index('void Ath10kPCIDevice::drainControlWorkers()'):driver.index('void Ath10kPCIDevice::stop(IOService *provider)')])
         protocol=native[native.index('IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const'):native.index('IOReturn Ath10kNativeInterface::perform')]
@@ -72,7 +78,7 @@ def main():
         (include/'native_bridge_methods.inc').write_text(native[native.index('void Ath10kPCIDevice::requestNativeService()'):native.index('void Ath10kPCIDevice::serviceNative(UInt64 now)')])
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        names=['pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_mac', 'native_scan', 'rsn_policy' , 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.append('sha256_supplicant')
         if args.only:
             unknown = sorted(set(args.only) - set(names))
@@ -82,7 +88,7 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['power','native_termination','native_bridge'] else []) + ['-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
+            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['power','native_termination','native_bridge','first_probe'] else []) + ['-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
                 'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({

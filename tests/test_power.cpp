@@ -40,6 +40,8 @@ class Ath10kPCIDevice{
 public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
  IOLock probeLock;IOLock *_probePowerLock=&probeLock;
+ bool _deferredProbeStarted=true;unsigned probesQueued=0;
+ void queueDeferredProbe(){assert(!powerIOBlocked() && !_deferredProbeStarted);++probesQueued;}
  bool resourcesLive=true;
  Gate *getWorkLoop(){assert(resourcesLive);return &loop;}
  Ath10k::PowerState _power{};volatile UInt32 _powerIOBlock=0;
@@ -217,5 +219,27 @@ int main(){
  noProducer.drainControllerPowerCalls();assert(noProducer.controllerPowerClosed() && noProducer.resets==1);
  Ath10kPCIDevice sleeping;sleeping.requestPowerEvent(PowerEvent::SystemSleep);sleeping.pciPowered=false;
  sleeping.drainControllerPowerCalls();assert(sleeping.controllerPowerClosed() && sleeping.resets==1 && sleeping.dmaChecks==1);
+
+ // A fresh PM-managed instance has not touched hardware and starts unknown/off.
+ // Initial Off, then On may admit its first producer without full rematch.
+ Ath10kPCIDevice fresh;fresh._deferredProbeStarted=false;fresh._wmiLive.active=false;
+ fresh._power.deviceOn=false;fresh._powerIOBlock=1;fresh.pciPowered=false;
+ fresh.requestPowerEvent(PowerEvent::DeviceOff);
+ assert(!fresh.resets && !fresh.dmaChecks && !fresh.probesQueued && !fresh._power.needsRestart);
+ fresh.pciPowered=true;fresh.requestPowerEvent(PowerEvent::DeviceOn);
+ assert(!fresh.powerIOBlocked() && fresh.probesQueued==1 && !fresh._power.needsRestart);
+ fresh.requestPowerEvent(PowerEvent::SystemSleep);
+ assert(fresh.powerIOBlocked() && !fresh.dmaChecks && !fresh._power.needsRestart);
+ fresh.requestPowerEvent(PowerEvent::DeviceOn);assert(fresh.probesQueued==1);
+ fresh.requestPowerEvent(PowerEvent::SleepCancelled);
+ assert(!fresh.powerIOBlocked() && fresh.probesQueued==2);
+ // A queued new sleep still wins over an initial On. The exact-1 CAS must
+ // never erase another callback's pending intent, even before the first probe.
+ Ath10kPCIDevice initialPending;initialPending._deferredProbeStarted=false;initialPending._wmiLive.active=false;
+ initialPending._power.deviceOn=false;initialPending._powerIOBlock=5;
+ initialPending.requestPowerEvent(PowerEvent::DeviceOn);
+ assert(initialPending.powerIOBlocked() && initialPending.probesQueued==0);
+ initialPending.blockPowerIOForTermination();initialPending.requestPowerEvent(PowerEvent::SystemWake);
+ assert(initialPending.powerIOBlocked() && initialPending.probesQueued==0);
  registrationFail=true;Ath10kPCIDevice alloc;assert(!alloc.preparePowerNotifications() && !alloc._powerNotifier);
 }

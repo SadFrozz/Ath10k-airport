@@ -204,58 +204,53 @@ bool Ath10kPCIDevice::start(IOService *provider)
         return false;
     }
 
-    if (!identifyDevice()) {
-        ATH10K_TRACE("Ath10kMac: unsupported device after start\n");
-        _pci->close(this);
-        _pci = nullptr;
-        return false;
-    }
-
-    _originalCommand = _pci->configRead16(kIOPCIConfigCommand);
-    _pci->setMemoryEnable(true);
-    _pci->setBusMasterEnable(true);
-
-    dumpPCIConfig();
-    dumpPCICapabilities();
-
-    if (!mapBAR0()) {
-        IOLog("Ath10kMac: BAR0 mapping failed\n");
-        _pci->configWrite16(kIOPCIConfigCommand, _originalCommand);
-        _pci->close(this);
-        _pci = nullptr;
-        return false;
-    }
-
-    _regs.attach(_bar0, _bar0Map->getLength());
-    validateRegisterLayer();
-    dumpHardwareCandidates();
-
-    // Register sleep interest before the first firmware/DMA producer starts.
-    // Keep PM registration outside this lock: PM may call setPowerState().
+    // A rematch can occur while the parent is off. Allocate all schedulers
+    // before PM registration and wait for an actual On callback before PCI I/O.
+    _power.deviceOn=false;_powerIOBlock=1;
     _probePowerLock=IOLockAlloc();
-    if (!_probePowerLock || !getWorkLoop() || !preparePowerNotifications()) {
-        stop(provider);
-        return false;
+    _deferredProbeLock=IOLockAlloc();
+    if(_deferredProbeLock)_deferredProbeCall=thread_call_allocate_with_options(
+        deferredProbeCall,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
+    if(!_probePowerLock || !_deferredProbeLock || !_deferredProbeCall ||
+       !getWorkLoop() || !preparePowerNotifications()){
+        stop(provider);return false;
     }
-
-    // Publish the service before the lengthy target/firmware probe. The probe
-    // runs on a thread call so IOConfigThread can return and
-    // macOS can finish booting while Wi-Fi initialization continues.
-    ath10kSetRecoveryStatus(_pci, "probe-queued", "PCI setup complete; firmware probe is queued");
+    ath10kSetRecoveryStatus(_pci,"awaiting-initial-power","Waiting for the parent's initial power transition");
     registerService();
-    _deferredProbeLock = IOLockAlloc();
-    if (_deferredProbeLock)
-        _deferredProbeCall = thread_call_allocate(deferredProbeCall, this);
-    if (_deferredProbeCall) {
-        _deferredProbePending = true;
-        thread_call_enter(_deferredProbeCall);
-        ATH10K_TRACE("Ath10kMac: deferred target probe queued; network becomes available after initialization\n");
-        return true;
-    }
-
-    IOLog("Ath10kMac: deferred probe worker unavailable; falling back to synchronous initialization\n");
-    runDeferredProbe();
+    PMinit();_powerManaged=true;
+    static IOPMPowerState states[2]={
+        {1,0,0,0,0,0,0,0,0,0,0,0},
+        {1,kIOPMDeviceUsable,0,kIOPMPowerOn,0,0,0,0,0,0,0,0}
+    };
+    // Do not set kIOPMInitialDeviceState: the initial callback is our permission.
+    if(registerPowerDriver(this,states,2)!=kIOReturnSuccess){stop(provider);return false;}
+    _pci->joinPMtree(this);
+    if(changePowerStateTo(1)!=kIOReturnSuccess){stop(provider);return false;}
     return true;
+}
+
+bool Ath10kPCIDevice::preparePoweredPCI()
+{
+    if(!identifyDevice())return false;
+    _originalCommand=_pci->configRead16(kIOPCIConfigCommand);_pciConfigured=true;
+    _pci->setMemoryEnable(true);_pci->setBusMasterEnable(true);
+    dumpPCIConfig();dumpPCICapabilities();
+    if(!mapBAR0())return false;
+    _regs.attach(_bar0,_bar0Map->getLength());
+    validateRegisterLayer();dumpHardwareCandidates();
+    return true;
+}
+void Ath10kPCIDevice::queueDeferredProbe()
+{
+    // Callers own the initialization barrier. Cancellation never takes that
+    // barrier while holding this short scheduler lock.
+    if(!_deferredProbeLock || powerIOBlocked())return;
+    IOLockLock(_deferredProbeLock);
+    if(!_deferredProbeStopping && !_deferredProbeStarted && !_deferredProbePending &&
+       _deferredProbeCall && !powerIOBlocked()){
+        _deferredProbePending=true;thread_call_enter(_deferredProbeCall);
+    }
+    IOLockUnlock(_deferredProbeLock);
 }
 
 void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_param_t)
@@ -265,6 +260,11 @@ void Ath10kPCIDevice::deferredProbeCall(thread_call_param_t param0, thread_call_
         self->runDeferredProbe();
         IOLockLock(self->_deferredProbeLock);
         self->_deferredProbePending = false;
+        // On can arrive after an aborted probe releases the producer barrier
+        // but before this tail publishes completion. Do not lose that wake.
+        if(!self->_deferredProbeStopping && !self->_deferredProbeStarted && !self->powerIOBlocked()){
+            self->_deferredProbePending=true;thread_call_enter(self->_deferredProbeCall);
+        }
         IOLockWakeup(self->_deferredProbeLock, &self->_deferredProbePending, false);
         IOLockUnlock(self->_deferredProbeLock);
     }
@@ -275,10 +275,15 @@ void Ath10kPCIDevice::runDeferredProbe()
     // A priority sleep callback blocks new I/O before waiting here. If sleep
     // won the race, do not start firmware or expose a newly initialized port.
     IOLockLock(_probePowerLock);
-    if (powerIOBlocked()) {
+    if (powerIOBlocked() || _deferredProbeStarted) {
         IOLockUnlock(_probePowerLock);
         ath10kSetRecoveryStatus(_pci, "probe-power-blocked", "Initialization deferred until a clean power recovery");
         return;
+    }
+    IOLockLock(_deferredProbeLock);_deferredProbeStarted=true;IOLockUnlock(_deferredProbeLock);
+    if(!preparePoweredPCI()){
+        ath10kSetRecoveryStatus(_pci,"powered-pci-failed","Powered PCI identity/configuration/BAR preparation failed");
+        IOLockUnlock(_probePowerLock);return;
     }
     ATH10K_TRACE("Ath10kMac: deferred target probe begin\n");
     ath10kSetRecoveryStatus(_pci, "probe-running", "Firmware and runtime initialization are in progress");
@@ -311,23 +316,9 @@ void Ath10kPCIDevice::runDeferredProbe()
     // No worker runs until probeTarget has transferred its wake/DMA ownership.
     publishDiagnosticProperties();
     IOLockUnlock(_probePowerLock);
-    // PM registration can enable concurrent callbacks. They must be able to take
-    // the initialization barrier and the radio gate in that order.
-    if (_wmiLive.active && _wmiWorkLoop) {
-        PMinit();
-        _powerManaged = true;
-        static IOPMPowerState states[2] = {
-            {1,0,0,0,0,0,0,0,0,0,0,0},
-            {1,kIOPMDeviceUsable,0,kIOPMPowerOn,0,0,0,0,0,0,0,0}
-        };
-        if (registerPowerDriver(this, states, 2) != kIOReturnSuccess) {
-            _wmiWorkLoop->runAction(controlWMIRuntime, this, const_cast<char *>("power-registration-failed"));
-        } else {
-            _pci->joinPMtree(this);
-            changePowerStateTo(1);
-            _wmiWorkLoop->runAction(controlWMIRuntime, this);
-        }
-    }
+    // The parent already admitted On. Runtime arming still checks the atomic
+    // block if a new root/device Off arrived while firmware was initializing.
+    if(_wmiLive.active && _wmiWorkLoop)_wmiWorkLoop->runAction(controlWMIRuntime,this);
     if (_wmiLive.active && !_dmaQuarantine) {
         ath10kSetRecoveryStatus(_pci, "ready", "Firmware runtime is active; waiting for app scan/connect");
     } else {
@@ -351,23 +342,15 @@ void Ath10kPCIDevice::runDeferredProbe()
 
 void Ath10kPCIDevice::cancelDeferredProbe()
 {
-    if (_deferredProbeCall) {
-        // Only public kernel exports: cancel_wait/allocate_with_priority are
-        // declared in MacKernelSDK but unavailable to third-party kexts here.
-        IOLockLock(_deferredProbeLock);
-        if (thread_call_cancel(_deferredProbeCall))
-            _deferredProbePending = false;
-        while (_deferredProbePending)
-            IOLockSleep(_deferredProbeLock, &_deferredProbePending, THREAD_UNINT);
-        IOLockUnlock(_deferredProbeLock);
-        if (!thread_call_free(_deferredProbeCall))
-            ATH10K_TRACE("Ath10kMac: deferred probe worker could not be released\n");
-        _deferredProbeCall = nullptr;
-    }
-    if (_deferredProbeLock) {
-        IOLockFree(_deferredProbeLock);
-        _deferredProbeLock = nullptr;
-    }
+    if(!_deferredProbeLock)return;
+    IOLockLock(_deferredProbeLock);_deferredProbeStopping=true;
+    if(_deferredProbeCall && thread_call_cancel(_deferredProbeCall))_deferredProbePending=false;
+    while(_deferredProbePending)IOLockSleep(_deferredProbeLock,&_deferredProbePending,THREAD_UNINT);
+    auto call=_deferredProbeCall;_deferredProbeCall=nullptr;
+    IOLockUnlock(_deferredProbeLock);
+    if(call)thread_call_free(call);
+    // PM callbacks can still reach the scheduler until terminal power closure.
+    // Keep its lock until final controller free, not just thread-call drain.
 }
 
 bool Ath10kPCIDevice::stopDMAForRelease()
@@ -458,10 +441,11 @@ void Ath10kPCIDevice::stop(IOService *provider)
     unmapBAR0();
 
     if (_pci) {
-        if (!_dmaQuarantine)
-            _pci->configWrite16(kIOPCIConfigCommand, _originalCommand);
-        else
-            _pci->setBusMasterEnable(false);
+        if(_pciConfigured){
+            if(!_dmaQuarantine)_pci->configWrite16(kIOPCIConfigCommand,_originalCommand);
+            else _pci->setBusMasterEnable(false);
+            _pciConfigured=false;
+        }
         if (_pci->isOpen(this))
             _pci->close(this);
         _pci = nullptr;
@@ -530,6 +514,8 @@ void Ath10kPCIDevice::free()
 #endif
     // Keep both queues alive through the base controller's timer/gate cleanup.
     // super::free() can destroy this object: use only saved local pointers after it.
+    IOLock *deferredProbeLock=_deferredProbeLock;
+    _deferredProbeLock=nullptr;
     IOLock *probePowerLock=_probePowerLock;
     _probePowerLock=nullptr;
     IOWorkLoop *networkLoop=_networkWorkLoop;
@@ -544,6 +530,7 @@ void Ath10kPCIDevice::free()
 #endif
     if(networkLoop)networkLoop->release();
     if(probePowerLock)IOLockFree(probePowerLock);
+    if(deferredProbeLock)IOLockFree(deferredProbeLock);
 }
 
 bool Ath10kPCIDevice::prepareDeviceDMAMapper()

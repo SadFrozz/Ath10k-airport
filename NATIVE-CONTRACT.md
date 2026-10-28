@@ -77,7 +77,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | P1 | Autojoin | About 32 seconds after login on previous boot | Trace and reduce avoidable retries without router changes |
 | P1 | Visibility | Beacon metadata adjusted; saved profile still has Hidden=true | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
-| P1 | Power and lifecycle | Candidate startup/stop barriers, power-blocked native admission and immediate security cleanup; automatic wake recovery missing | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
+| P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences and security cleanup are candidates; automatic wake recovery missing | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
 | P2 | Queries and capabilities | 190 inline callbacks: 29 forward, 161 reject | Classify every rejection by actual system caller; implement mandatory contracts |
 | P2 | IPv6/multicast and statistics | Partial implementation | Multicast filter and counters reflect delivered traffic; no fabricated metrics |
 | P2 | WPA3/PMF | SAE and mandatory PMF/BIP not implemented | Implement and test complete authentication/protection, not an AKM label change |
@@ -456,3 +456,29 @@ records the matching XNU initial-callback conditions and the remaining early-PM/
 producer-tail integration. Automatic wake recovery remains incomplete; this
 matching change alone does not make a rematch while powered off safe end to end.
 The e105f82 candidate awaiting explicit boot authorization is unchanged.
+
+## Early PM and first powered producer (current)
+
+Superseding the late-registration gap above: controller PM is now registered
+before direct configuration/MMIO/firmware work. Start initializes unknown/off
+permission and allocates all probe scheduling state before joining the parent.
+Only an admitted On can queue the initial producer; real identity, PCI command
+ownership, bus-master enable and BAR mapping occur behind its power/barrier check.
+The initial-device-state skip flag is absent and failed allocation/registration/
+power request has no unguarded synchronous probe fallback.
+
+Before the first hardware attempt, initial Off/root sleep does not create stale
+firmware state requiring rematch. Root/device readiness can clear only exact
+phase 1, not another callback's queued suspend or permanent termination. Once
+started is latched, the previous restart requirement remains unchanged. An On
+arriving between aborted producer exit and completion publication is preserved
+by ONCE rescheduling in the tail. Cancellation retains its scheduler lock until
+final free, after power closure, and restores PCI commands only when owned.
+
+Production-method host tests cover entry/configuration traps, queue/tail/cancel
+races and initial power actions. INITIAL-POWER-CONTRACT.md records the source
+evidence and implementation. Automatic native recovery after an initialized
+sleep remains unimplemented; kernel delivery and physical startup remain untested.
+The separate e105f82 candidate awaiting install/reboot authorization is unchanged.
+
+Initial-power candidate validation: full portable and ASan/UBSan suites, native and non-native builds/import checks, plus exact-UUID native auxiliary binding passed (`9C3C9AAF-8F26-3259-B2D7-534CE243EC40`). Kernel initial callback delivery, traffic and sleep/wake recovery are not established by these checks.
