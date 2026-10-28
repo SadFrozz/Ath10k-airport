@@ -7,6 +7,7 @@ class Ath10kNativeInterface : public IO80211InfraProtocol {
 public:
     Ath10kPCIDevice *controller=nullptr;
     ifnet_t _nativeBSDReference=nullptr;
+    IOService *_nativeBSDOwner=nullptr;
     bool initWithController(Ath10kPCIDevice *);
     IOReturn prepareBSDInterface(ifnet_t,unsigned int) override;
     bool prepareTerminationNotification();

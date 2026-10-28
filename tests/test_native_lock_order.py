@@ -8,6 +8,9 @@ class NativeLockOrder(unittest.TestCase):
         self.assertLess(prepare.index('ifnet_reference(interface)'),prepare.index('IO80211InfraProtocol::prepareBSDInterface'))
         free=native.split('void Ath10kNativeInterface::free()',1)[1].split('IOReturn Ath10kNativeInterface::deregisterLogicalLink()',1)[0]
         self.assertLess(free.index('IO80211InfraProtocol::free()'),free.index('ifnet_release(interface)'))
+        self.assertLess(free.index('ifnet_release(interface)'),free.index('owner->release()'))
+        self.assertLess(prepare.index('owner->retain()'),prepare.index('ifnet_reference(interface)'))
+        self.assertIn('owner->getIfnet()!=interface',prepare)
         self.assertNotIn('ifnet_release',free.split('IO80211InfraProtocol::free()',1)[0])
 
     def test_stop_and_partial_free_drain_all_control_work_before_radio_release(self):

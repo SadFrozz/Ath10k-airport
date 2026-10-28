@@ -170,6 +170,32 @@ This prevents reclamation of the borrowed ifnet storage; it does not preserve
 attachment, make arbitrary operations on a detached interface valid, synchronize
 power callbacks, or finish the pending finalize/PM ordering repair.
 
+## BSD callback context lifetime candidate
+
+Matching `IONetworkInterface::if_detach` (`0xffffff800262f540`) obtains its owner
+through `ifnet_softc`, retains it for that callback, updates detach state and
+releases it. `if_input_ctl` (`0xffffff8002631a0e`) also calls `ifnet_softc` then
+loads the owner's controller and expansion state. Retaining ifnet storage alone
+does not independently retain that object for later native access.
+
+Native prepare now verifies the supplied ifnet is the controller's actual legacy
+interface, retains that BSD object before acquiring the ifnet reference, and
+balances the object retain on failed reference acquisition. Both references
+survive inherited prepare failure and are released after native parent free,
+with ifnet first and its callback owner last. The owner still has its own ifnet
+reference until its final free. Production-method tests drop the framework's BSD
+object ownership first, verify both the resource and softc context remain live,
+then check complete balanced cleanup, including failed reference acquisition and
+foreign/missing owner rejection. This adds no new native self-reference; the
+controller release path still drops its BSD and native ownership in that order.
+
+This retains allocated context; it does not preserve network attachment or
+permit callbacks to use controller state already retired by stop. In particular,
+retaining a controller object for deferred native stop would not prevent its
+normal stop from removing gates and WMI resources. Actual PM callback completion
+must coordinate that resource teardown too; a deferred native stop alone is
+insufficient. Current candidate remains **not ready for installation**.
+
 ## Delivery gates
 
 Run relevant production-method/packet tests, sanitizers, native build/import and

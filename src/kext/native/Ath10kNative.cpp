@@ -201,9 +201,14 @@ IOReturn Ath10kNativeInterface::prepareBSDInterface(ifnet_t interface,unsigned i
     // Stock Skywalk stores this borrowed pointer without taking a reference.
     // Legacy BSD detach/free can precede the native object's final cleanup.
     // Keep the resource through parent free, including failed preparation.
-    if(_nativeBSDReference)return kIOReturnBusy;
-    if(ifnet_reference(interface)!=0)return kIOReturnError;
-    _nativeBSDReference=interface;
+    if(_nativeBSDReference || _nativeBSDOwner)return kIOReturnBusy;
+    // ifnet's softc callbacks dereference the legacy IONetworkInterface too.
+    // An ifnet reference alone does not retain that callback context.
+    auto owner=controller?controller->_networkInterface:nullptr;
+    if(!owner || owner->getIfnet()!=interface)return kIOReturnNotAttached;
+    owner->retain();
+    if(ifnet_reference(interface)!=0){owner->release();return kIOReturnError;}
+    _nativeBSDOwner=owner;_nativeBSDReference=interface;
     return IO80211InfraProtocol::prepareBSDInterface(interface,options);
 }
 bool Ath10kNativeInterface::prepareTerminationNotification() {
@@ -266,10 +271,12 @@ void Ath10kNativeInterface::free() {
     releaseTerminationNotification();
     detachRegistrationLoan();
     auto interface=_nativeBSDReference;_nativeBSDReference=nullptr;
+    auto owner=_nativeBSDOwner;_nativeBSDOwner=nullptr;
     IO80211InfraProtocol::free();
     // Parent free can read the borrowed pointer. Release only after it returns;
     // never dereference this after the parent has destroyed its storage.
     if(interface)ifnet_release(interface);
+    if(owner)owner->release();
 }
 IOReturn Ath10kNativeInterface::deregisterLogicalLink() {
     detachRegistrationLoan();

@@ -300,3 +300,13 @@ it through inherited native free, including failed preparation. Model tests
 cover legacy release first, parent free ordering, failed acquisition, duplicate
 bind and partial initialization. This protects resource storage only; actual
 PM completion and properly ordered finalize remain required before installation.
+
+### BSD softc context ownership (2026-10-28)
+
+ifnet callbacks resolve the legacy object through ifnet_softc. Native prepare
+now retains that exact controller-owned BSD object as well as the ifnet, and
+releases them after inherited native free. Failed reference acquisition balances
+the object retain; foreign/null owners are rejected. This protects allocation
+lifetime, not attachment or already retired controller resources. A future PM
+completion guard must coordinate controller gate/WMI cleanup as well as native
+managers; deferring only native parent stop is insufficient.
