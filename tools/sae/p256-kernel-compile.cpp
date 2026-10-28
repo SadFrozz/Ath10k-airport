@@ -32,7 +32,17 @@ extern "C" __attribute__((used,noinline)) bool ath10k_pmf_pairwise_epoch_compile
     if(operation==0)return owner->activate(key,local,ap,connection);
     if(operation==1)return owner->snapshot(*snapshot);
     if(operation==2){owner->clear();return true;}
+    if(operation==3)return owner->reserveTX(*snapshot,pn);
+    if(operation==4)return owner->current(*snapshot);
     return owner->commit(*snapshot,pn,*verified);
+}
+extern "C" __attribute__((used,noinline)) bool ath10k_pmf_bip_compile_check(
+    CompileOnlyPMFAES::Block encrypt,const uint8_t *frame,size_t bytes,const uint8_t *ap,
+    const AthSecurity::IGTKCMAC128 *key,uint64_t floor,uint64_t *accepted)
+{
+    if(!key || !accepted)return false;CompileOnlyPMFAES::block=encrypt;
+    const bool result=AthSecurity::verifyBIPManagement<CompileOnlyPMFAES>(frame,bytes,ap,*key,floor,*accepted);
+    CompileOnlyPMFAES::block=nullptr;return result;
 }
 extern "C" __attribute__((used,noinline)) bool ath10k_saquery_trigger_compile_check(
     const uint8_t *frame,size_t bytes,bool pmf,bool authorized,const uint8_t *local,const uint8_t *ap)

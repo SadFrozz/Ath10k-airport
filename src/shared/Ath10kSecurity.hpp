@@ -5,6 +5,15 @@
 namespace AthSecurity {
 inline void wipe(void *p,size_t n){volatile uint8_t *b=(volatile uint8_t *)p;while(n--)*b++=0;}
 inline bool equal(const uint8_t *a,const uint8_t *b,size_t n){uint8_t d=0;for(size_t i=0;i<n;++i)d|=a[i]^b[i];return d==0;}
+// Nonrobust action categories from the 802.11 management classification.
+// Authentication does not imply that a particular action's body is supported.
+inline bool robustManagementActionCategory(uint8_t category){
+ switch(category){case 4:case 7:case 11:case 15:case 20:case 21:case 22:case 127:return false;default:return true;}
+}
+inline bool nextCCMPPacketNumber(uint64_t used,uint64_t &out){
+ if(used>=0xffffffffffffull)return false;
+ out=used+1;return true;
+}
 // Worker/gate-owned software IGTK state. Call activate only after authenticated
 // key delivery and required installation acknowledgement. Never access concurrently.
 class PMFKeyEpochs {

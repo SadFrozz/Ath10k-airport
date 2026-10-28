@@ -8,6 +8,8 @@
 #include "Ath10kNativeMAC.hpp"
 #include "Ath10kSAEWorker.hpp"
 #include "Ath10kSAESession.hpp"
+#include "Ath10kPMFSession.hpp"
+#include "Ath10kKernelCrypto.hpp"
 #include <kern/clock.h>
 #include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
@@ -15,13 +17,7 @@
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
 #include <sys/random.h>
-extern "C" {
-#include <corecrypto/cchmac.h>
-#include <corecrypto/ccsha1.h>
-#include <corecrypto/ccsha2.h>
-#include <corecrypto/ccaes.h>
-#include <corecrypto/ccmode.h>
-}
+
 
 OSDefineMetaClassAndStructors(Ath10kNativeInterface,IO80211InfraProtocol)
 
@@ -76,35 +72,11 @@ public:
 };
 OSDefineMetaClassAndStructors(Ath10kBSDInterface,IOEthernetInterface)
 
-struct Ath10kKernelCrypto {
-    static bool hmac256(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
-        const auto di=ccsha256_di();if(!di)return false;
-        cchmac(di,keyLength,key,length,data,out);return true;
-    }
-    static bool encrypt(const UInt8 *key,const UInt8 *data,UInt8 *out) {
-        auto mode=ccaes_ecb_encrypt_mode();if(!mode || mode->size>1024)return false;
-        alignas(16) UInt8 context[1024]{};auto ctx=reinterpret_cast<ccecb_ctx *>(context);
-        bool ok=mode->init(mode,ctx,16,key)==0 && mode->ecb(ctx,1,data,out)==0;
-        AthSecurity::wipe(context,sizeof(context));return ok;
-    }
-    static bool hmac(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
-        const auto di=ccsha1_di();if(!di)return false;
-        cchmac(di,keyLength,key,length,data,out);return true;
-    }
-    static bool decrypt(const UInt8 *key,const UInt8 *data,UInt8 *out) {
-        auto mode=ccaes_ecb_decrypt_mode();if(!mode || mode->size>1024)return false;
-        // Fixed upper bound: no variable-sized kernel stack allocation.
-        alignas(16) UInt8 context[1024]{};
-        auto ctx=reinterpret_cast<ccecb_ctx *>(context);
-        bool ok=mode->init(mode,ctx,16,key)==0 && mode->ecb(ctx,1,data,out)==0;
-        AthSecurity::wipe(context,sizeof(context));return ok;
-    }
-    static bool random(UInt8 *out,size_t length) {read_random(out,length);return true;}
-};
 class Ath10kPCIDevice::NativeSecurity {
 public:
     Ath10kSAEWorker *saeWorker=nullptr;
     Ath10kSAESession *saeSession=nullptr;
+    Ath10kPMFSession *pmfSession=nullptr;
     Ath10kSAEWorkItem *saePendingTX=nullptr;
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> supplicant;
     AthNative::CandidateCache candidates;
@@ -129,6 +101,7 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        if(pmfSession){pmfSession->cancel();pmfSession->release();pmfSession=nullptr;}
         if(saeSession)saeSession->cancel();
         if(saePendingTX){saePendingTX->discard();saePendingTX->release();saePendingTX=nullptr;}
         if(saeSession){saeSession->release();saeSession=nullptr;}
@@ -495,6 +468,17 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     _networkInterface->registerService();
     setProperty("Ath10kNativeABI","Sequoia-15.2-WCL-experimental");
     return true;
+}
+// Invoked by the radio-gated data-key state machine, only at its actual
+// PTK acknowledgement, before firmware authorization and at the final
+// controlled-port barrier. An optional PMF
+// session is admitted by a future complete native WPA3 join, never implicitly.
+bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
+    return !_nativeSecurity || !_nativeSecurity->pmfSession ||
+        _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
+}
+bool Ath10kPCIDevice::nativePMFPortReady(){
+    return !_nativeSecurity || !_nativeSecurity->pmfSession || _nativeSecurity->pmfSession->authorize();
 }
 // Radio-gated terminal cleanup. Event metadata and the last BSSID survive
 // until macOS accepts the terminal notifications; cryptographic material does not.
@@ -947,7 +931,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     const bool associated=Ath10k::connectionAssociated(s);
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
-    if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline) &&
+    if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
+               sec->saeSession || sec->saePendingTX || sec->pmfSession) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.

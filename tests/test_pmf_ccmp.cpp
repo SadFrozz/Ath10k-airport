@@ -4,6 +4,7 @@
 #include <vector>
 #include <initializer_list>
 #include "../src/shared/Ath10kPMFCCMP.hpp"
+#include "../src/shared/Ath10kSHA256.hpp"
 #include "common_crypto_personal.hpp"
 #include "pmf_ccmp_vectors.inc"
 using C=AthSecurity::PMFCCMP128<PersonalTestCrypto>;using Result=AthSecurity::PMFCCMPResult;
@@ -110,4 +111,38 @@ static void epochsAndQuery(){
  assert(!owner.activate(nullptr,c_sta,c_ap,10));assert(!owner.activate(replacement,c_sta,c_ap,0));
  assert(!owner.activate(replacement,c_sta,c_sta,10));
 }
-int main(){known();corruption();bounds();failures();epochsAndQuery();}
+static void groupFrames(){
+ AthSecurity::IGTKCMAC128 key{};key.keyID=4;memcpy(key.key,c_key,16);uint64_t accepted=0;
+ struct BIP {const uint8_t *wire;size_t wireBytes;uint64_t pn;};
+#define GROUP_GOOD(name) BIP{name##_wire,sizeof(name##_wire),name##_pn}
+ for(const auto &v:{GROUP_GOOD(c_group_action),GROUP_GOOD(c_group_disassoc),GROUP_GOOD(c_group_max)}){
+  assert(AthSecurity::verifyBIPManagement<PersonalTestCrypto>(v.wire,v.wireBytes,c_ap,key,6,accepted) && accepted==v.pn);
+  assert(!AthSecurity::verifyBIPManagement<PersonalTestCrypto>(v.wire,v.wireBytes,c_ap,key,v.pn,accepted));
+ }
+ assert(!AthSecurity::verifyBIPDisconnect<PersonalTestCrypto>(c_group_action_wire,sizeof(c_group_action_wire),c_ap,key,6,accepted));
+ struct Packet {const uint8_t *p;size_t n;};
+#define GROUP_BAD(name) Packet{name##_wire,sizeof(name##_wire)}
+ for(auto p:{GROUP_BAD(c_group_zero),GROUP_BAD(c_group_protected),GROUP_BAD(c_group_nonrobust_4),GROUP_BAD(c_group_nonrobust_7),
+   GROUP_BAD(c_group_nonrobust_11),GROUP_BAD(c_group_nonrobust_15),GROUP_BAD(c_group_nonrobust_20),GROUP_BAD(c_group_nonrobust_21),
+   GROUP_BAD(c_group_nonrobust_22),GROUP_BAD(c_group_nonrobust_127)}){
+  accepted=123;assert(!AthSecurity::verifyBIPManagement<PersonalTestCrypto>(p.p,p.n,c_ap,key,0,accepted) && accepted==123);
+ }
+ for(size_t i=0;i<sizeof(c_group_action_wire);++i){
+  if(i==2 || i==3 || i==22 || i==23)continue;
+  auto bad=std::vector<uint8_t>(c_group_action_wire,c_group_action_wire+sizeof(c_group_action_wire));bad[i]^=1;
+  accepted=123;assert(!AthSecurity::verifyBIPManagement<PersonalTestCrypto>(bad.data(),bad.size(),c_ap,key,0,accepted) && accepted==123);
+ }
+}
+static void txPacketNumbers(){
+ uint64_t pn=123;assert(AthSecurity::nextCCMPPacketNumber(C::MaxPN-1,pn) && pn==C::MaxPN);
+ assert(!AthSecurity::nextCCMPPacketNumber(C::MaxPN,pn) && pn==C::MaxPN);
+ assert(!AthSecurity::nextCCMPPacketNumber(~uint64_t(0),pn));
+ Epoch owner;Epoch::Snapshot lease,old;pn=123;assert(!owner.reserveTX(lease,pn) && pn==123);
+ assert(owner.activate(c_key,c_sta,c_ap,9));assert(owner.reserveTX(lease,pn) && pn==1);old=lease;
+ assert(owner.reserveTX(lease,pn) && pn==2 && owner.current(old));
+ assert(owner.activate(c_key,c_sta,c_ap,9));assert(owner.reserveTX(lease,pn) && pn==3);
+ uint8_t replacement[16];memcpy(replacement,c_key,16);replacement[0]^=1;
+ assert(owner.activate(replacement,c_sta,c_ap,9) && !owner.current(old));
+ assert(owner.reserveTX(lease,pn) && pn==1);owner.clear();assert(!owner.current(lease) && !owner.reserveTX(lease,pn));
+}
+int main(){known();corruption();bounds();failures();epochsAndQuery();groupFrames();txPacketNumbers();}

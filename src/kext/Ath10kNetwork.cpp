@@ -738,6 +738,11 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!s.securityPhase || s.securityPhase>=5 || (s.securityPhase==3 && !s.authorizeRequested))return nullptr;
         if(!s.submitted){
             if(s.txOwned || s.wmiOwned || s.dataPending || !_wmiScan.completed || _wmiScan.txOwned || _wmi.credits.outstanding)return nullptr;
+#ifdef ATH10K_NATIVE
+            // Gate the firmware peer authorization as well as the later host
+            // controlled-port publication. PMF keys must be ready for both.
+            if(s.securityPhase==3 && !nativePMFPortReady())return "native-pmf-peer-not-ready";
+#endif
             UInt32 bytes=Ath10k::buildSecurityWMI(static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,_htcWMIControl.endpoint,s);
             if(!bytes)return "security-command-build";
             if(s.securityPhase==4){_connectionEcho={};_connectionEcho.cookie=0xa7100057;_connectionEcho.submitted=true;}
@@ -755,7 +760,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         }
         if(s.securityPhase<=2 && !s.securityAck)return nullptr;
         if(s.securityPhase==4 && (!_connectionEcho.replyReceived || (s.rekeyKind && _rxSetup.pendingMPDUs)))return nullptr;
-        if(s.securityPhase==1){bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;}
+        if(s.securityPhase==1){
+#ifdef ATH10K_NATIVE
+            if(!nativePMFPairwiseAcknowledged(s.temporalKey))return "native-pmf-pairwise-epoch";
+#endif
+            bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;
+        }
         if(s.securityPhase==2){bcopy(s.groupKey,s.installedGroups[s.groupIndex],32);s.groupInstalled[s.groupIndex]=true;}
         if(s.securityPhase==1 && s.rekeySkipGroup)s.securityPhase=2;
         if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,16);AthSecurity::wipe(s.groupKey,32);}
@@ -770,6 +780,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
                 if(!s.rekeySkipGroup){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN)v=pn;bzero(s.groupSeqValid,sizeof(s.groupSeqValid));}
                 s.rekeyKind=0;s.rekeySkipGroup=false;
             }
+#ifdef ATH10K_NATIVE
+            if(!nativePMFPortReady())return "native-pmf-port-not-ready";
+#endif
             ++s.securityGeneration;s.portAuthorized=true;networkLink(true);
             IOLog("Ath10kMac: WPA2 port authorized generation=%u peer=%u peers=%u channel=%u ap-step=%u\n",
                 s.securityGeneration,s.peerId,s.peerCount,s.operatingChannel,s.maintenance.step);

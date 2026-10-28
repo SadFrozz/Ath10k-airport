@@ -9,6 +9,13 @@
 // wipe it. Definitions are deliberately absent to catch accidental operations.
 struct Ath10kKernelCrypto {};
 static std::vector<unsigned> cleanup;
+struct Ath10kPMFSession {
+    bool keyResult=true,portResult=true;unsigned keyCalls=0,portCalls=0;
+    bool acknowledgePairwise(const UInt8 *,const UInt8 *,const UInt8 *){++keyCalls;return keyResult;}
+    bool authorize(){++portCalls;return portResult;}
+    void cancel(){cleanup.push_back(6);}
+    void release(){cleanup.push_back(7);delete this;}
+};
 struct Ath10kSAESession {
     void cancel(){cleanup.push_back(1);}
     void release(){cleanup.push_back(4);delete this;}
@@ -30,11 +37,65 @@ public:
     class NativeSecurity;
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
+    struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
+        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false;} _connection;
+    void discardIfStopped();
     void discardNativeSecurity();
+    bool nativePMFPairwiseAcknowledged(const UInt8 *);
+    bool nativePMFPortReady();
+    const char *beforeFirmwareAuthorization(unsigned);
 };
 #include "native_security_class.inc"
 #include "native_security_discard.inc"
+#include "native_pmf_key_hooks.inc"
+#include "native_pmf_firmware_guard.inc"
+#include "native_security_terminal_cleanup.inc"
 int main(){
+    { Ath10kPCIDevice d;assert(!d.beforeFirmwareAuthorization(3));
+      d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;auto pmf=new Ath10kPMFSession;
+      d._nativeSecurity->pmfSession=pmf;pmf->portResult=false;
+      assert(!d.beforeFirmwareAuthorization(1) && !d.beforeFirmwareAuthorization(2) && !pmf->portCalls);
+      assert(d.beforeFirmwareAuthorization(3) && pmf->portCalls==1);
+      pmf->portResult=true;assert(!d.beforeFirmwareAuthorization(3) && pmf->portCalls==2);
+      delete d._nativeSecurity;cleanup.clear();
+    }
+
+    // Authentication can fail before the EAPOL ready/reply/key flags exist.
+    for(unsigned reason=0;reason<4;++reason)for(unsigned resource=0;resource<3;++resource){
+      Ath10kPCIDevice d;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      if(resource==0)d._nativeSecurity->pmfSession=new Ath10kPMFSession;
+      if(resource==1)d._nativeSecurity->saeSession=new Ath10kSAESession;
+      if(resource==2)d._nativeSecurity->saePendingTX=new Ath10kSAEWorkItem;
+      if(reason==0)d._connection.stage=Ath10k::LinkStage::Failed;
+      if(reason==1)d._connection.stage=Ath10k::LinkStage::Disabled;
+      if(reason==2)d._connection.cancelRequested=true;
+      if(reason==3)d._connection.disconnect=Ath10k::DisconnectStage::Down;
+      d.discardIfStopped();assert(!d._nativeSecurity->pmfSession && !d._nativeSecurity->saeSession && !d._nativeSecurity->saePendingTX);
+      assert(cleanup==std::vector<unsigned>(resource==0?std::initializer_list<unsigned>{6,7}:
+          (resource==1?std::initializer_list<unsigned>{1,4}:std::initializer_list<unsigned>{2,3})));
+      delete d._nativeSecurity;cleanup.clear();
+    }
+    { Ath10kPCIDevice d;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      d._nativeSecurity->pmfSession=new Ath10kPMFSession;d.discardIfStopped();
+      assert(d._nativeSecurity->pmfSession && cleanup.empty());delete d._nativeSecurity;cleanup.clear();
+    }
+
+    { Ath10kPCIDevice d;UInt8 key[16]{};
+      assert(d.nativePMFPairwiseAcknowledged(key) && d.nativePMFPortReady());
+      d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+      assert(d.nativePMFPairwiseAcknowledged(key) && d.nativePMFPortReady());
+      auto pmf=new Ath10kPMFSession;d._nativeSecurity->pmfSession=pmf;
+      assert(d.nativePMFPairwiseAcknowledged(key) && pmf->keyCalls==1);
+      pmf->keyResult=false;assert(!d.nativePMFPairwiseAcknowledged(key));
+      pmf->portResult=false;assert(!d.nativePMFPortReady());
+      pmf->portResult=true;assert(d.nativePMFPortReady() && pmf->portCalls==2);
+      delete d._nativeSecurity;cleanup.clear();
+    }
+
+    { auto s=new Ath10kPCIDevice::NativeSecurity;s->pmfSession=new Ath10kPMFSession;
+      s->reset();assert(!s->pmfSession && cleanup==std::vector<unsigned>({6,7}));
+      s->reset();assert(cleanup==std::vector<unsigned>({6,7}));delete s;cleanup.clear();
+    }
     { auto s=new Ath10kPCIDevice::NativeSecurity;
       Ath10kSAEWorker::failInit=true;assert(!s->prepareSAEWorker() && !s->saeWorker);
       assert(Ath10kSAEWorker::created==1 && Ath10kSAEWorker::released==1);

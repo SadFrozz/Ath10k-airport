@@ -64,6 +64,13 @@ def main():
         (include/'native_release_method.inc').write_text(native[native.index('void Ath10kPCIDevice::releaseNativeInterface()'):native.index('IOReturn Ath10kPCIDevice::nativeRequest(')])
         (include/'native_registration_methods.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareRegistrationInfo('):native.index('IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const')])
         (include/'native_security_class.inc').write_text(native[native.index('class Ath10kPCIDevice::NativeSecurity {'):native.index('IO80211WorkQueue *Ath10kPCIDevice::getWorkQueue()')])
+        terminal=native[native.index('    if(sec && (sec->ready ||'):native.index('    // Crypto/radio progress must not wait')]
+        (include/'native_security_terminal_cleanup.inc').write_text('void Ath10kPCIDevice::discardIfStopped(){auto sec=_nativeSecurity;auto &s=_connection;\n'+terminal+'}\n')
+        network_source=(ROOT/'src/kext/Ath10kNetwork.cpp').read_text()
+        before_key_build=network_source[:network_source.index('            UInt32 bytes=Ath10k::buildSecurityWMI(')]
+        firmware_guard=before_key_build[before_key_build.rindex('            if(s.securityPhase==3 && !nativePMFPortReady())'):].splitlines()[0]
+        (include/'native_pmf_firmware_guard.inc').write_text('const char *Ath10kPCIDevice::beforeFirmwareAuthorization(unsigned phase){struct {unsigned securityPhase;} s{phase};\n'+firmware_guard+'\nreturn nullptr;}\n')
+        (include/'native_pmf_key_hooks.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged('):native.index('// Radio-gated terminal cleanup.')])
         (include/'native_security_discard.inc').write_text(native[native.index('void Ath10kPCIDevice::discardNativeSecurity()'):native.index('IOReturn Ath10kPCIDevice::nativeStopAction(')])
         leave=native[native.index('    case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:'):native.index('    case N::setCLEAR_PMKSA_CACHE:')]
         (include/'native_leave.inc').write_text(leave)
@@ -102,8 +109,12 @@ def main():
         session='\n'.join(line for source in session_sources for line in source.read_text().splitlines()
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
+        pmf_sources=[ROOT/'src/kext/native/Ath10kPMFSession.hpp',ROOT/'src/kext/native/Ath10kPMFSession.cpp']
+        pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
+                      if not line.startswith('#include') and line!='#pragma once')
+        (include/'pmf_session.inc').write_text(pmf+'\n')
         names=['native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
-        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol','pmf_ccmp'])
+        if sys.platform == 'darwin': names.extend(['sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
             if unknown: parser.error('Unknown/unavailable tests: ' + ', '.join(unknown))
@@ -112,7 +123,7 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['sae_session','sae_worker','power','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
+            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['sae_session','pmf_session','sae_worker','power','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
                 'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({

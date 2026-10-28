@@ -12,8 +12,9 @@ inline bool pmfCCMPHeader(const uint8_t *f,size_t n,const uint8_t *local,const u
 inline bool pmfRobustBody(const uint8_t *f,size_t n){
  if(n<26)return false;
  if((f[0]&0xf0)!=0xd0)return true;
- switch(f[24]){case 4:case 7:case 11:case 15:case 20:case 21:case 22:case 127:return false;default:return true;}
+ return robustManagementActionCategory(f[24]);
 }
+enum class PMFCCMPRXLayout : uint8_t {Ciphertext,PlaintextWithEncryptedTag};
 struct PMFCCMPResult {
  uint8_t frame[512]{};size_t bytes=0;uint64_t pn=0;
  ~PMFCCMPResult(){wipe(this,sizeof(*this));}
@@ -31,7 +32,7 @@ struct PMFCCMPWorkspace {
 // or commit replay state. Caller snapshots an acknowledged PTK epoch off-gate,
 // then rechecks/commits that epoch and PN under its owner gate after success.
 template<class Crypto> struct PMFCCMP128 {
- enum class RXLayout : uint8_t {Ciphertext,PlaintextWithEncryptedTag};
+ using RXLayout=PMFCCMPRXLayout;
 private:
  struct Clear {PMFCCMPWorkspace &w;~Clear(){w.clear();}};
  static bool overlaps(const void *a,size_t n,const void *b,size_t m){
@@ -124,7 +125,7 @@ public:
 // Separate management RX replay domain. Activation is called only after PTK
 // installation acknowledgement. Same-key redelivery preserves the epoch/PN.
 class PMFPairwiseEpoch {
- uint8_t key[16]{},local[6]{},ap[6]{};uint64_t connection=0,epoch=0,nextEpoch=0,rxPN=0;bool active=false;
+ uint8_t key[16]{},local[6]{},ap[6]{};uint64_t connection=0,epoch=0,nextEpoch=0,rxPN=0,txPN=0;bool active=false;
 public:
  struct Snapshot {
   uint8_t key[16]{},local[6]{},ap[6]{};uint64_t connection=0,epoch=0,rxPN=0;
@@ -139,11 +140,21 @@ public:
   if(!tk || !generation || !saQueryIdentities(station,bssid))return false;
   if(active && equal(key,tk,16))return connection==generation && equal(local,station,6) && equal(ap,bssid,6);
   if(nextEpoch==~uint64_t(0))return false;
-  copy(key,tk,16);copy(local,station,6);copy(ap,bssid,6);connection=generation;epoch=++nextEpoch;rxPN=0;active=true;return true;
+  copy(key,tk,16);copy(local,station,6);copy(ap,bssid,6);connection=generation;epoch=++nextEpoch;rxPN=txPN=0;active=true;return true;
  }
  bool snapshot(Snapshot &out) const {
   if(!active)return false;
   copy(out.key,key,16);copy(out.local,local,6);copy(out.ap,ap,6);out.connection=connection;out.epoch=epoch;out.rxPN=rxPN;return true;
+ }
+ // Exclusive host-generated management TX PN domain, as used alongside
+ // ath10k firmware data crypto. All management TX for this PTK must share it;
+ // never mix an independent hardware management PN allocator into this domain.
+ bool reserveTX(Snapshot &out,uint64_t &pn){
+  uint64_t next=0;if(!active || !nextCCMPPacketNumber(txPN,next) || !snapshot(out))return false;
+  txPN=next;pn=next;return true; // No rollback after allocation/crypto/TX failure.
+ }
+ bool current(const Snapshot &snapshot) const {
+  return active && snapshot.connection==connection && snapshot.epoch==epoch;
  }
  // Invoke only after successful CCMP verification with this immutable snapshot.
  // Check the live PN again: another worker may already have committed a packet.

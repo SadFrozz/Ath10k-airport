@@ -420,9 +420,10 @@ decryption, MIC or key-cache errors before invoking this path.
 
 `protect` constructs complete CCMP ciphertext/tag from a protected plaintext
 header/body and a caller-reserved nonzero 48-bit PN. The transport must preserve
-these bytes without encrypting them again. No TX PN allocator, raw/HTT mode
-selection, hardware management encryption or actual frame submission is supplied
-by this helper. Failed encryption/submission must consume its PN. Extended key
+these bytes without encrypting them again. The primitive itself supplies no TX PN allocator, raw/HTT mode selection,
+hardware management encryption or actual frame submission. The retained TX
+coordinator below adds a host management PN allocator and leases; radio transport
+selection and actual frame submission remain open. Failed encryption/submission must consume its PN. Extended key
 IDs, fragmentation/reassembly, CCMP-256 and GCMP remain unsupported profiles.
 
 A caller-owned workspace stages plaintext/ciphertext, CBC state and counters;
@@ -440,7 +441,9 @@ the current epoch/connection and live PN again, then publishes `PMFVerifiedRX`
 for SA Query. Clear/key rotation invalidates old snapshots. The caller must
 commit only after successful CCMP verification with that same immutable snapshot;
 this API is not a security boundary against arbitrary in-process callers.
-Native PTK activation and WMI dispatch do not use it yet.
+The optional native PTK-acknowledgement hook uses this state when a PMF owner
+exists; current native joins still create no such owner, and WMI dispatch is
+not connected to it yet.
 
 Independent cryptography AESCCM fixtures cover AP deauth/disassoc/SA Query,
 protected vendor action, 15/16/17-byte and maximum 472-byte bodies, high/max PN
@@ -469,6 +472,141 @@ this setting. `nativeBSSMessage` now constructs aligned local metadata and copie
 bytes into the possibly unaligned output buffer instead of casting that buffer.
 A wire regression compares exact metadata/IE bytes at all four alignment offsets.
 This is a confirmed C++ alignment defect, not proof of any previous hardware hang.
+
+### Retained PMF owner/jobs and native data-key boundaries (source-integrated)
+
+`Ath10kPMFSession` is an OSObject owner for one PMF association. It binds the
+local/AP identities and connection generation once and cannot be reinitialized.
+Owner methods require the serialized radio context. PTK acknowledgement activates
+a management replay epoch; a new epoch pauses PMF admission until authorization.
+Authenticated IGTK publication activates software IGTK/IPN state only after a
+pairwise key exists. Authorization requires both key families. Same-key redelivery
+does not create a fresh replay epoch or clear an already authorized association.
+
+The native data-key state machine now calls the PMF pairwise hook only after its
+existing HTT security acknowledgement/CE credit checks, before publishing the
+installed PTK. Before constructing the firmware peer-authorization command, it checks PMF
+readiness; its final controlled-port barrier checks again before setting
+portAuthorized. A present but incomplete/invalid PMF owner blocks
+that transition with an error. No PMF owner is created by current native joins,
+and the native supplicant still does not admit SAE, so these hooks do not enable
+WPA3/PMF or alter the previous no-PMF key path.
+
+NativeSecurity owns an optional retained PMF session. Reset/leave/sleep/stop
+cancels and releases it before cancelling the existing crypto queue. The existing
+outside-gate shutdown drains that same queue; PMF introduces no second workloop,
+lock-order edge or synchronous wait beneath a radio/WCL gate. The existing bounded
+kernel AES/HMAC provider is moved unchanged into `Ath10kKernelCrypto.hpp`, shared
+by native EAPOL and the new PMF job translation unit.
+
+RX jobs retain their PMF owner and independent key/identity/frame snapshots on
+the heap (bounded to 4096 bytes). WMI admission errors use the existing 0x39 mask,
+frames are bounded to 512 bytes and layout selection remains explicit. CCMP jobs verify unicast robust management and protect outgoing frames. Group
+jobs verify BIP-CMAC deauth/disassoc and robust actions, then remove the MMIE
+from the authenticated message before dispatch.
+Job execution reads no mutable owner security state and enters no driver gate.
+It erases crypto key snapshots/workspace on completion, retaining only lease
+metadata and authenticated output until consumption/disposal.
+
+The owner consumes only its own executed, unconsumed result for the current
+connection. It rechecks the live PTK epoch/PN or IGTK slot epoch/IPN before
+publication; cancellation, key rotation and another committed packet can make
+an otherwise valid crypto result stale. Failed/stale results leave the caller's
+message unchanged. Group verification has a distinct message kind and never
+publishes a pairwise PMFVerifiedRX stamp usable by SA Query. Final sealed work-item
+free/discard wipes remaining frame/result/lease state and releases the retained
+owner. Terminal native cleanup also checks retained SAE/PMF owners and pending
+TX when EAPOL ready/reply/key flags have not been set yet; failed/disabled,
+explicitly cancelled and disconnecting connections retire them.
+A terminal submit race consumes no RX replay reservation and does not
+invalidate a valid association; the frame is dropped, never passed unverified.
+
+Production worker/PMF sources are extracted into the existing host IOKit/ONCE
+model. ASan/UBSan tests cover actual independent CCMP/BIP fixtures, PTK/IGTK
+rotation after crypto completion, duplicate/out-of-order results, wrong owner or
+generation, WMI error flags, allocation/init failure, failed crypto, decrypted
+layout, terminal queue admission race, cancellation before dispatch and during
+paused AES, and key-pattern erasure before object free. ThreadSanitizer passes
+the retained PMF and worker lifecycle tests. Native cleanup/key-hook tests also
+exercise optional-resource failure propagation. Native kext build/link/import
+checks compile the PMF owner/jobs and shared provider. The provider body matches
+the prior native implementation byte-for-byte. The full 47-test development
+suite passes with UBSan halt enabled; an additional focused final regression
+covers early terminal cleanup before EAPOL readiness.
+
+These are modeled IOKit lifecycle tests and compiled native hooks, not observed
+kernel execution. Native SAE admission, EAPOL IGTK staging/activation, WMI
+interception/layout validation, completion dispatch, protected TX/PN allocation,
+SA Query timers/drop policy and hardware validation remain mandatory before any
+PMF/SAE capability may be advertised. In particular, the current raw management
+handler must not be used as a fallback for an unverified PMF frame.
+
+### Group robust management and retained protected TX (source-integrated)
+
+`verifyBIPManagement` authenticates group deauth/disassoc and robust actions with
+BIP-CMAC-128. It requires an ordinary unfragmented management header, group A1,
+expected AP source/BSSID, no DS/Order/Protected bits, exact final CMAC-128 MMIE,
+KeyID 4/5 and strictly increasing IPN. Known nonrobust action categories reject
+even with a valid CMAC. Authentication does not validate each action's semantics:
+for example, the separate SA Query parser still rejects group-addressed messages.
+`verifyBIPDisconnect` remains a disconnect-only wrapper for existing callers.
+The shared action classification is also used by unicast CCMP admission.
+
+Retained PMF group results commit the current IGTK epoch/IPN before publishing a
+normalized header/body with the 18-byte MMIE removed. They have a distinct
+GroupManagement kind and no pairwise-authentication stamp. Independent CMAC
+fixtures cover group channel-switch action, disassociation, maximum/zero IPN,
+valid-CMAC nonrobust categories and invalid Protected usage. Corruption/replay
+checks and the normalized worker-to-owner message pass ASan/UBSan.
+
+`PMFPairwiseEpoch` also owns the host-generated management TX counter. Each
+reservation snapshots the current key epoch and spends a fresh nonzero 48-bit
+PN. Same-key acknowledgement preserves the counter; a new key resets it under
+a fresh monotonic epoch. The checked successor refuses maximum/out-of-range
+counters without wrap or output mutation. This pool must be the sole source for
+protected management TX on this PTK, including any future hardware-encrypted
+management path. Coordination with autonomous firmware management traffic must
+be verified before native use; an independent second management PN pool is not
+permitted.
+
+This follows the ath10k reference division: ordinary data crypto is offloaded,
+while CCMP keys request GENERATE_IV_MGMT and mac80211 reserves the management IV
+from its host key counter. It does not establish the correct HTT flags or actual
+QCA9377 firmware behavior for our fully software-encrypted packets.
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/drivers/net/wireless/ath/ath10k/mac.c
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v6.12/net/mac80211/wpa.c
+
+`queueProtect` admits one outstanding protected TX lease per PMF owner, reserves
+its PN after bounded allocation/init, copies plaintext and the key snapshot into
+an independent retained worker job, and performs CCMP outside driver gates.
+Busy/no-memory before reservation consumes no PN. Crypto failure, cancellation,
+or a terminal queue-submit race after reservation never returns the PN to the
+pool. The outstanding lease prevents later ciphertext from overtaking an older
+retained result through this API.
+
+`copyProtected` requires a successful job for the live owner/connection/key epoch
+and unchanged pending PN. `protectedReady` must be checked again under the owner
+gate immediately before actual transport submission. `retireProtected` consumes
+both successfully handed-off and failed-crypto/failed-handoff jobs, including
+those whose ciphertext cannot be copied. `abandonProtected` invalidates the lease
+without touching a running job, allowing owner cancellation plus queue cancel.
+New-key acknowledgement/cancel also invalidates old leases. RX consumption cannot
+consume a TX result, and caller buffers remain untouched on failed copy. The
+caller must retain the job until frame copying/handoff is complete and retire or
+abandon every pending TX operation.
+
+Independent AESCCM PN1/PN2/PN3 ciphertext fixtures verify no reuse after failed
+crypto and terminal submit races, no consumption before failed init, same-key
+redelivery, duplicate retirement, invalidation after key rotation/abandonment and
+RX/TX result separation. A paused AES worker can be abandoned/cancelled while the
+association remains live; the next protected frame uses PN2. ASan/UBSan and
+ThreadSanitizer pass these production owner/job tests. A compile-only kernel
+entry instantiates generic BIP and TX-PN allocation/current-epoch checks; native
+kext build/link/import checks pass. Native SAE admission, WMI RX interception,
+protected HTT submission and hardware validation are still disabled/incomplete.
+The final focused key-boundary regression extracts the phase-3 readiness guard
+from before the firmware security-command builder and verifies rejection when
+PMF is incomplete, while key-install phases remain able to make progress.
 
 ## Verified Sequoia credential envelope
 

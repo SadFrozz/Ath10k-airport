@@ -6,6 +6,8 @@ masked 24-byte header without Duration and with the sequence number zeroed.
 No production password/key, project crypto code, device or network access.
 """
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+from cryptography.hazmat.primitives.cmac import CMAC
+from cryptography.hazmat.primitives.ciphers import algorithms
 
 KEY = bytes(range(16))
 STA = bytes.fromhex('020102030405')
@@ -41,3 +43,29 @@ for size in [15, 16, 17, 472]:
 vector('c_tx', header(incoming=False), bytes.fromhex('08001234'), 0x010203040507)
 vector('c_public', header(), bytes.fromhex('04011234'), 12)
 vector('c_vendor', header(), bytes.fromhex('7e01020304'), 13)
+
+# Group deauthentication uses independent BIP-CMAC, not CCMP/firmware key slots.
+bip = bytes.fromhex('c0000000') + b'\xff'*6 + AP + AP + bytes(2) + bytes.fromhex('06004c100400070000000000') + bytes(8)
+aad = bip[:2] + bip[4:22] + bip[24:]
+mac = CMAC(algorithms.AES(KEY));mac.update(aad)
+bip = bip[:-8] + mac.finalize()[:8]
+emit('c_bip_disconnect', bip)
+
+def group_vector(name, body, pn, subtype=0xd0, flags=0):
+    h = bytes([subtype, flags, 0, 0]) + b'\xff'*6 + AP + AP + bytes(2)
+    frame = h + body + bytes.fromhex('4c100400') + pn.to_bytes(6, 'little') + bytes(8)
+    fc = (int.from_bytes(h[:2], 'little') & ~0x3800).to_bytes(2, 'little')
+    mac = CMAC(algorithms.AES(KEY));mac.update(fc + frame[4:22] + frame[24:])
+    frame = frame[:-8] + mac.finalize()[:8]
+    emit(name+'_wire', frame);emit(name+'_plain', h+body)
+    print(f'static constexpr uint64_t {name}_pn=0x{pn:012x}ull;')
+
+group_vector('c_group_action', bytes.fromhex('00042503012c01'), 8)
+group_vector('c_group_disassoc', bytes.fromhex('0700'), 9, subtype=0xa0)
+group_vector('c_group_max', bytes.fromhex('00042503012c01'), 0xffffffffffff)
+group_vector('c_group_zero', bytes.fromhex('00042503012c01'), 0)
+group_vector('c_group_protected', bytes.fromhex('00042503012c01'), 10, flags=0x40)
+for category in [4, 7, 11, 15, 20, 21, 22, 127]:
+    group_vector(f'c_group_nonrobust_{category}', bytes([category, 0, 1]), 10)
+for pn in [1, 2, 3]:
+    vector(f'c_txpn{pn}', header(incoming=False), bytes.fromhex('08001234'), pn)

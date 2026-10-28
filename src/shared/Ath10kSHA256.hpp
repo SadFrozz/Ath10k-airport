@@ -42,15 +42,17 @@ template<class Crypto> struct SHA256Personal {
   wipe(sub,16);wipe(state,16);wipe(block,16);if(!ok)wipe(out,16);return ok;
  }
 };
-// BIP-CMAC-128 verification for group deauthentication/disassociation only.
+// BIP-CMAC-128 verification for group deauth/disassoc and robust actions.
 // Caller supplies the installed key epoch and commits acceptedIPN only while
 // that epoch remains current. No state changes or key installation occur here.
-template<class Crypto> inline bool verifyBIPDisconnect(const uint8_t *frame,size_t bytes,
+template<class Crypto> inline bool verifyBIPManagement(const uint8_t *frame,size_t bytes,
  const uint8_t *ap,const IGTKCMAC128 &key,uint64_t lastIPN,uint64_t &acceptedIPN){
  if(!frame || !ap || bytes<44 || bytes>512 || (key.keyID!=4 && key.keyID!=5))return false;
  const uint16_t fc=rsnLE16(frame);
- if((fc&0x00ff)!=0x00c0 && (fc&0x00ff)!=0x00a0)return false;
- if((fc&0x8700) || (rsnLE16(frame+22)&15) || !(frame[4]&1) || !equal(frame+10,ap,6) || !equal(frame+16,ap,6))return false;
+ const uint16_t subtype=fc&0x00ff;
+ if(subtype!=0x00c0 && subtype!=0x00a0 && subtype!=0x00d0)return false;
+ if(subtype==0x00d0 && !robustManagementActionCategory(frame[24]))return false;
+ if((fc&0xc700) || (rsnLE16(frame+22)&15) || !(frame[4]&1) || !equal(frame+10,ap,6) || !equal(frame+16,ap,6))return false;
  const uint8_t *mmie=frame+bytes-18;
  if(mmie[0]!=76 || mmie[1]!=16 || rsnLE16(mmie+2)!=key.keyID)return false;
  uint64_t ipn=0;for(unsigned i=0;i<6;++i)ipn|=uint64_t(mmie[4+i])<<(8*i);
@@ -64,6 +66,14 @@ template<class Crypto> inline bool verifyBIPDisconnect(const uint8_t *frame,size
  wipe(input,sizeof(input));wipe(digest,sizeof(digest));
  if(ok)acceptedIPN=ipn;
  return ok;
+}
+
+// Keep the existing disconnect-only API strict for its previous callers.
+template<class Crypto> inline bool verifyBIPDisconnect(const uint8_t *frame,size_t bytes,
+ const uint8_t *ap,const IGTKCMAC128 &key,uint64_t lastIPN,uint64_t &acceptedIPN){
+ if(!frame || bytes<44)return false;
+ const uint16_t subtype=rsnLE16(frame)&0x00ff;
+ return (subtype==0x00c0 || subtype==0x00a0) && verifyBIPManagement<Crypto>(frame,bytes,ap,key,lastIPN,acceptedIPN);
 }
 
 struct SAEGroup19Keys {uint8_t kck[32]{},pmk[32]{},pmkid[16]{};};

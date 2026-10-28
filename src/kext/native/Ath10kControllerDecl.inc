@@ -39,6 +39,8 @@ public:
     void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
     static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
     void discardNativeSecurity();
+    bool nativePMFPairwiseAcknowledged(const UInt8 *);
+    bool nativePMFPortReady();
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);
