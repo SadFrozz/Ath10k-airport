@@ -161,3 +161,20 @@ $(CRYPTO_PROBE_BIN): $(CRYPTO_PROBE_DIR)/probe.o tools/sae/CoreCryptoLinkProbe.p
 	$(LD) $(LDFLAGS) -o $@ $(CRYPTO_PROBE_DIR)/probe.o
 
 -include $(CRYPTO_PROBE_DIR)/probe.d
+
+# Executes math tests in an ordinary macOS process, not in the kernel.
+P256_CHECK_BIN := $(CRYPTO_PROBE_DIR)/p256-userland-check
+.PHONY: sae-p256-userland-check sae-p256-kernel-compile
+sae-p256-userland-check: $(P256_CHECK_BIN)
+	$(P256_CHECK_BIN)
+
+$(P256_CHECK_BIN): tools/sae/p256-userland-check.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSecurity.hpp tests/p256_corecrypto_fixtures.hpp | $(CRYPTO_PROBE_DIR)
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $< -o $@
+
+sae-p256-kernel-compile: $(CRYPTO_PROBE_DIR)/p256-kernel-compile.o
+	$(PYTHON) scripts/check-kext-symbols.py "$<"
+
+$(CRYPTO_PROBE_DIR)/p256-kernel-compile.o: tools/sae/p256-kernel-compile.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSecurity.hpp Makefile | $(CRYPTO_PROBE_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+-include $(CRYPTO_PROBE_DIR)/p256-kernel-compile.d

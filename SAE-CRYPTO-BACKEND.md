@@ -89,3 +89,31 @@ Before selecting CoreCrypto as a production backend:
 
 CoreCrypto remains a candidate. An audited portable backend is still an option
 if its interface/portability/lifetime properties better satisfy the full goal.
+
+## Unwired P-256 operation candidate (2026-10-28)
+
+`src/shared/Ath10kP256CoreCrypto.hpp` contains an independent function-table
+adapter for public-point validation, blinded scalar multiplication, addition and
+subtraction. It is not included by the Wi-Fi driver. Its caller-owned, aligned
+688-byte workspace is cleared at entry and on every return. Invalid scalars,
+invalid points, infinity and backend failures cannot publish a partial output.
+
+`make sae-p256-userland-check` tests the actual userland CoreCrypto library,
+using 12 multiplication vectors, 14 add/subtract vectors and a separate doubling
+case against independent OpenSSL/cryptography fixtures. It exercises 37 injected
+backend failure positions, malformed inputs, output canaries and workspace
+clearing under AddressSanitizer and UndefinedBehaviorSanitizer. Fixture regeneration
+uses the pinned dependencies in tests/requirements-fixtures.txt and
+`tests/generate-p256-fixtures.py`.
+
+The tested userland image UUID is 522269EC-E612-39DA-AFAB-ADF591065C57.
+It differs from the kernel CoreCrypto image; these results do not establish
+kernel runtime ABI compatibility. `make sae-p256-kernel-compile` checks compilation
+and unavailable runtime imports only, using indirect calls. It never loads code.
+The earlier isolated symbol-binding probe remains separate.
+
+Caller-workspace clearing does not prove cleanup of the library's internal
+allocations, constant-time behavior, cancellation safety or complete SAE.
+Kernel execution, per-version ABI checks, scalar/field operations, SAE/H2E,
+a retained cancellable worker, four-way AKM-8 and PMF/BIP remain outstanding.
+No WPA3 capability is enabled by this candidate.

@@ -64,3 +64,5 @@ Primary implementation/testing references for subsequent work:
 
 These references are not proof of this driver's behavior. No third-party SAE
 implementation or Apple binary/assembly is copied into this document.
+
+P-256 operation candidate: see SAE-CRYPTO-BACKEND.md for real userland vectors and kernel compile-only checks. This is unwired and does not complete SAE, PMF or kernel ABI validation.

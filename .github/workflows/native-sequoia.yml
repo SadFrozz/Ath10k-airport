@@ -18,6 +18,8 @@ jobs:
         run: make NATIVE=1 kext -j2
       - name: Build offline crypto symbol probe (never load)
         run: make sae-crypto-link-probe
+      - name: Check unwired P-256 candidate with sanitizers
+        run: make sae-p256-userland-check sae-p256-kernel-compile
       - name: Portable native protocol regressions
         run: python3 tests/run-development-tests.py
       - name: Host regressions with address and undefined-behavior sanitizers
