@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <vector>
 using UInt64=uint64_t;using IOReturn=int;using thread_call_param_t=void *;
-constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4;
+constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2,kIOReturnAborted=3,kIOReturnCannotLock=4,kIOReturnNoMemory=5;
 using AbsoluteTime=UInt64;constexpr unsigned kMillisecondScale=1;
 static void clock_interval_to_deadline(unsigned n,unsigned,AbsoluteTime *out){*out=n;}
 static unsigned delayed=0;
@@ -27,6 +27,8 @@ struct Gate {
 class Ath10kPCIDevice:public OSObject {
 public:
  bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
+ bool _nativeLinkUpSent=false,_nativeAbortRequested=false,failPost=false;
+ IOReturn _nativePostError=kIOReturnSuccess;
  bool _nativeStarted=true,_nativeReadyRequested=true,_nativeReadyPublished=false;
  bool _nativeStopping=false,_nativeServicePending=false,_nativeMACWaiting=false;
  IOReturn _nativeMACResult=kIOReturnSuccess;
@@ -39,7 +41,7 @@ public:
  static void nativeServiceThread(thread_call_param_t,thread_call_param_t);
  static IOReturn nativeServiceWCLAction(OSObject *,void *,void *,void *,void *);
  static IOReturn nativeServiceRadioAction(OSObject *,void *,void *,void *,void *);
- void serviceNative(UInt64 now){assert(rank==2 && now==123);++services;}
+ void serviceNative(UInt64 now){assert(rank==2 && now==123);++services;_nativePostError=failPost?kIOReturnNoMemory:kIOReturnSuccess;}
 };
 #include "native_bridge_methods.inc"
 #include "native_bridge_stop.inc"
@@ -71,4 +73,20 @@ int main(){
  starting._nativeReadyPublished=true;starting.requestNativeService();assert(scheduled==before+1);
  assert(Ath10kPCIDevice::nativeServiceRadioAction(nullptr,nullptr,nullptr,nullptr,nullptr)==kIOReturnBadArgument);
  assert(Ath10kPCIDevice::nativeServiceWCLAction(nullptr,nullptr,nullptr,nullptr,nullptr)==kIOReturnNotReady);
+ Ath10kPCIDevice retry;retry.failPost=true;retry.requestNativeService();
+ unsigned priorDelayed=delayed;retry.nativeServiceThread(&retry,nullptr);
+ assert(retry.services==1 && retry._nativeServicePending && delayed==priorDelayed+1 && rank==0);
+ unsigned priorScheduled=scheduled;retry.requestNativeService();assert(scheduled==priorScheduled);
+ retry.failPost=false;retry.nativeServiceThread(&retry,nullptr);
+ assert(retry.services==2 && !retry._nativeServicePending);
+ Ath10kPCIDevice terminal;terminal._wmiLive.active=false;terminal._nativeAbortRequested=true;
+ terminal.requestNativeService();terminal.nativeServiceThread(&terminal,nullptr);assert(terminal.services==1);
+ terminal._nativeAbortRequested=false;terminal._nativeLinkUpSent=true;
+ terminal.requestNativeService();terminal.nativeServiceThread(&terminal,nullptr);assert(terminal.services==2);
+ Ath10kPCIDevice cancelledRetry;cancelledRetry.failPost=true;cancelledRetry.requestNativeService();
+ cancelledRetry.nativeServiceThread(&cancelledRetry,nullptr);
+ assert(cancelledRetry._nativeServicePending);
+ cancelledRetry.stopNativeRequests();
+ assert(cancelledRetry._nativeStopping && !cancelledRetry._nativeServiceCall && !cancelledRetry._nativeServicePending);
+ assert(cancelled==2 && freed==2);
 }

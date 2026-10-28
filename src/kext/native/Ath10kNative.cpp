@@ -211,7 +211,11 @@ IONetworkInterface *Ath10kPCIDevice::createInterface() {
     OSSafeReleaseNULL(interface);return nullptr;
 }
 bool Ath10kPCIDevice::prepareNativeInterface() {
-    _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=false;
+    _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=_nativeReadyResetSent=false;
+    _nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=false;
+    _nativeWasUp=_nativeDeauthSent=_nativeJoinFailed=false;
+    _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativePostError=kIOReturnSuccess;
+    bzero(_nativeLastBSSID,sizeof(_nativeLastBSSID));
     _nativeServiceCall=thread_call_allocate_with_options(nativeServiceThread,this,THREAD_CALL_PRIORITY_KERNEL,THREAD_CALL_OPTIONS_ONCE);
     if(!_nativeServiceCall)return false;
     bcopy(_wmiInit.mac,_nativeMACCurrent,6);_nativeMACValid=true;
@@ -325,7 +329,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(same)return kIOReturnSuccess;
         if(!_nativeMACValid || !_nativeGate || getWorkLoop()->onThread())return kIOReturnNotReady;
         if(!_networkInterface || !_networkInterface->getIfnet() || !_wmiScanChannels.completed || !_wmiScan.completed ||
-           _nativeScanPending || _nativeJoinPending || s.stage!=Ath10k::LinkStage::Disabled ||
+           _nativeScanPending || _nativeJoinPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || s.stage!=Ath10k::LinkStage::Disabled ||
            s.disconnect!=Ath10k::DisconnectStage::None || s.peerCount || s.wmiOwned || s.txOwned || _wmi.credits.outstanding)return kIOReturnBusy;
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return kIOReturnNoMemory;
         bcopy(address,_nativeMACRequested,6);_nativeMACResult=kIOReturnNotReady;
@@ -391,7 +395,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         }return kIOReturnSuccess;}
     case N::getWCL_TRAFFIC_COUNTERS:{AirportWCL::TrafficCounters counters{};counters.infraTx=s.txPackets;counters.infraRx=s.rxPackets;counters.timestampNanoseconds=Ath10k::uptimeNS();bcopy(&counters,data,sizeof(counters));return kIOReturnSuccess;}
     case N::getWCL_BSS_INFO:{
-        if(s.stage!=Ath10k::LinkStage::Connected || !_nativeBeaconSent)return kIOReturnNotReady;
+        if(s.stage!=Ath10k::LinkStage::Connected || !s.beaconFrameBytes)return kIOReturnNotReady;
         // Background scan notifications reuse the scratch buffer. Rebuild
         // from the associated AP rather than returning another scan result.
         const size_t length=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
@@ -424,7 +428,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill)return kIOReturnNotReady;
         UInt32 busy=(_nativeScanPending?1u:0u)|(_nativeJoinPending?2u:0u)|(!_wmiScan.completed?4u:0u)|
             (s.wmiOwned?8u:0u)|(s.txOwned?16u:0u)|(_wmi.credits.outstanding?32u:0u)|
-            ((s.stage!=Ath10k::LinkStage::Disabled && (!s.portAuthorized || s.stage!=Ath10k::LinkStage::Connected))?64u:0u);
+            ((s.stage!=Ath10k::LinkStage::Disabled && (!s.portAuthorized || s.stage!=Ath10k::LinkStage::Connected))?64u:0u)|
+            ((_nativeWasUp || _nativeLinkUpSent) && s.stage==Ath10k::LinkStage::Disabled?128u:0u)|
+            (_nativeAbortRequested?256u:0u);
         setProperty("Ath10kNativeScanBusyMask",UInt64(busy),32);
         if(busy)return kIOReturnBusy;
         const UInt64 requested=Ath10k::wmiRequestedScanMask(scan.channelCount?scan.channels:nullptr,sizeof(scan.channels));
@@ -435,6 +441,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         // DFS remains passive and every channel still intersects the domain.
         UInt32 generation=_wmiScan.generation+1;Ath10k::resetInPlace(_wmiScan);_wmiScan.generation=generation;
         _wmiScan.id=0xa000|((0x36+generation)&0xfff);Ath10k::resetInPlace(_wmiBSS);_nativeScan=scan;_nativeScanPending=true;
+        _nativeScanResultIndex=_nativeScanResultsEmitted=0;
         return kIOReturnSuccess;}
     case N::setWCL_SCAN_ABORT:{if(_nativeScanPending)_wmiScan.cancelRequested=true;return kIOReturnSuccess;}
     case N::setWCL_ASSOCIATE:{AirportWCL::JoinRequest join{};
@@ -449,7 +456,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             setProperty("Ath10kNativeJoinReason","unsupported-authentication");
             AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;}
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
-        if(_nativeJoinPending || _nativeScanPending || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
+        if(_nativeJoinPending || _nativeScanPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
         s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;s.rfChains=1;
@@ -463,7 +470,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             _nativeSecurity->ready=true;}
         _nativeJoin=join;AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));AthSecurity::wipe(&join,sizeof(join));
         setProperty("Ath10kNativeJoinReason","accepted");
-        _nativeJoinPending=true;_nativeAssocSent=_nativeBeaconSent=false;_nativeJoinDeadline=Ath10k::uptimeNS()/1000000u+30000;
+        _nativeJoinPending=true;_nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=_nativeJoinFailed=false;_nativeJoinDeadline=Ath10k::uptimeNS()/1000000u+30000;
         s.error="none";s.stage=Ath10k::LinkStage::Scan;return kIOReturnSuccess;}
     case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:{
         s.cancelRequested=true;s.portAuthorized=false;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;networkLink(false);
@@ -502,7 +509,9 @@ void Ath10kPCIDevice::nativeServiceThread(thread_call_param_t context,thread_cal
     auto self=static_cast<Ath10kPCIDevice *>(context);
     // IOService termination can hold the network workloop while stopping an
     // Apple user client on WCL. Never wait for either gate in this bridge.
-    if(self->_nativeBSDGate && self->_nativeBSDGate->attemptAction(nativeServiceWCLAction)==kIOReturnCannotLock){
+    if(!self->_nativeBSDGate)return;
+    const IOReturn result=self->_nativeBSDGate->attemptAction(nativeServiceWCLAction);
+    if(result==kIOReturnCannotLock || result==kIOReturnNoMemory){
         AbsoluteTime deadline;clock_interval_to_deadline(10,kMillisecondScale,&deadline);
         thread_call_enter_delayed(self->_nativeServiceCall,deadline);
     }
@@ -516,11 +525,16 @@ IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
     self->_nativeServicePending=false;
-    if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending))return kIOReturnNotReady;
-    self->serviceNative(Ath10k::uptimeNS()/1000000u);return kIOReturnSuccess;
+    if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending && !self->_nativeLinkUpSent && !self->_nativeAbortRequested))return kIOReturnNotReady;
+    self->serviceNative(Ath10k::uptimeNS()/1000000u);
+    if(self->_nativePostError!=kIOReturnSuccess){
+        self->_nativeServicePending=true;return kIOReturnNoMemory;
+    }
+    return kIOReturnSuccess;
 }
 
 void Ath10kPCIDevice::serviceNative(UInt64 now) {
+    _nativePostError=kIOReturnSuccess;
     if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
     auto &s=_connection;auto sec=_nativeSecurity;
     if(sec && _wmiScan.completed && !_wmiScan.failed && !_wmiScan.cancelRequested &&
@@ -528,48 +542,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         for(UInt32 i=0;i<_wmiBSS.count;++i)sec->candidates.add(_wmiBSS.entries[i],now);
         sec->cachedGeneration=_wmiScan.generation;
     }
-    auto post=[&](UInt32 id,void *payload,size_t bytes){postMessage(_nativeInterface,id,payload,bytes,true);};
-    if(_nativeReadyRequested && !_nativeReadyPublished && _wmiLive.active){
-        UInt32 reset=1;post(AirportWCL::ResetInterface,&reset,sizeof(reset));
-        AirportWCL::DriverAvailability ready{};ready.version=3;ready.available=1;ready.reason=0xe0821803;
-        post(AirportWCL::DriverAvailable,&ready,sizeof(ready));
-        _nativeReadyPublished=true;_nativeReadyRequested=false;
-    }
-    if(_nativeAbortRequested){post(AirportWCL::JoinAbortComplete,nullptr,0);_nativeAbortRequested=false;}
-
-    if(_nativeScanPending && _wmiScan.completed){
-        UInt32 emitted=0;
-        if(!_wmiScan.failed && !_wmiScan.cancelRequested){
-            for(unsigned i=0;i<_wmiBSS.count;++i){
-                const auto &b=_wmiBSS.entries[i];
-                if(!nativeScanMatches(_nativeScan,b))continue;
-                size_t length=nativeBSSMessage(_wmiBSS.entries[i],_nativeBSSMessage,sizeof(_nativeBSSMessage));
-                if(length){post(AirportWCL::ScanResult,_nativeBSSMessage,length);++emitted;}
-            }
-        }
-        UInt32 status=_wmiScan.cancelRequested?kIOReturnAborted:(_wmiScan.failed?kIOReturnError:kIOReturnSuccess);
-        setProperty("Ath10kNativeScanResultsEmitted",UInt64(emitted),32);
-        setProperty("Ath10kNativeScanDoneStatus",UInt64(status),32);
-        setProperty("Ath10kNativeScanDoneGeneration",UInt64(_wmiScan.generation),32);
-        _nativeScanPending=false;post(AirportWCL::ScanDone,&status,sizeof(status));
-        _nativeBSSBytes=0;
-    }
     const bool associated=s.stage==Ath10k::LinkStage::Connected && s.disconnect==Ath10k::DisconnectStage::None && !s.cancelRequested;
-    if(_nativeJoinPending && associated && !_nativeAssocSent){
-        AirportWCL::AssociationEvent event{};bcopy(s.bssid,event.bssid,6);event.status=s.associationStatus;
-        event.driverStatus=event.status?kIOReturnError:kIOReturnSuccess;
-        post(AirportWCL::AssocComplete,&event,sizeof(event));_nativeAssocSent=event.status==0;
-    }
-    if(_nativeJoinPending && associated && _nativeAssocSent && s.beaconFrameBytes && !_nativeBeaconSent){
-        _nativeBSSBytes=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
-        if(_nativeBSSBytes){
-            post(AirportWCL::ScanResult,_nativeBSSMessage,_nativeBSSBytes);
-            AirportWCL::LinkStatusEvent link{};bcopy(s.bssid,link.bssid,6);link.up=1;link.reason=255;
-            AirportWCL::FirstBeaconEvent beacon{};bcopy(s.bssid,beacon.peer.bssid,6);
-            post(AirportWCL::LinkStatus,&link,sizeof(link));post(AirportWCL::FirstBeacon,&beacon,sizeof(beacon));
-            _nativeBeaconSent=true;
-        }
-    }
+    // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
         if(sec->authorizePending && !s.txOwned && s.txComplete){
             if(s.txStatus || s.eapolTxFailed){s.error="native-eapol-tx-failed";s.cancelRequested=true;}
@@ -617,41 +591,135 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
             if(now>=sec->pairDeadline){sec->supplicant.cancelPairwiseAttempt();sec->pairDeadline=0;s.eapolPause=false;}
         }else {sec->pairDeadline=0;s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending;}
     }
-    if(_nativeJoinPending){
-        bool success=associated && s.portAuthorized && _nativeBeaconSent;
-        bool failed=s.cancelRequested || s.stage==Ath10k::LinkStage::Failed || s.disconnect!=Ath10k::DisconnectStage::None || now>=_nativeJoinDeadline;
-        if(success || failed){
-            AirportWCL::ConnectionEvent event{};event.status=success?0:1;
-            bcopy(_nativeJoin.bssid,event.peers[0].bssid,6);event.peers[0].driverStatus=success?kIOReturnSuccess:kIOReturnError;
-            post(AirportWCL::ConnectComplete,&event,sizeof(event));_nativeJoinPending=false;
-            AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
-            if(failed){s.cancelRequested=true;s.portAuthorized=false;networkLink(false);if(sec)sec->reset();}
+    serviceNativeNotifications(now);
+}
+
+// Called only with WCL and radio gates held, in that order. PostOffice copies
+// each payload before returning, but a failed enqueue has not delivered anything.
+void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
+    _nativePostError=kIOReturnSuccess;
+    if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
+    auto &s=_connection;auto sec=_nativeSecurity;
+    auto post=[&](UInt32 id,void *payload,size_t bytes){
+        if(_nativePostError!=kIOReturnSuccess)return false;
+        const IOReturn result=postMessage(_nativeInterface,id,payload,bytes,true);
+        if(result==kIOReturnSuccess)return true;
+        _nativePostError=result;++_nativePostFailures;
+        // Bound allocation-heavy telemetry while the system is short on memory.
+        if(_nativePostFailures==1 || _nativePostFailures%100==0){
+            setProperty("Ath10kNativeEventEnqueueFailures",_nativePostFailures,64);
+            setProperty("Ath10kNativeEventEnqueueLastError",UInt64(result),32);
+            setProperty("Ath10kNativeEventEnqueueLastID",UInt64(id),32);
+        }
+        return false;
+    };
+    if(_nativeReadyRequested && !_nativeReadyPublished && _wmiLive.active){
+        if(!_nativeReadyResetSent){
+            UInt32 reset=1;
+            if(post(AirportWCL::ResetInterface,&reset,sizeof(reset)))_nativeReadyResetSent=true;
+        }
+        if(_nativeReadyResetSent){
+            AirportWCL::DriverAvailability ready{};ready.version=3;ready.available=1;ready.reason=0xe0821803;
+            if(post(AirportWCL::DriverAvailable,&ready,sizeof(ready))){
+                _nativeReadyPublished=true;_nativeReadyRequested=false;
+            }
         }
     }
-    bool up=associated && s.portAuthorized && _networkLinkUp;
-    // Native WCL consumes the Sequoia RSSI snapshot, not legacy 227/229 LQM.
+    if(_nativeAbortRequested && post(AirportWCL::JoinAbortComplete,nullptr,0))_nativeAbortRequested=false;
+
+    if(_nativeScanPending && _wmiScan.completed){
+        if(!_wmiScan.failed && !_wmiScan.cancelRequested){
+            while(_nativeScanResultIndex<_wmiBSS.count){
+                const auto &b=_wmiBSS.entries[_nativeScanResultIndex];
+                if(nativeScanMatches(_nativeScan,b)){
+                    const size_t length=nativeBSSMessage(b,_nativeBSSMessage,sizeof(_nativeBSSMessage));
+                    if(length){
+                        if(!post(AirportWCL::ScanResult,_nativeBSSMessage,length))break;
+                        ++_nativeScanResultsEmitted;
+                    }
+                }
+                ++_nativeScanResultIndex;
+            }
+        }
+        if(_wmiScan.failed || _wmiScan.cancelRequested || _nativeScanResultIndex>=_wmiBSS.count){
+            UInt32 status=_wmiScan.cancelRequested?kIOReturnAborted:(_wmiScan.failed?kIOReturnError:kIOReturnSuccess);
+            if(post(AirportWCL::ScanDone,&status,sizeof(status))){
+                setProperty("Ath10kNativeScanResultsEmitted",UInt64(_nativeScanResultsEmitted),32);
+                setProperty("Ath10kNativeScanDoneStatus",UInt64(status),32);
+                setProperty("Ath10kNativeScanDoneGeneration",UInt64(_wmiScan.generation),32);
+                _nativeScanPending=false;_nativeBSSBytes=0;
+            }
+        }
+    }
+    const bool associated=s.stage==Ath10k::LinkStage::Connected && s.disconnect==Ath10k::DisconnectStage::None && !s.cancelRequested;
+    const bool joinFailed=_nativeJoinPending && (_nativeJoinFailed || s.cancelRequested ||
+        s.stage==Ath10k::LinkStage::Failed || s.disconnect!=Ath10k::DisconnectStage::None || now>=_nativeJoinDeadline);
+    if(_nativeJoinPending && !joinFailed && associated && !_nativeAssocSent){
+        AirportWCL::AssociationEvent event{};bcopy(s.bssid,event.bssid,6);event.status=s.associationStatus;
+        event.driverStatus=event.status?kIOReturnError:kIOReturnSuccess;
+        if(post(AirportWCL::AssocComplete,&event,sizeof(event)))_nativeAssocSent=event.status==0;
+    }
+    if(_nativeJoinPending && !joinFailed && associated && _nativeAssocSent && s.beaconFrameBytes && !_nativeBeaconSent){
+        if(!_nativeJoinBSSSent){
+            _nativeBSSBytes=nativeBSSMessage(s.ap,_nativeBSSMessage,sizeof(_nativeBSSMessage));
+            if(_nativeBSSBytes && post(AirportWCL::ScanResult,_nativeBSSMessage,_nativeBSSBytes))_nativeJoinBSSSent=true;
+        }
+        if(_nativeJoinBSSSent && !_nativeLinkUpSent){
+            AirportWCL::LinkStatusEvent link{};bcopy(s.bssid,link.bssid,6);link.up=1;link.reason=255;
+            if(post(AirportWCL::LinkStatus,&link,sizeof(link))){
+                _nativeLinkUpSent=true;bcopy(s.bssid,_nativeLastBSSID,6);
+            }
+        }
+        if(_nativeLinkUpSent){
+            AirportWCL::FirstBeaconEvent beacon{};bcopy(s.bssid,beacon.peer.bssid,6);
+            if(post(AirportWCL::FirstBeacon,&beacon,sizeof(beacon)))_nativeBeaconSent=true;
+        }
+    }
+    if(_nativeJoinPending){
+        const bool success=!joinFailed && associated && s.portAuthorized && _nativeBeaconSent;
+        if(success || joinFailed){
+            // A timeout/failure closes the data port even if its notification
+            // must wait for memory. Do not reset crypto repeatedly on retries.
+            if(joinFailed && !_nativeJoinFailed){
+                _nativeJoinFailed=true;s.cancelRequested=true;s.portAuthorized=false;
+                AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));
+                networkLink(false);if(sec)sec->reset();
+            }
+            AirportWCL::ConnectionEvent event{};event.status=success?0:1;
+            bcopy(_nativeJoin.bssid,event.peers[0].bssid,6);event.peers[0].driverStatus=success?kIOReturnSuccess:kIOReturnError;
+            if(post(AirportWCL::ConnectComplete,&event,sizeof(event))){
+                _nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
+            }
+        }
+    }
+    // Key replacement temporarily closes the controlled port; this is not a
+    // new association and must not generate Deauth/LinkDown for a healthy AP.
+    const bool up=associated && _networkLinkUp && (s.portAuthorized || (_nativeWasUp && s.rekeyKind));
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;
     if(quality!=_nativeReportedQuality){
-        // This runs under the radio/network gate. setLQM acquires the WCL
-        // gate, while WCL reportDataPathEvents takes the network gate in the
-        // opposite order. Publish diagnostics here; send RSSI via PostOffice.
         setProperty("Ath10kNativeLinkQuality",UInt64(static_cast<SInt64>(quality)),64);
         _nativeReportedQuality=quality;
     }
     if(up && s.signalDbm!=INT32_MIN && s.beaconFrameSerial!=_nativeReportedBeacon &&
        UInt32(s.beaconFrameSerial-_nativeReportedBeacon)>=8){
         AirportWCL::SequoiaLqmUpdate update{};update.rssiValid=1;update.rssi=s.signalDbm;
-        post(AirportWCL::LqmUpdate,&update,sizeof(update));_nativeReportedBeacon=s.beaconFrameSerial;
+        if(post(AirportWCL::LqmUpdate,&update,sizeof(update)))_nativeReportedBeacon=s.beaconFrameSerial;
     }
-    if(_nativeWasUp && !up){
-        AirportWCL::DeauthEvent event{};bcopy(s.bssid,event.bssid,6);event.reason=3;
-        post(AirportWCL::Deauth,&event,sizeof(event));
-        AirportWCL::LinkStatusEvent link{};bcopy(s.bssid,link.bssid,6);post(AirportWCL::LinkStatus,&link,sizeof(link));
-        // LinkStatus delivery calls setWCL_LINK_STATE_UPDATE on the WCL queue.
-        // Do not acquire that queue synchronously from the radio gate.
-        _nativeBSSBytes=0;_nativeReportedBeacon=0;if(sec)sec->reset();
+    if((_nativeWasUp || (_nativeLinkUpSent && !_nativeJoinPending)) && !up){
+        if(!_nativeDeauthSent){
+            AirportWCL::DeauthEvent event{};bcopy(_nativeLastBSSID,event.bssid,6);event.reason=3;
+            if(post(AirportWCL::Deauth,&event,sizeof(event)))_nativeDeauthSent=true;
+        }
+        if(_nativeDeauthSent){
+            AirportWCL::LinkStatusEvent link{};bcopy(_nativeLastBSSID,link.bssid,6);
+            if(post(AirportWCL::LinkStatus,&link,sizeof(link))){
+                _nativeWasUp=_nativeLinkUpSent=_nativeDeauthSent=false;
+                _nativeBSSBytes=0;_nativeReportedBeacon=0;
+                bzero(_nativeLastBSSID,sizeof(_nativeLastBSSID));if(sec)sec->reset();
+            }
+        }
     }
-    _nativeWasUp=up;
+    if(up){_nativeWasUp=true;bcopy(s.bssid,_nativeLastBSSID,6);}
 }
 
 // Runs under the network workloop gate; no radio commands run concurrently.

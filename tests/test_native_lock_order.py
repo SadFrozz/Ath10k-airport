@@ -20,6 +20,21 @@ class NativeLockOrder(unittest.TestCase):
         self.assertNotIn("_nativeBSSBytes",query)
         self.assertIn("nativeBSSMessage(s.ap,",query)
         self.assertIn("LinkStage::Connected",query)
+        self.assertIn("s.beaconFrameBytes",query)
+        self.assertNotIn("_nativeBeaconSent",query)
+
+    def test_security_progress_does_not_wait_for_notification_allocation(self):
+        native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
+        worker=native.split("void Ath10kPCIDevice::serviceNative(UInt64 now) {",1)[1].split("void Ath10kPCIDevice::serviceNativeNotifications",1)[0]
+        self.assertLess(worker.index("sec->supplicant.receive"),worker.index("serviceNativeNotifications(now)"))
+        self.assertNotIn("postMessage(",worker)
+
+    def test_new_transactions_wait_for_terminal_notifications(self):
+        native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
+        for name in ["MACSet", "setWCL_SCAN_REQ", "setWCL_ASSOCIATE"]:
+            case=native.split("case N::"+name+":",1)[1].split("case N::",1)[0]
+            self.assertIn("_nativeAbortRequested",case)
+            self.assertIn("_nativeLinkUpSent",case)
 
     def test_radio_worker_uses_queued_wcl_notifications(self):
         source=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()

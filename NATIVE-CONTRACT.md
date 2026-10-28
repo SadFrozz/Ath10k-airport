@@ -66,7 +66,7 @@ protocol after attachment. This candidate still requires hardware validation.
 
 | Priority | Path | Evidence/status | Completion condition |
 | --- | --- | --- | --- |
-| P0 | Event delivery errors | PostOffice copies payload but can return NoMemory; current flags advance without checking | Preserve event order and retry/terminate honestly on enqueue failure |
+| P0 | Event delivery errors | Candidate checks enqueue returns, keeps phase/cursors and retries with 10 ms backoff; host injection covers every stage | Verify system behavior during scan, rekey and failures on hardware |
 | P0 | Provider queues and API client close | New provider overrides; existing nonblocking event bridge | No cyclic waits during repeated query/close/scan; useful traffic continues |
 | P0 | Current BSS reply | Fixed scratch lifetime after WCL's confirmed Update Bss fail | Repeated background scans retain correct AP reply and connection |
 | P0 | Data path after authorization | Last boot had authorized port but no DHCP and stalled worker | DHCP, ARP, IPv4, IPv6 and bound HTTPS pass while worker advances |
@@ -103,9 +103,10 @@ copies the caller payload into that allocation, then appends it to an intrusive
 queue without acquiring a workloop gate itself. Thus stack payloads are copied
 before return, but the caller must serialize PostOffice access. The boolean
 argument is stored with the message; it is not a choice to borrow the payload.
-Allocation failure returns `0xe00002bd` (NoMemory). The current driver's event
-lambda discards this result. Reliable phase advancement after event enqueue is
-therefore still an open P0 task, not a completed robustness claim.
+Allocation failure returns `0xe00002bd` (NoMemory). The event-delivery candidate
+checks this return and commits only the accepted phase. This proves enqueue
+acceptance, not that WCL has already processed the asynchronous notification.
+Hardware verification remains required.
 
 The last pre-hang WCL log also records rejected FW_HOT_CHANNELS (424),
 SET_ROAM_LOCK (428) and QOS_PARAMS (443). The join proceeded past these responses,
@@ -129,3 +130,39 @@ both provider workloops. The mocked radio suite exercises the real scan method's
 pre-submit cancellation without DMA, START_SCAN or firmware credits, plus existing
 STARTED/COMPLETED/STOP and stale-generation failure cases. Hardware timing and
 stability on this candidate remain unverified.
+
+
+## Notification acceptance, failure and ordering candidate
+
+Security processing runs before the notification emitter. An allocation error
+therefore cannot skip supplicant processing merely because an earlier event was
+not accepted. The emitter stops attempting later messages in that pass after
+any failed enqueue; the existing coalesced worker retries after 10 ms. It does
+not enter a tight retry loop or add an unbounded private message queue. Stopping
+cancels and waits for the same ONCE thread call, including delayed retries.
+
+Separate phase markers track ResetInterface/DriverAvailable, scan-result cursor
+and count, association, current-BSS scan result, link-up and first beacon,
+ConnectComplete, abort completion, and Deauth/link-down. An accepted prefix is
+not repeated after a later allocation failure. The old BSSID survives radio
+state cleanup until both disconnect notifications have been accepted. New
+MAC/scan/join transactions wait for pending abort/link-down events. Current BSS
+availability follows real associated beacon data, not whether FirstBeacon has
+already been enqueued successfully.
+
+A hard join deadline takes precedence over success. Its cleanup closes the data
+port and cancels the attempt once, even if the failure notification cannot yet
+be allocated. Connection-event metadata remains available for the retry. A
+healthy group/pair key replacement temporarily closes the controlled port; the
+emitter preserves the existing link while associated and in a known rekey, and
+still tears down on a real cancel/disconnect. These were source-level defects;
+no claim is made that every previous hardware disconnect had either cause.
+
+Host regressions execute the exact production emitter with a failing PostOffice
+seam: repeated failure at each of 11 ordered boot/scan/join/RSSI messages,
+byte-for-byte accepted payload comparison, scan cancellation during retry,
+inactive-radio abort retry, failure at either disconnect message after radio
+state reset, partial-link failed join, persistent allocation pressure, and hard
+deadline cleanup. Bridge tests check retry coalescing and stop cancellation.
+Full controller teardown and automatic wake/restart remain separate audit work;
+this acceptance test does not prove the absence of all kernel lock cycles.

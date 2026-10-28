@@ -181,3 +181,21 @@ The attached BSD interface presents the Wi-Fi protocol as its provider. It there
 ## Requested-channel scan contract (2026-10-28)
 
 Native channel subsets now restrict firmware START_SCAN itself, intersecting the physical channel plan and regulatory policy. Unknown/6 GHz channels cannot turn into unrestricted scans; an empty intersection fails before submission. An accepted request cancelled before the first firmware submission completes locally without START/STOP or DMA ownership. Legacy full-plan wire format and passive DFS behavior remain unchanged. Native decode-to-command fixtures, extracted production provider getters, ASan/UBSan and mocked radio cancellation/credit/event regressions cover these changes. Hardware autojoin timing remains unverified. Event enqueue errors discovered in matching PostOffice assembly are tracked as an open P0 task in NATIVE-CONTRACT.md.
+
+
+## Checked event acceptance and rekey continuity (2026-10-28)
+
+The notification emitter now checks PostOffice enqueue results. It retains
+accepted-prefix markers/cursors and retries a failed suffix through the
+coalesced ONCE worker after 10 ms. ScanDone and ConnectComplete are not marked
+sent on allocation failure. Disconnect events preserve the old BSSID across
+radio cleanup, and pending terminal notifications block incompatible new
+transactions. Real associated beacon data remains queryable even if the
+FirstBeacon message is still waiting for memory. Supplicant progress runs
+before notification attempts.
+
+The same production-emitter tests found and cover false link-down during
+legitimate key replacement and the contradictory success/failure outcome at a
+join deadline. Deadline failure now wins and performs data-port/crypto cleanup
+once even if its notification must retry. Hardware validation is pending; these
+source-level corrections are not a claim that all prior hangs are resolved.
