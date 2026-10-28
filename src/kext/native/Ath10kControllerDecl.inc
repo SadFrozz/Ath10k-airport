@@ -31,6 +31,7 @@ public:
     void nativeStartupPhase(const char *);
     void releaseNativeInterface();
     void stopNativeRequests();
+    void discardNativeSecurity();
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);

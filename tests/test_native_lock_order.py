@@ -29,6 +29,18 @@ class NativeLockOrder(unittest.TestCase):
         shutdown=driver.split("void Ath10kPCIDevice::systemWillShutdown(",1)[1].split("void Ath10kPCIDevice::",1)[0]
         self.assertLess(shutdown.index("requestPowerEvent(Ath10k::PowerEvent::DeviceOff)"),shutdown.index("super::systemWillShutdown"))
 
+    def test_native_security_cleanup_and_power_admission_are_independent_of_events(self):
+        root=Path(__file__).resolve().parents[1]
+        native=(root/"src/kext/native/Ath10kNative.cpp").read_text()
+        driver=(root/"src/kext/Ath10kPCIDevice.cpp").read_text()
+        end=driver.split("void Ath10kPCIDevice::endWMIRuntime(",1)[1].split("void Ath10kPCIDevice::releaseWMIRuntime",1)[0]
+        self.assertLess(end.index("discardNativeSecurity()"),end.index("requestNativeService()"))
+        power=native.split("case N::PowerSet:",1)[1].split("case N::CountryGet:",1)[0]
+        self.assertIn("discardNativeSecurity()",power)
+        worker=native.split("void Ath10kPCIDevice::serviceNative(UInt64 now)",1)[1].split("void Ath10kPCIDevice::serviceNativeNotifications",1)[0]
+        self.assertLess(worker.index("discardNativeSecurity()"),worker.index("sec->supplicant.receive"))
+        self.assertLess(worker.index("discardNativeSecurity()"),worker.index("serviceNativeNotifications(now)"))
+
     def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
         root=Path(__file__).resolve().parents[1]
         header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()

@@ -26,6 +26,8 @@ struct Gate {
 };
 class Ath10kPCIDevice:public OSObject {
 public:
+ bool blocked=false;bool powerIOBlocked(){return blocked;}
+ void discardNativeSecurity(){++securityDiscards;}unsigned securityDiscards=0;
  bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
  bool _nativeLinkUpSent=false,_nativeAbortRequested=false,failPost=false;
  IOReturn _nativePostError=kIOReturnSuccess;
@@ -89,4 +91,13 @@ int main(){
  cancelledRetry.stopNativeRequests();
  assert(cancelledRetry._nativeStopping && !cancelledRetry._nativeServiceCall && !cancelledRetry._nativeServicePending);
  assert(cancelled==2 && freed==2);
+ // A pending power action suppresses radio/crypto and success events until
+ // quiescence, but cannot suppress terminal notifications after runtime ends.
+ Ath10kPCIDevice power;power.blocked=true;power._nativeJoinPending=true;
+ power.requestNativeService();power.nativeServiceThread(&power,nullptr);
+ assert(!power.services && !power._nativeServicePending);
+ power._wmiLive.active=false;power.requestNativeService();power.nativeServiceThread(&power,nullptr);
+ assert(power.services==1);
+ assert(stopping.securityDiscards==2 && cancelledRetry.securityDiscards==1);
+
 }

@@ -1213,6 +1213,9 @@ void Ath10kPCIDevice::endWMIRuntime(const char *reason)
     // has the independent bus-master-disable verification as a fallback.
     const bool resetOK=quiesceTargetAfterBMI();
     Ath10k::wipeConnectionSecrets(_connection);
+#ifdef ATH10K_NATIVE
+    discardNativeSecurity();
+#endif
     if (resetOK) releaseTargetWake(_runtimeWakeAsserted);
     if (!wakeOK || !irqOK || !resetOK) _dmaQuarantine=true;
     _runtimeWakeAsserted=false;

@@ -252,10 +252,16 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     setProperty("Ath10kNativeABI","Sequoia-15.2-WCL-experimental");
     return true;
 }
+// Radio-gated terminal cleanup. Event metadata and the last BSSID survive
+// until macOS accepts the terminal notifications; cryptographic material does not.
+void Ath10kPCIDevice::discardNativeSecurity() {
+    if(_nativeSecurity)_nativeSecurity->reset();
+    AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));
+}
 IOReturn Ath10kPCIDevice::nativeStopAction(OSObject *owner,void *,void *,void *,void *) {
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
-    self->_nativeStopping=true;
+    self->_nativeStopping=true;self->discardNativeSecurity();
     if(self->_nativeMACWaiting){self->_nativeMACResult=kIOReturnAborted;self->_nativeGate->commandWakeup(&self->_nativeMACResult);}
     return kIOReturnSuccess;
 }
@@ -297,7 +303,7 @@ IOReturn Ath10kPCIDevice::nativeRequest(AthNativeOp op,void *data) {
     const bool joinRequest=op==AthNativeOp::setWCL_ASSOCIATE;
     if(joinRequest)setProperty("Ath10kNativeJoinDispatchSeen",true);
     if(scan)setProperty("Ath10kNativeScanDispatchSeen",true);
-    if(!_nativeGate || _nativeStopping || !_wmiLive.active){
+    if(!_nativeGate || _nativeStopping || powerIOBlocked() || !_wmiLive.active){
         if(scan)setProperty("Ath10kNativeScanReturn",UInt64(kIOReturnNotReady),32);
         return kIOReturnNotReady;
     }
@@ -313,7 +319,7 @@ IOReturn Ath10kPCIDevice::nativeAction(OSObject *target,void *op,void *data,void
 }
 static UInt32 channelFlags(UInt32 channel){return (channel<=14?APPLE80211_C_FLAG_2GHZ:APPLE80211_C_FLAG_5GHZ)|APPLE80211_C_FLAG_20MHZ;}
 IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
-    if(_nativeStopping || !_wmiLive.active)return kIOReturnNotReady;
+    if(_nativeStopping || powerIOBlocked() || !_wmiLive.active)return kIOReturnNotReady;
     auto &s=_connection;using N=AthNativeOp;
     if(!data && op!=N::setCLEAR_PMKSA_CACHE && op!=N::setWCL_SCAN_ABORT &&
        op!=N::setWCL_JOIN_ABORT && op!=N::setWCL_LEAVE_NETWORK && op!=N::setWCL_LINK_UP_DONE &&
@@ -355,7 +361,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         _nativeReadyRequested=true;requestNativeService();return kIOReturnSuccess;}
     case N::PowerGet:{auto d=static_cast<apple80211_power_data *>(data);bzero(d,sizeof(*d));d->version=1;d->num_radios=1;d->power_state[0]=_nativeRadioOn?1:0;return kIOReturnSuccess;}
     case N::PowerSet:{auto d=static_cast<apple80211_power_data *>(data);if(d->num_radios!=1 || d->power_state[0]>1)return kIOReturnBadArgument;
-        _nativeRadioOn=d->power_state[0];if(!_nativeRadioOn){_wmiScan.cancelRequested=true;s.cancelRequested=true;s.portAuthorized=false;networkLink(false);}
+        _nativeRadioOn=d->power_state[0];if(!_nativeRadioOn){_wmiScan.cancelRequested=true;s.cancelRequested=true;s.portAuthorized=false;discardNativeSecurity();networkLink(false);}
         return kIOReturnSuccess;}
     case N::CountryGet:{auto d=static_cast<apple80211_country_code_data *>(data);bzero(d,sizeof(*d));d->version=1;
         if(_regulatory.country)bcopy(_regulatory.country->alpha2,d->cc,2);return kIOReturnSuccess;}
@@ -525,6 +531,10 @@ IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *
     auto self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
     self->_nativeServicePending=false;
+    // The sleep caller raises the atomic block before it can acquire radio.
+    // Do not progress crypto or publish join success in that handoff window.
+    // Once radio quiescence completes, inactive-runtime terminal events still run.
+    if(self->powerIOBlocked() && self->_wmiLive.active)return kIOReturnNotReady;
     if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending && !self->_nativeLinkUpSent && !self->_nativeAbortRequested))return kIOReturnNotReady;
     self->serviceNative(Ath10k::uptimeNS()/1000000u);
     if(self->_nativePostError!=kIOReturnSuccess){
@@ -543,6 +553,11 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         sec->cachedGeneration=_wmiScan.generation;
     }
     const bool associated=s.stage==Ath10k::LinkStage::Connected && s.disconnect==Ath10k::DisconnectStage::None && !s.cancelRequested;
+    // A completed radio-side teardown must not retain PMK/PTK/replies merely
+    // because WCL cannot yet allocate Deauth or LinkDown notifications.
+    if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline) &&
+       (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
+        s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
         if(sec->authorizePending && !s.txOwned && s.txComplete){
