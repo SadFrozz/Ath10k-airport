@@ -15,6 +15,7 @@ static void IOLog(const char *,...){}
 static bool OSCompareAndSwap(UInt32 old,UInt32 next,volatile UInt32 *address){
     return __sync_bool_compare_and_swap(address,old,next);
 }
+static UInt32 OSAddAtomic(int amount,volatile UInt32 *address){return __sync_fetch_and_add(address,amount);}
 using IOLock=std::mutex;
 static void IOLockLock(IOLock *lock){lock->lock();}
 static void IOLockUnlock(IOLock *lock){lock->unlock();}
@@ -42,6 +43,7 @@ public:
  bool stopDMAForRelease(){assert(loop.inside && pciPowered);++dmaChecks;return dmaSafe;}
  unsigned resets=0,published=0;bool resetQuarantines=false,pciPowered=true;
  bool preparePowerNotifications();void releasePowerNotifications();bool powerIOBlocked();bool powerRestartAllowed();
+ void beginPowerSuspend();void finishPowerSuspend();
  void requestPowerEvent(Ath10k::PowerEvent);void publishPowerState();
  static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
  static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);
@@ -130,5 +132,30 @@ int main(){
  partial.pciPowered=true;partial.requestPowerEvent(PowerEvent::DeviceOn);
  partial.requestPowerEvent(PowerEvent::SystemWake);
  assert(partial._dmaQuarantine && partial.powerIOBlocked());
+
+ // A new root/device suspend can arrive while an older DeviceOn owns the
+ // initialization barrier. Neither wake readiness nor the pending count may
+ // be overwritten when the older action reaches its 1 -> 2 promotion.
+ Ath10kPCIDevice again;again.requestPowerEvent(PowerEvent::SystemSleep);
+ again.requestPowerEvent(PowerEvent::SystemWake);assert(again.powerRestartAllowed());
+ again.probeLock.lock();
+ std::thread rootSleep([&]{again.requestPowerEvent(PowerEvent::SystemSleep);});
+ std::thread deviceOff([&]{again.requestPowerEvent(PowerEvent::DeviceOff);});
+ const auto pendingDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+ while(OSAddAtomic(0,&again._powerIOBlock)<8 && std::chrono::steady_clock::now()<pendingDeadline)std::this_thread::yield();
+ assert(OSAddAtomic(0,&again._powerIOBlock)==9 && !again.powerRestartAllowed());
+ again.loop.runAction(again.controlPowerState,&again,reinterpret_cast<void *>(static_cast<uintptr_t>(PowerEvent::DeviceOn)));
+ assert(OSAddAtomic(0,&again._powerIOBlock)==9 && !again.powerRestartAllowed());
+ assert(!strcmp(again._power.status,"suspend-pending"));
+ again.probeLock.unlock();rootSleep.join();deviceOff.join();
+ assert(OSAddAtomic(0,&again._powerIOBlock)==1 && again._systemSuspended);
+ again.requestPowerEvent(PowerEvent::SystemWake);assert(!again.powerRestartAllowed());
+ again.requestPowerEvent(PowerEvent::DeviceOn);assert(again.powerRestartAllowed());
+ // Saturation is fail-closed; malformed request counts never wrap into active.
+ assert(Ath10k::queuePowerSuspend(0)==5 && Ath10k::queuePowerSuspend(2)==5);
+ assert(Ath10k::queuePowerSuspend(5)==9 && Ath10k::applyPowerSuspend(9)==5);
+ assert(Ath10k::applyPowerSuspend(5)==1);
+ assert(Ath10k::queuePowerSuspend(0xfffffffdu)==0xffffffffu);
+ assert(Ath10k::applyPowerSuspend(0xffffffffu)==0xffffffffu);
  registrationFail=true;Ath10kPCIDevice alloc;assert(!alloc.preparePowerNotifications() && !alloc._powerNotifier);
 }

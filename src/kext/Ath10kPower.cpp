@@ -24,6 +24,22 @@ bool Ath10kPCIDevice::powerRestartAllowed()
 {
     return OSCompareAndSwap(2,2,&_powerIOBlock);
 }
+void Ath10kPCIDevice::beginPowerSuspend()
+{
+    // Count intent and block I/O in the same CAS. A wake action can promote
+    // exactly 1 -> 2 only after every pending suspend has recorded its state.
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::queuePowerSuspend(old),&_powerIOBlock))return;
+    }
+}
+void Ath10kPCIDevice::finishPowerSuspend()
+{
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::applyPowerSuspend(old),&_powerIOBlock))return;
+    }
+}
 void Ath10kPCIDevice::publishPowerState()
 {
     setProperty("Ath10kPowerNotificationRegistered",_powerNotifier!=nullptr);
@@ -47,8 +63,7 @@ void Ath10kPCIDevice::publishPowerState()
 void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
 {
     if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff){
-        OSCompareAndSwap(0,1,&_powerIOBlock);
-        OSCompareAndSwap(2,1,&_powerIOBlock);
+        beginPowerSuspend();
     }
     // Block new filter/timer/output work before waiting for the hardware gate.
     // The priority root notification does not return until existing work and
@@ -73,12 +88,13 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
     else if(event==Ath10k::PowerEvent::SystemWake || event==Ath10k::PowerEvent::SleepCancelled){
         ++p.notifications;p.rootSleeping=false;
     }else return kIOReturnBadArgument;
+    if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff)
+        self->finishPowerSuspend();
     const bool suspended=p.rootSleeping || !p.deviceOn;
     if(suspended){
         const bool firstSuspend=!self->_systemSuspended;
         if(firstSuspend)++p.sleeps;
         self->_systemSuspended=true;p.needsRestart=true;
-        OSCompareAndSwap(2,1,&self->_powerIOBlock);
         self->endWMIRuntime("suspended-awaiting-wake");
         // A failed/partial firmware probe may never have made WMI active.
         // Verify that no outstanding bootstrap DMA survives the first sleep.
@@ -92,8 +108,11 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
         // The existing app Restart operation performs full stop/rematch/boot.
         // Keep I/O blocked until that new driver instance is ready.
         if(p.needsRestart){
+            // A queued sleep/off increments the same atomic word, so its
+            // block cannot be mistaken for the completed previous suspend.
             OSCompareAndSwap(1,2,&self->_powerIOBlock);
-            p.status=self->_dmaQuarantine?"wake-dma-quarantined":"wake-restart-required";
+            p.status=!self->powerRestartAllowed()?"suspend-pending":
+                (self->_dmaQuarantine?"wake-dma-quarantined":"wake-restart-required");
             self->_wmiLive.status=p.status;
         }else{
             // A sleep/off request may already have raised the atomic block

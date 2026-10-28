@@ -69,7 +69,7 @@ private:
     bool requestDeviceRestart();
     void drainControlWorkers();
     Ath10k::PowerState _power{};
-    // Atomic: 0 active, 1 suspending/suspended, 2 awake but clean restart required.
+    // Atomic low phase bits plus pending-suspend count; see Ath10kPower.hpp.
     volatile UInt32 _powerIOBlock=0;
     IONotifier *_powerNotifier=nullptr;
     // Serializes deferred firmware/attach work with priority sleep quiescence.
@@ -79,6 +79,8 @@ private:
     void releasePowerNotifications();
     bool powerIOBlocked();
     bool powerRestartAllowed();
+    void beginPowerSuspend();
+    void finishPowerSuspend();
     void requestPowerEvent(Ath10k::PowerEvent);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
