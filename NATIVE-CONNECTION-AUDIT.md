@@ -147,3 +147,32 @@ channels, so optimizing directed/subset scans remains open. No router change is
 required. A 45-packet source-bound gateway test had zero loss (average 3.77 ms),
 and interface-bound direct HTTPS succeeded. An earlier bound-interface ping
 returned routing errors and is not a driver packet-loss measurement.
+
+
+## API user-client provider workloop (2026-10-28)
+
+7a17e7f still hung, with no usable DHCP address before the stall. At 04:30:37
+configd's watchdog captured IOServiceTerminateThread 111 holding the inherited
+controller workloop while waiting in IO80211APIUserClient::stop. Airportd thread
+8587 held WCL and waited on a command gate in apple80211RouteExternal. CCLogPipe,
+network ioctl and WCL timer threads queued behind these owners. Kernel UUID and
+IO80211 symbols match the captured report. The report includes threads from all
+processes: the owner 8587 is in airportd, not kernel pid 0.
+
+Ath10kNativeInterface now overrides getWorkLoop to return the WCL workqueue.
+IOService's documented provider-chain workloop inheritance otherwise reaches
+Ath10kPCIDevice::getWorkLoop, which intentionally returns the separate threaded
+BSD/radio workloop. API user-client termination must serialize on WCL itself;
+it must not hold the radio gate while entering WCL. The controller keeps its
+thread-backed network workloop and the existing nonblocking notification bridge.
+Host contract tests enforce both sides of this separation. Hardware verification
+is still required and the observed stall is not attributed to WPA keys solely
+because the exposed port-authorized property stayed true.
+
+The saved macOS known-network profile also contains Hidden=true for the tested
+visible AP. This is separate from current beacon parsing and has not been edited
+or deleted. Current-BSS scratch-lifetime fix is retained. Visible-network UI and
+usable traffic remain pending; zero disconnects on a stalled driver is not a
+stability pass. No manual kext load or further reboot was performed.
+
+The attached BSD interface presents the Wi-Fi protocol as its provider. It therefore also overrides getWorkLoop explicitly, in the opposite direction: it retains the controller network workloop for Ethernet operations. This prevents the Wi-Fi provider correction from accidentally moving BSD operations onto a threadless WCL queue. Both provider-chain endpoints are checked.

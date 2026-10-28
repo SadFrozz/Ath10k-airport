@@ -7,6 +7,7 @@ class Ath10kNativeInterface : public IO80211InfraProtocol {
 public:
     Ath10kPCIDevice *controller=nullptr;
     bool initWithController(Ath10kPCIDevice *);
+    IOWorkLoop *getWorkLoop() const override;
     IOReturn perform(AthNativeOp,void *);
     IOReturn setMacAddress(ether_addr &) override;
     IOReturn getCHANNEL(apple80211_channel_data* data) override { return perform(AthNativeOp::getCHANNEL,data); }

@@ -2,6 +2,18 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_native_user_clients_inherit_wcl_not_radio_workloop(self):
+        root=Path(__file__).resolve().parents[1]
+        header=(root/"src/kext/native/Ath10kNativeInterface.hpp").read_text()
+        native=(root/"src/kext/native/Ath10kNative.cpp").read_text()
+        network=(root/"src/kext/Ath10kNetwork.cpp").read_text()
+        self.assertIn("IOWorkLoop *getWorkLoop() const override;",header)
+        interface=native.split("IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const",1)[1].split("IOReturn Ath10kNativeInterface::perform",1)[0]
+        self.assertIn("controller->getWorkQueue()",interface)
+        bsd=native.split("class Ath10kBSDInterface",1)[1].split("OSDefineMetaClassAndStructors(Ath10kBSDInterface",1)[0]
+        self.assertIn("wifi->controller->getWorkLoop()",bsd)
+        self.assertIn("Ath10kPCIDevice::getWorkLoop() const {return _networkWorkLoop;}",network)
+
     def test_current_bss_is_independent_of_scan_scratch_lifetime(self):
         native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
         query=native.split("case N::getWCL_BSS_INFO:",1)[1].split("case N::",1)[0]

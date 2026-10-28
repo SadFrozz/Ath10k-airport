@@ -32,6 +32,11 @@ public:
     bool initWithController(Ath10kPCIDevice *owner,Ath10kNativeInterface *protocol) {
         wifi=protocol;return IOEthernetInterface::init(owner);
     }
+    IOWorkLoop *getWorkLoop() const override {
+        // getProvider() presents the Wi-Fi protocol after BSD attachment.
+        // Do not inherit its threadless WCL queue for Ethernet operations.
+        return wifi && wifi->controller?wifi->controller->getWorkLoop():nullptr;
+    }
     static IOReturn prepare(OSObject *,void *arg,void *,void *,void *) {
         auto self=static_cast<Ath10kBSDInterface *>(arg);
         auto owner=self->wifi->controller;
@@ -188,6 +193,13 @@ bool Ath10kNativeInterface::initWithController(Ath10kPCIDevice *owner) {
     controller=owner;IOEthernetAddress address{};
     return IO80211InfraInterface::init() && owner->getHardwareAddress(&address)==kIOReturnSuccess &&
         IO80211SkywalkInterface::init(owner,reinterpret_cast<ether_addr *>(&address));
+}
+IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const {
+    // API user clients inherit their provider's workloop. Their stop path
+    // must enter WCL directly, rather than hold the BSD/radio gate and
+    // then synchronously enter WCL while another WCL command needs radio.
+    // The BSD controller retains its separate, thread-backed workloop.
+    return controller?controller->getWorkQueue():nullptr;
 }
 IOReturn Ath10kNativeInterface::perform(AthNativeOp op,void *data){return controller?controller->nativeRequest(op,data):kIOReturnNotAttached;}
 IOReturn Ath10kNativeInterface::setMacAddress(ether_addr &address) {
