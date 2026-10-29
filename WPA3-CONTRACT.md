@@ -2057,3 +2057,547 @@ BootKC, with no new imports versus published 0.0.104. Native and legacy builds
 and the kernel compile-only preparation target pass. These checks do not
 execute the candidate, enable native SAE or prove runtime stability. Raw Apple
 collections remain work-local; only the inclusion report is backed up.
+
+## Local native join policy follow-up (not installed)
+
+Stock Sequoia IO80211Family UUID 0D5AC570-04D4-38B6-8577-9F21350CDD50
+exposes two different layouts: initWCLJoinRequest copies a raw assoc_data
+input, while fillAssocCandidatesList constructs the outbound candidate envelope
+passed to our setWCL_ASSOCIATE callback. The raw input offsets must not be used
+to decode the latter. The outbound lower/upper auth remain 0x10/0x14;
+AuthUpperExt is copied to 0x18, AllowAuths to 0x210, and Transition Disable bits
+0..4 are individually forwarded into byte 0x1e8. Adjacent padding is not policy.
+The key envelope is copied unchanged (0x94 bytes) to 0x40. These layout facts
+come from the stock producer/accessors; raw Apple disassembly stays work-local.
+
+The stock authtypeupper2str function's upper=0 jump-table entry branches on
+extension=1 and names it APPLE80211_AUTHTYPE_OWE, versus AUTHTYPE_NONE for the
+ordinary case. This is naming evidence, not an admission/capability table.
+The previous decoder dropped extension=1, so an OWE request without key bytes
+could be classified as plaintext Open. The decoder now retains extension,
+allowed-auth metadata and the policy byte. Native Open/PSK and candidate-only
+SAE reject unsupported extensions rather than erasing them.
+
+The low four Transition Disable bit meanings follow the WFA bitmap used in
+hostap's pinned wpa_common.h and wpas_glue.c (references below). Applying these
+meanings to Apple's identically named, unchanged bitmap is an inference from
+the stock producer. WPA3-Personal-only/SAE-PK-only requests cannot select PSK;
+Enhanced Open-only cannot select plaintext Open; SAE-PK-only cannot select our
+ordinary SAE candidate. Restrictions of unrelated authentication classes do
+not disable a supported personal mode. The stock-forwarded fifth bit and any
+other unidentified policy bits are retained but rejected until their contract
+is established. AllowAuths remains opaque metadata; its separate semantics are
+not inferred from the selected upper-auth bitmap.
+
+Primary references (pinned hostap commit 80390943513e2c324f25c9b5fc4bb7769c4fcf8f):
+- https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/common/wpa_common.h
+- https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/wpa_supplicant/wpas_glue.c
+
+Raw-wire tests cover OWE and unknown extensions, explicit policy combinations,
+unchanged unrestricted Open/PSK/SHA256-PSK, SAE candidate selection, ignored
+adjacent padding and exact metadata retention. Retained-session negative tests
+verify that unsupported extension, SAE-PK-only and unidentified policies do not
+start password crypto. Four affected ASan/UBSan tests pass (native_join,
+native_wire, sae_session, native_sae_radio); the final explicit policy-table
+join test also passes separately. Native build and kernel compile-only checks
+pass. No new normal driver imports are introduced. This is a local source
+follow-up to c1d80b9; the rebuilt image is not signed/archived as a deployment
+candidate and no installation, reboot, full-suite or hardware result is claimed.
+
+Still open: establish AllowAuths and the fifth policy-bit semantics, process and
+export authenticated Transition Disable KDEs through the native stack, and
+validate actual native password delivery/kernel crypto/firmware PMF. This
+request-boundary fix does not claim complete Transition Disable support or
+enable native SAE/OWE. Never derive persistent policy from unauthenticated
+beacon/probe contents.
+
+
+Local kernel diagnostic follow-up (2026-10-29, not published):
+- The authorized OpenCore diagnostic boot occurred. PCI properties reported
+  `unsupported-kernel` on build 24G90, before the P-256 test ran. The first image
+  did not retain the numeric version/build observations, so the rejected input
+  cannot be determined conclusively from this result.
+- The root build property is present after boot. The revised diagnostic checks
+  numeric Darwin version and the exact XNU tag before matching, and checks the
+  exact build on its isolated worker before crypto. An absent property is polled
+  at 100 ms intervals, at most 300 times; a present foreign value fails immediately.
+  Cancellation is checked between waits. No driver gate, controller, radio,
+  firmware or DMA participates in this wait.
+- The original five-second crypto deadline starts once after admission succeeds;
+  the separate admission wait does not renew an executing check. Wrong/missing
+  build and admission clock errors never call the crypto backend. Numeric kernel
+  version properties are retained for any further rejection.
+- The generator now omits Network-Root from the isolated diagnostic, matching the
+  earlier auxiliary-validation copies. The first installed image retained this
+  key. The diagnostic cannot provide a network device.
+- These are local changes. Hardware crypto success and a complete native WPA3
+  association remain unproven. Another diagnostic boot requires human approval.
+
+
+Hardware result and native backend follow-up (2026-10-29, local only):
+- OpenCore diagnostic UUID 194E7723-A608-34A3-8B94-25C297574B7A passed
+  all eleven public P-256 backend checks in kernel on 24G90 / Darwin 24.6.0,
+  exact XNU tag xnu-11417.140.69~1/RELEASE_X86_64. PCI report: passed=true,
+  mask=2047, step=12, epoch=1, elapsed=917198 ns, queue=661 ns. Boot-session
+  change was verified against the install receipt; result/receipt are on SD.
+  This proves those operations on this OS; it does not prove a complete kernel
+  SAE exchange, native password delivery, firmware PMF, or another OS version.
+- The normal native build now has an explicit kernel-provider resolver, queried
+  on association for Ath10kNativeSAEKernelBackendReady. It returns both providers
+  only after the exact numeric Darwin version, OS build and XNU tag match. A
+  missing early property fails this request but is re-read on the next request.
+  Rejection clears both outputs so stale function pointers cannot be reused.
+  Resolving providers performs no crypto, allocation of crypto work or waiting.
+- Six rejected-identity/stale-output cases plus the accepted identity run without
+  invoking the curve backend. Affected p256_backend, native_join,
+  native_security_lifecycle and native_sae_radio tests passed under ASan/UBSan.
+  Native compilation and auxiliary linking with exact executable UUID passed.
+  The auxiliary-validation copy omits Network-Root; the installable normal
+  native bundle retains its normal networking personality. This image has not
+  been installed or run. The active boot is still the isolated diagnostic.
+- Native SAE capabilities/admission remain disabled pending actual password
+  delivery and firmware PMF validation. Credential envelope flags and password
+  identifiers are still unverified. No companion app, OS patch, commit, push
+  or GitHub Actions run was introduced by this local follow-up.
+
+
+Authenticated Transition Disable KDE (local follow-up, 2026-10-29):
+- The supplicant now recognizes WFA selector 50:6f:9a:20 inside authenticated
+  SAE M3 key data. It exports a bitmap only after valid MIC, AES-KW integrity,
+  matching AP RSN/RSNXE, GTK/IGTK validation and successful M4 construction.
+  No update is exported from unauthenticated M1, PSK/SHA256-PSK, group-key
+  messages, failed M3 or cached/replayed M3 acknowledgements.
+- The bounded one-shot update retains all 1..251 bitmap bytes (including unknown
+  bits), station/BSSID identity and authenticated replay counter. Empty or
+  duplicate matching KDEs reject the M3 without publishing keys or policy.
+  Unconsumed authenticated restrictions accumulate by OR across real pairwise
+  rekeys; a later weaker bitmap cannot erase them. Reset/new begin clears them.
+  The profile owner must wait for its real key/controlled-port barriers before
+  applying/persisting a consumed policy. No native consumer is implemented yet.
+- This does not claim SAE-PK support or apply its restriction based on ordinary
+  SAE authentication. Unknown bits are preserved, not interpreted. The stock
+  WCL notification/persistent profile contract remains unidentified; no native
+  message ID, RSNXE mapping or persistent profile write has been invented.
+- Independent Python cryptography AES-KW/CMAC fixtures cover a valid M3, replay,
+  maximum bitmap length, empty/duplicate KDEs, bad RSN, bad wrap with valid MIC,
+  group updates, pairwise rekey and SHA256-PSK. C++ additionally tests invalid
+  MIC, missing encryption flag, unauthenticated M1, failed M4 generation,
+  wrong-owner consumption, reset/new begin and one-shot consumption.
+  ASan/UBSan: sae_eapol, sha256_supplicant, security, native_key_stage passed;
+  the added unauthenticated-M1 case is checked in a focused follow-up run.
+  Normal native compilation passed; kernel/native WPA3 runtime remains untested.
+
+Primary references (pinned hostap source, not a claim about Apple's ABI):
+- https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/common/wpa_common.c
+  recognizes the selector and nonempty variable-length bitmap.
+- https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/src/rsn_supp/wpa.c
+  invokes Transition Disable after processing authenticated M3.
+- https://android.googlesource.com/platform/external/wpa_supplicant_8/+/80390943513e2c324f25c9b5fc4bb7769c4fcf8f/wpa_supplicant/wpas_glue.c
+  applies restrictions according to the authenticated AKM, including the
+  separate SAE-PK authentication condition; profile persistence is an owner task.
+
+
+PMF per-frame authenticated layout selection (local, 2026-10-29):
+- The native RX bootstrap no longer drops every protected unicast management
+  frame until a global firmware-layout flag has been manually validated. The
+  bounded inbox carries an Authenticated selection request to the retained
+  off-gate worker. This enum value is a request to authenticate, not proof of
+  authentication. Only a successful job plus the current PTK/connection/PN
+  owner commit produces a native management event.
+- The worker first verifies wire CCMP, and after authentication mismatch may
+  verify plaintext payload with the original encrypted tag. Invalid input,
+  replay and AES-provider failure never initiate the second attempt. Both
+  formats require retained CCMP header/PN, original encrypted MIC, correct
+  identities, valid robust body and full CCM verification. Stripped/replaced
+  tags remain unsupported and are dropped. A layout is returned only on success;
+  failed attempts preserve caller output and do not commit replay state.
+- Layout selection stays per-frame; it is not a cache of an untrusted firmware
+  claim. pmfLayoutVerified is now diagnostic evidence of a committed unicast
+  frame, not a prerequisite for accepting another frame. Group BIP remains
+  separate. Host TX PN ownership and physical firmware transport are unchanged
+  and still require hardware validation before native SAE admission.
+- ASan/UBSan passed pmf_ccmp, pmf_session, pmf_inbox, native_pmf_receive,
+  native_key_stage and native_sae_radio. Cases include both independent fixture
+  formats, changing representation of a replay, every AES failure point for a
+  maximum-sized frame, original-tag omission/corruption, native DMA-buffer copy,
+  ownership/rekey fences and first valid native RX without a pre-set layout.
+  A focused pmf_session follow-up confirms failed authentication does not spend
+  the following valid frame's PN. Native build and exact-UUID auxiliary link pass.
+- Linux v6.12 ath10k wmi.c ath10k_wmi_rx_is_decrypted and management RX preserve
+  headers/tags for robust management handling; mac.c advertises MFP_CAPABLE even
+  without firmware feature MFP_SUPPORT. These establish why both representations
+  must be considered, not proof of this laptop firmware's runtime output.
+  Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/net/wireless/ath/ath10k/wmi.c?h=v6.12
+
+Native request investigation (macOS build 24G90):
+- CoreWiFi UUID 98DC9A05-19D7-379A-ADF7-D5C8D32E07F9: scan-result/profile
+  isWPA3 queries supportedSecurityTypes and tests mask 0xc0. This is not proof
+  of a kernel CARD_CAPABILITIES bit or of each mask bit's AKM meaning.
+- CoreWLAN UUID A13906EE-B783-37F8-B44B-3DF90DF7EC8B: the deprecated
+  associateToNetwork:parameters:error: fetches an object and tail-delegates to
+  associateToNetwork:password:error:. No explicit SAE override was established.
+- CWFNetworkProfile has transitionDisabledFlags getters/setters. The native
+  driver notification and persistent profile API mapping remain unproven.
+- Current native scan results already preserve the AP's RSN/RSNXE; the old
+  selectWPA2TransitionMode helper has no callers. No capability bits were
+  invented or enabled from these findings. The next normal native boot must
+  capture only scalar join metadata to determine the actual SAE password
+  envelope/flags; envelope shape alone will not establish password correctness.
+
+
+Native normal-boot verification and SAE client gate (2026-10-29):
+- The authorized normal image UUID DBB8877C-4081-3970-A3B1-3749A529ACC7
+  loaded after a verified boot-session change. Registry reported one native
+  service, SAE worker/backend ready, and an accepted SHA256-PSK request:
+  upper=1024, extension=0, allowAuths=4, cipher=6, key length=32, flags/index=0.
+  This is WPA2-SHA256/PMK evidence, not native SAE password transport evidence.
+- An explicitly en1-bound ICMP socket sent 20 probes over 59.11 seconds: 20
+  replies, zero loss, average RTT 22.810 ms. Thirteen registry observations
+  remained connected-wpa2 and port-authorized, with disconnect/watchdog deltas
+  zero. TX/RX counter deltas were 927/815 including other concurrent traffic.
+  This short test is not long-duration, sleep/wake or WPA3 stability proof.
+- A separate development-only CoreWiFi request for security mask 64 returned
+  NSPOSIXErrorDomain 22 before any observed native SAE request. It requested no
+  profile saving and logged no password data. The private API's missing/invalid
+  parameter is not identified; do not attribute that EINVAL to the kext or to
+  the separate capability check below. No standalone app is required by the
+  installed driver; the request experiment is not part of its distribution.
+- CoreWiFi's own in-memory profile predicates classify mask 64 as WPA3+PSK,
+  and mask 128 as WPA3+EAP. The scan/profile isWPA3 mask remains 0xc0. These
+  client-profile bits differ from native upper-auth and card-capability bits.
+- Apple80211 UUID 38625671-4B42-3F37-88C0-0070F32EF44B: its bind helper reads
+  IOC_CARD_CAPABILITIES (12), 19 bytes, into handle+0x58. Its association path
+  for AUTH_SEL_OVERRIDE=8 checks bit 3 at handle+0x61, i.e. capability byte 9,
+  bit 75. The accepted branch sets native upper auth 0x1000; its password
+  path uses CIPHER_PWD=10. Apple80211Associate takes handle, network dictionary,
+  password; its wrapper supplies a null fourth/options argument internally.
+  This is bounded local reconstruction of that exact library, not a runtime
+  native SAE observation and not an ABI guarantee for another OS.
+- The current driver leaves capability 75 clear, consistently with disabled
+  SAE admission. The old enum ending at bit 63 does not describe all 19 bytes
+  of Sequoia's capability data. The next implementation must connect native
+  SAE admission and advertise capability 75 together; flipping the bit alone
+  would claim a connection path that remains unimplemented. No capability
+  bits or driver code were changed during this hardware/client investigation.
+- Raw Apple code remains work-local. Derived facts and hardware receipts are
+  retained on SD. No new commit, push, CI run or reboot followed this test.
+
+Experimental native SAE admission (local, 2026-10-29):
+- Normal builds still default to SAE disabled. NATIVE_SAE_EXPERIMENTAL=1
+  explicitly generates Ath10kNativeSAEExperimental only for the normal native
+  controller, never a legacy or diagnostic personality. The runtime kernel
+  identity guard controls both the capability-75 announcement and admission;
+  admission additionally resolves providers against the actual OS build.
+- The real setWCL_ASSOCIATE dispatcher now delegates to nativeJoinRequest.
+  Exact SAE/password requests require zero password flags/index, a compatible
+  cached BSS, regulatory eligibility, firmware PMF transport readiness, and an
+  available worker. Mixed/FT/unknown-extension requests never fall back to PSK.
+- Admission reserves a non-recycled generation, initializes its PMF owner, and
+  retains the immutable password-preparation job. No curve operation, password
+  derivation, RNG call, or worker drain occurs inside that request callback.
+  The controller's retained join record contains no password bytes. Normal
+  Auth progression collects the exact profile-bound job and uses the existing
+  SAE radio/EAPOL/key-authorization barriers.
+- The preparation deadline remains five seconds from admission, including
+  firmware startup. Expiry fails closed; no executing job gets a renewed
+  deadline. Hardware testing must measure whether this bound is sufficient.
+- This is an experimental path, not a WPA3 compatibility claim. Actual macOS
+  password flags/identifier transport, full radio authentication, protected
+  management RX and firmware TX packet-number ownership remain to be verified
+  on this laptop. Transition Disable profile persistence, other kernel builds,
+  SAE-PK, FT-SAE and enterprise authentication remain separate open work.
+- The running normal request-test image is DBB8877C-4081-3970-A3B1-3749A529ACC7;
+  the locally linked experimental candidate is a different image and has not
+  been installed. No new commit, push, EFI change or reboot accompanies this
+  source work.
+
+Observed password representation on the first experimental boot (2026-10-29):
+- Image F8226F39-A310-37BA-B4A5-BC1CD74171A0 loaded on a new boot session;
+  the native service and crypto worker/backend were present. macOS selected
+  AKM6 (upper auth 1024), but supplied CIPHER_PWD=10 with zero key flags/index
+  and opaque allowAuths 0x40000004. The old PMK-only WPA2 admission rejected
+  this request before radio startup. No native SAE request or full WPA3
+  connection was observed. Password contents were not collected.
+- Password representation is now independent from AKM selection. Exact PSK2
+  or PSK-SHA2566 password requests retain their requested AKM. They never get
+  reclassified as SAE merely because CIPHER_PWD is present. Unknown extensions,
+  nonzero password flags/index, mixed AKMs and applicable Transition Disable
+  policy still reject. Existing 32-byte PMK admission is preserved.
+- A retained PSK work item derives PBKDF2-HMAC-SHA1 (4096 rounds, 32 bytes),
+  including for PSK-SHA256. Standard 64-hex PSKs decode directly. No new private
+  kernel crypto import is required. Password/SSID buffers are wiped after
+  execution, PMK/SNonce after one consumption, and all job data on final release.
+- The common Auth stage waits for a typed-owner completion with matching
+  station/BSSID/SSID/AKM/RSN/RSNXE/generation and its original five-second
+  deadline. Cancellation does not drain or erase a running worker's buffers.
+  Terminal cleanup includes pending PSK preparation even before ready becomes
+  true. The controller's retained join record never stores password bytes.
+- Six affected ASAN/UBSAN tests pass, including independent hashlib PBKDF2
+  vectors, HMAC failures at both block boundaries, the real native request and
+  common Auth caller, exact independently generated EAPOL M2, cancellation,
+  changed profile/generation, worker retirement and expiry. The native build
+  and import audit pass. These remain offline tests until this image boots.
+
+PMF capability gate recovered on Sequoia (2026-10-29):
+- CoreWLAN observed real card indices 1,3,12,14,17,46,75 on image 6F9C3ACB.
+  The SAE bit reached the client. A directed public scan reported one WPA3-
+  capable result, while the client still selected PSK-SHA256 in normal use.
+- The diagnostic CWF scan object omitted SSID. Apple80211Associate requires
+  caller-supplied CFData under SSID, length 1..32, and otherwise returns -3900.
+  Supplying the network name already provided by the user passed this check;
+  no redacted network identifier or BSSID was recovered. The next attempt
+  returned -3903 before any native SAE request. Both attempts automatically
+  recovered WPA2; these induced disconnects are not spontaneous link loss.
+- Direct inspection of 24G90 Apple80211 _getMFPCaps shows that its second
+  argument comes from cached capability byte6 (handle+0x5e). Unless byte6 &
+  0x11 is nonzero, it reports AP MFPC/MFPR false. The SAE override-8 branch
+  requires capability75 AND this effective AP MFPC. Capability75 alone cannot
+  pass the gate. Thirty synthetic calls to the real userland helper confirmed
+  that mask; these calls performed no kernel crypto or network operation.
+- Bit48 (byte6 bit0) is also identified as MFP capable by the primary
+  AirportItlwmV2 source at commit 53c51c2cdd6e4b69beb91f310d74c53422b0f8bd:
+  https://github.com/OpenIntelWireless/itlwm/blob/53c51c2cdd6e4b69beb91f310d74c53422b0f8bd/AirportItlwm/AirportItlwmV2.cpp
+  Its separate driver leaves that bit disabled. This change adds only bit48,
+  together with bit75, under the existing exact-kernel experimental SAE option.
+  Bit52 and unrelated capabilities remain unadvertised. Runtime SAE admission
+  still enforces the retained-worker/PMF/firmware readiness barriers.
+- Added radio-owner diagnostic snapshots of selected AKM, PMF requirement,
+  PMF key/port readiness, generation/epoch, verified/dropped RX, submitted/
+  dropped TX and successful SA Queries. No key, password or SSID bytes are
+  published. Stable snapshots allocate nothing in the registry; counter-only
+  updates coalesce to 2 Hz. Connection/key state changes bypass coalescing in
+  the normal radio-owner service. Terminal stop/free cleanup never publishes
+  registry properties, because it may hold IOService arbitration locks.
+  Submitted TX is a transport handoff, not an over-the-air ACK assertion.
+- The generic connection diagnostic now names AKM8 connected-sae instead of
+  connected-wpa2. This diagnostic label does not itself prove authentication.
+  At that source checkpoint actual SAE authentication, protected management
+  traffic, and other OS builds had not yet been validated on hardware.
+
+First native SAE data-path checkpoint (2026-10-29):
+- The approved reboot loaded image 9A07D3C3-B210-31A1-A28D-73795400E9D1 on
+  macOS 15.6.1/24G90. CoreWLAN now reports capabilities 48 and 75 together.
+  Without a diagnostic join request, macOS automatically supplied upper auth
+  4096, cipher10, zero password flags/index; admission accepted that request.
+- The live connection reports selected AKM8, security phase5, authorized BSD
+  port, required PMF, ready PMF key/port barrier, generation1 and PTK epoch1.
+  An en1-bound 20-request ICMP run returned all replies over 59.15 seconds;
+  all 13 sampled states remained connected-sae and authorized, with zero
+  disconnect/watchdog delta and positive bidirectional packet deltas. An
+  en1-bound IPv4 HTTPS request completed with HTTP200 and TLS verification.
+- These observations establish the experimental SAE data path on this exact
+  build. They do not establish full PMF interoperability: the initial verified
+  RX, submitted TX and successful SA Query counters were all zero. Group BIP,
+  protected deauthentication/action frames, firmware management PN behavior,
+  rekeys, repeated reconnects and sleep/wake still require hardware coverage.
+  Default SAE remains disabled; no support for other macOS builds is implied.
+- Evidence and rollback are retained on SD. No commit or push accompanies
+  this hardware checkpoint; the existing source branch remains unchanged.
+
+Transition Disable delivery contract investigation (local, 2026-10-29):
+- The Apple80211 API front library delegates Apple80211Associate and the event
+  APIs to IO80211.framework. Code offsets belong to implementation UUID
+  D6F428E5-23D1-3240-9E20-5D29BD41DC85, not the front-library UUID
+  38625671-4B42-3F37-88C0-0070F32EF44B. Earlier Apple80211-named local code
+  inspections refer to these resolved implementations on the same OS build.
+- The actual _dispatchSupplicant helper requires a non-null 40-byte payload.
+  It converts word0 to SUPPLICANTEVENT_STATUS, word4 to SUPPLICANTEVENT_REASON,
+  and word12 to APPLE80211KEY_SUPPLICANTEVENT_TSN_DISABLED_FLAGS, then invokes
+  the client callback with event76 and kind8. A UUID/symbol/prefix-guarded
+  local probe passed ten distinct flag values and rejected 42 null/length
+  inputs. This used synthetic memory only; no notification reached the OS
+  networking service and no profile or connection was changed.
+- airportd x86_64 UUID 4C5133D4-CEF3-3D88-8E93-273EF886B93E consumes that
+  dictionary key in its event76 and event190 handlers. Event76 excludes the
+  0x80000000 sentinel. CWXPCInterfaceContext's profile updater requires the
+  current interface SSID to match the preferred profile selected by its ID,
+  copies that profile and sets the supplied flags before invoking its update
+  helper. The examined setter path replaces the flags; it does not OR them.
+  Native publication must therefore preserve previously accepted restrictions.
+- WCL's supplicant consumer also requires exactly 40 bytes and can modify
+  word12 and byte36. The complete kernel message registration/delivery path,
+  word8 meaning, timing-field validity and stock producer defaults are still
+  unresolved. Do not post a partially reconstructed event or interpret the
+  userland callback ID as proof of its kernel delivery contract.
+- Pending implementation must bind policy to the live connection/security
+  generation, retain a failed enqueue for retry, discard stale exports on
+  leave/cancellation, and verify actual profile persistence. Authenticated
+  KDE parsing or a synthetic dictionary conversion alone does not finish this
+  requirement. Raw Apple code remains work-local; only derived facts and our
+  probe source are retained in the SD evidence packet. No new reboot or push.
+
+Native Transition Disable publication candidate (local, 2026-10-29):
+- Reconstructed the producer from the installed Boot KC's AppleBCMWLANCoreMac,
+  UUID 4C3822FC-8902-3AF6-A791-DD4A8D9E9C66. handlePSKEvent passes event76,
+  40 bytes and true to IO80211Controller::postMessage, the same controller API
+  used by this adapter. Its successful status6/reason0 case produces word0
+  0xe0820406, word4 0xe0822c00 and word8 zero. Duration words default to zero
+  without a firmware duration element; WCL derives byte36. getTransDisabledFlags
+  extracts KDE octet6 directly, establishing the first policy octet mapping.
+- Added an association-bound accumulator seeded with the admitted profile's
+  existing restrictions before the retained join record is wiped. It ORs
+  authenticated updates, retains failed enqueues, rejects older replay/foreign
+  owner tickets and clears on cancellation, retired connection or generation
+  change. Only the stock first-octet mapping is published; higher bitmap octets
+  have no established Sequoia representation and are not claimed supported.
+- Notification delivery follows BSS/link/beacon/ConnectComplete. It requires
+  the live SAE association, data authorization and PMF key/port barrier, no
+  pending EAPOL reply/data-key/authorization transaction and no pairwise rekey.
+  In particular, a newly authenticated rekey M3 must not publish policy while
+  the previous PTK's port is still open before the next radio tick. Default
+  WPA2 and nonexperimental admission paths remain unchanged.
+- Seven affected ASAN/UBSAN tests pass: transition_disable_delivery,
+  native_security_lifecycle, native_notifications, native_join, sae_eapol,
+  native_key_stage and native_sae_radio. Tests include every enqueue failing
+  once, monotonic accumulation, retained Auth binding, rekey/M4/PMF barriers,
+  cancellation, changed identity/generation and stale acknowledgements.
+- The guarded real IO80211.framework helper now passes 30 valid cases,
+  including the actual driver's event bytes and ten complete synthetic raw
+  event76 envelopes through _eventRead; 42 invalid inputs are rejected. This
+  validates userland conversion without injecting an event into the system.
+- Candidate UUID 335A5B3F-BB02-30FB-8B4B-533A7E7C7240 builds, passes strict
+  signing/import checks and is included by exact UUID in a work-local auxiliary
+  collection. It is not installed or hardware verified. Actual saved-profile
+  persistence still requires an authenticated policy update from an AP and a
+  hardware run. The currently loaded SAE image remains 9A07D3C3. No reboot,
+  OS collection change, companion app, commit or push accompanies this work.
+
+Opt-in protected-management hardware probe (local, 2026-10-29):
+- NATIVE_PMF_PROBE=1 additionally requires NATIVE_SAE_EXPERIMENTAL=1 and the
+  normal native controller. Both the Makefile and personality generator reject
+  legacy/isolated/invalid combinations. Ordinary builds omit the property
+  Ath10kNativePMFStartupQuery. Runtime admission additionally uses the existing
+  exact-kernel SAE guard; a non-Boolean or absent property does not enable it.
+- When explicitly enabled, one diagnostic SA Query starts per controller
+  lifetime after SAE authorization, PMF key/port readiness, the worker becoming
+  available and all normal PMF firmware/TX ownership barriers. Pending EAPOL
+  reply/key/authorization work, rekey, power blocking or stopping defer it.
+  Waiting for readiness does not consume the query's fixed deadline. The
+  attempted ticket survives association reset and PTK replacement; normal
+  autojoin on that controller cannot repeatedly start the diagnostic query.
+- The probe uses the existing SAQueryExchange, protected TX preparation,
+  hardware CCMP transport, authenticated/replay-checked RX worker and live
+  epoch/transaction-ID commit. A transport submission alone is not success.
+  Timeout retains the normal fail-closed SA Query behavior and can temporarily
+  disconnect native Wi-Fi. Real unauthenticated disconnect triggers retain
+  their independent normal SA Query behavior. Controller recreation is a new
+  diagnostic lifetime; this is not a promise of one probe across all rematches.
+- Five affected ASAN/UBSAN tests pass: native_security_lifecycle, native_join,
+  native_pmf_receive, native_key_stage and native_sae_radio. Configuration tests
+  also pass. The real PMF service test covers disabled/WPA2 paths, thirteen
+  readiness barriers, delayed readiness without an expired deadline, a complete
+  authenticated fixture round trip, cancellation on timeout and no restart
+  after association reset. These are host tests, not new hardware evidence.
+- Candidate UUID 4BD310DD-2FF3-3AC6-A6D8-B80A940C104D passes signature/import
+  checks and exact-UUID inclusion in a work-local auxiliary collection. The
+  normal and diagnostic variants have identical file-backed program sections;
+  their personality flags and embedded signatures differ. Both were uninstalled at packaging; the diagnostic variant was subsequently installed with user approval (see hardware follow-up below).
+  The current EFI kext/config rollback is byte-verified on SD. No OS collection
+  is changed, and a new reboot still requires explicit user approval.
+- Ath10kNativePMFStartupQueryStarted reports an attempted diagnostic start.
+  Successful SA Query/RX/TX counters are controller-lifetime totals, not proof
+  for every subsequent association. Group BIP, rekey PN behavior and broader
+  PMF interoperability remain unverified even after one successful round trip.
+
+PMF probe boot follow-up and wake reservation (2026-10-29, local):
+- Actual boot 6802A0CF-D807-42CD-B5AA-FFE833301CD7 loaded diagnostic UUID
+  4BD310DD-2FF3-3AC6-A6D8-B80A940C104D with the opt-in property true. Native
+  SAE authorized traffic works, but the probe-start property is absent and all
+  protected-management counters remain zero. This is not a successful PMF test.
+- Read-only runtime observations show station PS applied and no TX wake request.
+  The pre-start transport check required appliedPS=false, while no pending
+  probe requested that state. This circular dependency is reproduced in a
+  production-service fixture. One recorded disconnect is association-rejected,
+  not evidence of a query timeout (the diagnostic had not started).
+- The pending probe now reserves the existing PMF wake/drain path before the
+  transport readiness check, without starting the fixed SA Query deadline.
+  The same reservation persists between retries of an active real or diagnostic
+  query, and retires on authenticated response, cancellation or deadline failure.
+  No direct PS override, DMA/credit bypass or live driver reload is introduced.
+- Tests cover sleeping radio plus outstanding data and active scan, delayed
+  readiness, admission closure across retry gaps, authenticated response release,
+  and actual radio-maintenance CE/credit/ECHO wake followed by PS restoration.
+  The corrected source still needs a new build and an explicitly approved
+  reboot before any claim of hardware PMF success. No commit or push was made.
+- Local verification of the wake fix: station_maintenance, native_pmf_receive,
+  native_key_stage and native_sae_radio pass both ordinary and ASAN/UBSAN runs
+  with assertions enabled. Native candidate A3E38378-BAE6-346C-8E1D-88A192367DE1
+  builds, passes strict signature/import checks and exact UUID inclusion in a
+  work-local auxiliary collection. This candidate is not yet installed. The
+  current 4BD310DD EFI driver and unchanged configuration have a fresh
+  byte-verified SD backup. Hardware PMF remains unverified.
+
+PMF protected hardware round trip confirmed (2026-10-29):
+- Boot CEE22F1B-1998-4B6D-BDD9-958B73938A1A loaded candidate
+  A3E38378-BAE6-346C-8E1D-88A192367DE1. The diagnostic option and start marker
+  are true. Controller-lifetime counters: protected TX submitted 1, authenticated
+  RX verified 1, matching SA Query success 1, RX/TX drops 0. The successful
+  response passed the production epoch/PN/transaction-ID checks.
+- macOS selected SAE/AKM8 and the PMF port is authorized. After the query,
+  requested and applied station PS are true. Bound en1 IPv4 HTTPS returns
+  HTTP 200 with TLS verification successful; a separate 60.31-second run
+  receives all twenty ICMP replies with no new disconnect or TX watchdog.
+- This proves one protected unicast management round trip on this adapter,
+  AP and exact OS build. It does not certify group BIP, rekey PN/IPN behavior,
+  PMF interoperability across APs, long-duration stability or sleep/wake.
+  The single startup probe remains opt-in and does not repeat after autojoin.
+  The existing initial disconnect is association-rejected, not query timeout.
+- Installed files/configuration and SD rollback were verified before the
+  explicitly approved reboot. No root patch, companion app, live Ath10k reload,
+  commit or push was involved.
+
+In-flight BIP rotation validation (2026-10-29, host-only):
+- A real background worker is paused inside AES-CMAC while the owner performs
+  same-key delivery, a different-key replacement of slot 4, independent rotation
+  of slot 5, or association cancellation. No production synchronization path is
+  replaced by a fake completed result. Independent Python cryptography fixtures
+  supply both replacement-key slots and successive new-key IPNs.
+- Same-key delivery preserves the pending result's epoch and spent IPN. Slot 5
+  rotation preserves valid slot 4 reception. Replacing slot 4 rejects an already
+  authenticated old-key completion without mutating output or consuming the
+  replacement key's first IPN. Late old-key packets cannot spend the new epoch.
+  Cancellation rejects the retained completion and retires its owner safely.
+- An additional test executes the real native receive/service path alongside
+  authenticated EAPOL GroupKeys export and management-key staging. After the
+  mocked data-key completion barrier, a stale BIP completion is dropped without
+  disconnecting. A new-key authenticated deauthentication is dispatched with
+  its real reason and closes the port. Firmware barriers are simulated here;
+  this is not a hardware rekey or over-the-air BIP observation.
+- pmf_session, native_pmf_receive, native_key_stage and native_sae_radio pass
+  ASAN/UBSAN. The final expanded native_key_stage regression also passes.
+  Original fixtures are preserved byte-for-byte. This audit required no
+  production fix: all 133 non-ignored src/vendor source files still match the
+  uninstalled D1E2649F candidate snapshot. The generated ignored payload header
+  is not part of that comparison; its generation tests pass separately.
+- Installed A3E38378 remains connected-sae with one successful unicast SA Query,
+  one initial association-rejected disconnect, and zero TX watchdogs at the
+  follow-up observation. Real group BIP, rekey PN/IPN and sleep/wake remain open.
+  No driver load/unload, EFI edit, reboot, commit or push accompanies this audit.
+
+Native PMF work now participates in PCIe idle admission (local candidate,
+2026-10-29): the target must not enter runtime idle sleep while a PMF TX or
+spectrum response reservation awaits its radio wake/drain/retirement path.
+A failing-before/passing-after production predicate test verifies each flag
+separately and permits ordinary idle after retirement. This closes an offline
+queue-to-power admission gap; it does not establish a cause for earlier hardware
+hangs or replace real sleep/wake validation. See NATIVE-CONTRACT.md.
+
+SAE IPv6 data-path checkpoint (2026-10-29, loaded A3E38378):
+An en1-bound IPv6 HTTPS transfer completes with HTTP 200 and successful TLS
+verification, and five interface-selected IPv6 default-router probes all
+receive replies. IPv6 address and route readiness are observed read-only.
+This complements the existing IPv4 and single protected SA Query round trip;
+it does not close group PMF, rekey, sleep/wake or cross-version requirements.
+The pending normal candidate 785EFF7A passes the full 59-test ASAN/UBSAN
+development suite and offline inclusion check but has not booted yet.
+
+Group-key retransmission checkpoint (2026-10-29, host only):
+The native authenticated key-stage regression now replays a completed GTK+IGTK
+G1 three times after consuming a valid BIP packet. Each retry produces only
+the cached acknowledgement: no firmware key transaction, no management-key
+publication, no pairwise epoch/generation change, and no reset of the consumed
+BIP IPN. An older management-only G1 and a modified same-counter G1 are ignored
+without output or pending key work. The test explicitly models completion of
+the firmware/port barrier; this is not a real AP rekey observation. The focused
+native_key_stage run passes with ASAN/UBSAN and assertions. No production code
+change, new driver installation, reboot, commit or push accompanies this test.

@@ -1,25 +1,51 @@
 #pragma once
+#include "../../shared/Ath10kPSKPassword.hpp"
 #include "../Ath10kBSS.hpp"
 #include "../Ath10kScanPlan.hpp"
 #include <WCL.hpp>
 #include <string.h>
 // Keep wire decoding separate from implemented authentication. In particular,
 // a 64-byte password slot is not a 32-byte PMK and must never be truncated.
-enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256 };
-inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join){
-    if(join.lowerAuth!=1)return NativeJoinAuth::Unsupported;
-    if(!join.upperAuth && !join.keyLength)return NativeJoinAuth::Open;
+enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256, SAE };
+// WFA Transition Disable bitmap. Stock WCL forwards bits 0..4 unchanged;
+// bit 4 has not been identified for this ABI and cannot be silently ignored.
+namespace NativeTransitionDisable {
+constexpr uint8_t Personal=1,SAEPK=2,Enterprise=4,EnhancedOpen=8,Known=15;
+}
+inline bool nativeJoinPolicyKnown(const AirportWCL::JoinRequest &join){
+    // Stock authtypeupper2str(0,1) names OWE. It is not plaintext Open.
+    return !join.upperAuthExt && !(join.transitionDisable&~NativeTransitionDisable::Known);
+}
+inline bool nativeSAEPasswordEnvelope(const AirportWCL::JoinRequest &join);
+inline bool nativePSKPasswordEnvelope(const AirportWCL::JoinRequest &join){
+    if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join) ||
+       (join.transitionDisable&(NativeTransitionDisable::Personal|NativeTransitionDisable::SAEPK)) ||
+       (join.upperAuth!=8 && join.upperAuth!=1024) || join.keyCipher!=10 || join.keyFlags || join.keyIndex ||
+       !join.ssidLength || join.ssidLength>sizeof(join.ssid) || join.rsnLength>sizeof(join.rsn) ||
+       !AthSecurity::validPSKPassword(join.key,join.keyLength) || (join.bssid[0]&1))return false;
+    UInt8 any=0;for(auto value:join.bssid)any|=value;return any!=0;
+}
+inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false){
+    if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join))return NativeJoinAuth::Unsupported;
+    if(allowSAE && nativeSAEPasswordEnvelope(join) && !join.keyFlags && !join.keyIndex)return NativeJoinAuth::SAE;
+    if(!join.upperAuth && !join.keyLength){
+        if(join.transitionDisable&NativeTransitionDisable::EnhancedOpen)return NativeJoinAuth::Unsupported;
+        return NativeJoinAuth::Open;
+    }
+    if(join.transitionDisable&(NativeTransitionDisable::Personal|NativeTransitionDisable::SAEPK))return NativeJoinAuth::Unsupported;
+    if(nativePSKPasswordEnvelope(join))return join.upperAuth==8?NativeJoinAuth::PSK:NativeJoinAuth::PSKSHA256;
     if(join.keyLength!=32 || (join.keyCipher!=6 && join.keyCipher!=7))return NativeJoinAuth::Unsupported;
     if(join.upperAuth==(1u<<3))return NativeJoinAuth::PSK;
     if(join.upperAuth==(1u<<10))return NativeJoinAuth::PSKSHA256;
-    // SAE/FT-SAE, enterprise and mixed requests remain unsupported until their
-    // complete authentication/protection paths exist. Never downgrade an AKM.
+    // FT-SAE, enterprise and mixed requests are not admitted. SAE requires the
+    // explicit experimental path above. Never downgrade an AKM.
     return NativeJoinAuth::Unsupported;
 }
-// A bounded password-shaped request, not implemented native SAE admission.
+// A bounded password-shaped request; admission also checks owners and AP policy.
 // Sequoia ciphertype2str maps 10 to CIPHER_PWD, distinct from PMK (6).
 inline bool nativeSAEPasswordEnvelope(const AirportWCL::JoinRequest &join){
-    if(join.lowerAuth!=1 || join.upperAuth!=(1u<<12) || join.keyCipher!=10 ||
+    if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join) || (join.transitionDisable&NativeTransitionDisable::SAEPK) ||
+       join.upperAuth!=(1u<<12) || join.keyCipher!=10 ||
        !join.keyLength || join.keyLength>sizeof(join.key) || !join.ssidLength ||
        join.ssidLength>sizeof(join.ssid) || join.rsnLength>sizeof(join.rsn) || (join.bssid[0]&1))return false;
     UInt8 any=0;for(auto value:join.bssid)any|=value;return any!=0;

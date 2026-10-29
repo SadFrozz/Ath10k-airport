@@ -73,6 +73,49 @@ static void groupAndRotation(){
  AthSecurity::IGTKCMAC128 key{};key.keyID=4;memcpy(key.key,next,16);
  ownerGate=true;assert(s->activateManagement(key));ownerGate=false;assert(!consume(s,first,out));first->release();stop(s,w);
 }
+// Rotate while a retained BIP job is actually executing off-gate, not merely
+// after completion. Crypto validity alone cannot commit an obsolete epoch.
+static void groupRotationWhileRunning(){
+ for(unsigned mode=0;mode<4;++mode){
+  auto s=create();auto w=worker();Pause paused;pauseAES=&paused;
+  assert(queue(s,w,c_bip_disconnect,sizeof(c_bip_disconnect))==Submit::Queued);
+  std::thread thread([&]{run(latest);});paused.wait();
+  ownerGate=true;
+  AthSecurity::IGTKCMAC128 key{};key.keyID=mode==1?5:4;
+  memcpy(key.key,mode==0?c_key:c_bip_rotated_key,16);
+  if(mode==3)s->cancel();else assert(s->activateManagement(key));
+  ownerGate=false;paused.resume();thread.join();pauseAES=nullptr;
+  auto item=w->takeCompleted();assert(item);S::Message output;output.bytes=77;
+  const bool accepted=consume(s,item,output);item->release();
+  assert(accepted==(mode<2));
+  if(!accepted)assert(output.bytes==77);
+  if(mode==0){
+   // A repeated same-key delivery preserves the original epoch and spent IPN.
+   assert(output.groupID==4 && output.groupEpoch);
+   assert(queue(s,w,c_bip_disconnect,sizeof(c_bip_disconnect))==Submit::Queued);
+   item=complete(w);assert(!consume(s,item,output));item->release();
+  }
+  if(mode==1){
+   // The alternate slot can rotate independently; old slot 4 stays valid.
+   assert(output.groupID==4);
+   assert(queue(s,w,c_group_rotated5_wire,sizeof(c_group_rotated5_wire))==Submit::Queued);
+   item=complete(w);assert(consume(s,item,output) && output.groupID==5);item->release();
+   assert(queue(s,w,c_group_action_wire,sizeof(c_group_action_wire))==Submit::Queued);
+   item=complete(w);assert(consume(s,item,output) && output.groupID==4);item->release();
+  }
+  if(mode==2){
+   // A stale authenticated completion did not consume the new key's PN=1.
+   assert(queue(s,w,c_group_rotated4_wire,sizeof(c_group_rotated4_wire))==Submit::Queued);
+   item=complete(w);assert(consume(s,item,output) && output.groupID==4);item->release();
+   // A late packet protected by the retired key cannot spend the new epoch.
+   assert(queue(s,w,c_group_action_wire,sizeof(c_group_action_wire))==Submit::Queued);
+   item=complete(w);assert(!consume(s,item,output));item->release();
+   assert(queue(s,w,c_group_rotated4_next_wire,sizeof(c_group_rotated4_next_wire))==Submit::Queued);
+   item=complete(w);assert(consume(s,item,output));item->release();
+  }
+  stop(s,w);
+ }
+}
 static void admissionAndFailures(){
  auto s=create();auto w=worker();S::Message out;out.bytes=77;
  for(uint32_t error:{1u,8u,16u,32u})assert(queue(s,w,c_query_wire,sizeof(c_query_wire),error)==Submit::NoWork);
@@ -90,6 +133,23 @@ static void admissionAndFailures(){
  assert(queue(s,w)==Submit::Aborted);terminateDuringInit=nullptr;w->release();
  // Terminal queue races do not retire a valid association or consume its PN.
  w=worker();assert(queue(s,w)==Submit::Queued);item=complete(w);assert(consume(s,item,out));item->release();stop(s,w);
+}
+static void authenticatedLayoutSessions(){
+ for(bool plaintext:{false,true}){
+  auto s=create();auto w=worker();S::Message out;
+  const auto data=plaintext?c_query_decrypted:c_query_wire;
+  auto bad=std::vector<uint8_t>(data,data+sizeof(c_query_wire));bad.back()^=1;
+  assert(queue(s,w,bad.data(),bad.size(),0,S::Layout::Authenticated)==Submit::Queued);
+  auto rejected=complete(w);out.bytes=77;assert(!consume(s,rejected,out) && out.bytes==77);rejected->release();
+  // An unauthenticated frame did not spend the PN of the following valid one.
+  assert(queue(s,w,data,sizeof(c_query_wire),0,S::Layout::Authenticated)==Submit::Queued);
+  auto item=complete(w);assert(consume(s,item,out));item->release();
+  assert(out.kind==S::Kind::Pairwise && out.layout==(plaintext?S::Layout::PlaintextWithEncryptedTag:S::Layout::Ciphertext));
+  assert(out.bytes==sizeof(c_query_plain) && !memcmp(out.frame,c_query_plain,out.bytes));
+  // Changing the representation of the same PN cannot create another RX event.
+  assert(queue(s,w,plaintext?c_query_wire:c_query_decrypted,sizeof(c_query_wire),0,S::Layout::Authenticated)==Submit::Queued);
+  item=complete(w);assert(!consume(s,item,out));item->release();stop(s,w);
+ }
 }
 static void cancelRunning(){
  auto s=create();auto w=worker();Pause paused;pauseAES=&paused;assert(queue(s,w)==Submit::Queued);
@@ -167,4 +227,4 @@ static void hardwareTX(){
  assert(bytes==sizeof(c_txpn3_hardware) && !memcmp(frame,c_txpn3_hardware,bytes));
  assert(s->retireProtected(item,9));item->release();stop(s,w);
 }
-int main(){objectFreeObserver=observeFree;lifecycle();groupAndRotation();admissionAndFailures();cancelRunning();protectedTX();groupAction();abandonRunningTX();hardwareTX();objectFreeObserver=nullptr;clean();}
+int main(){authenticatedLayoutSessions();objectFreeObserver=observeFree;lifecycle();groupAndRotation();groupRotationWhileRunning();admissionAndFailures();cancelRunning();protectedTX();groupAction();abandonRunningTX();hardwareTX();objectFreeObserver=nullptr;clean();}

@@ -1,6 +1,7 @@
 #pragma once
 #include "Ath10kSecurity.hpp"
 #include "Ath10kSHA256.hpp"
+#include "Ath10kTransitionDisable.hpp"
 namespace AthSecurity {
 // Crypto supplies HMAC-SHA1 and AES-128-ECB decrypt; SHA256 mode additionally
 // requires HMAC-SHA256 and AES-128-ECB encrypt.
@@ -18,6 +19,15 @@ template<class Crypto,bool AllowSHA256=false,bool AllowSAE=false> class Supplica
  unsigned state=0;uint8_t selectedAKM=2;bool sha256=false,sae=false,havePMKID=false;
  uint8_t saePMKID[16]{};
  uint8_t apRSNXE[18]{},apRSNXELength=0;bool rsnxeBound=false,saeH2E=false;
+ TransitionDisableUpdate pendingTransitionDisable{};
+ void recordTransitionDisable(const uint8_t *bitmap,size_t bytes,uint64_t replay){
+  // Accumulate restrictions until the owner consumes them: a later weaker
+  // update must not erase an authenticated, still-pending restriction.
+  for(size_t i=0;i<bytes;++i)pendingTransitionDisable.bitmap[i]|=bitmap[i];
+  if(bytes>pendingTransitionDisable.length)pendingTransitionDisable.length=uint8_t(bytes);
+  copy(pendingTransitionDisable.station,local,6);copy(pendingTransitionDisable.bssid,ap,6);
+  pendingTransitionDisable.replay=replay;
+ }
  IGTKCMAC128 rememberedIGTK[2]{};bool rememberedIGTKValid[2]{};
  struct ManagementCandidate {
   IGTKCMAC128 key{};bool present=false,changed=false;
@@ -97,6 +107,14 @@ public:
  IGTKCMAC128 managementKey{};uint8_t keyChanges=0;
  const char *error="none";
  bool pairwisePending() const {return pairRekey && state==2;}
+ // Only the owning authenticated SAE profile can consume this once. No
+ // native message number or persistent macOS profile update is implied.
+ bool takeTransitionDisable(const uint8_t *station,const uint8_t *bssid,TransitionDisableUpdate &out){
+  out={};
+  if(!sae || state!=3 || !station || !bssid || !pendingTransitionDisable.length ||
+     !equal(station,local,6) || !equal(bssid,ap,6))return false;
+  out=pendingTransitionDisable;wipe(&pendingTransitionDisable,sizeof(pendingTransitionDisable));return true;
+ }
  void cancelPairwiseAttempt(){
   if(!pairwisePending())return;
   copy(ptk,establishedPTK,48);copy(anonce,establishedANonce,32);copy(snonce,establishedSNonce,32);
@@ -234,7 +252,8 @@ public:
   if(!verified)return pairRekey?Ignore:fail("MIC inválido: confira a senha da rede.");
   size_t encrypted=be16(p+97);
   if(!unwrap(p+99,encrypted,plain)){wipe(plain,sizeof(plain));return fail("Dados de chave inválidos.");}
-  size_t bytes=encrypted-8,at=0;bool haveRSN=false,haveGTK=false,haveRSNXE=false,valid=true;
+  size_t bytes=encrypted-8,at=0,transitionOffset=0,transitionBytes=0;
+  bool haveRSN=false,haveGTK=false,haveRSNXE=false,haveTransitionDisable=false,valid=true;
   uint8_t candidate[keyPayloadLength]{};ManagementCandidate management;
   copy(candidate,ptk+32,16);copy(candidate+50,p+65,6);candidate[48]=groupCipher;
   while(at<bytes){
@@ -257,6 +276,10 @@ public:
    if constexpr(AllowSAE){if(sae && plain[at]==221 && len>=6 && suite(plain+at+2,9))
     if(!readManagement(plain+at,len,management))valid=false;
    }
+   if constexpr(AllowSAE){if(sae && transitionDisableSelector(plain+at,len)){
+    if(haveTransitionDisable || len<7)valid=false;
+    haveTransitionDisable=true;transitionOffset=at+6;transitionBytes=len-6;
+   }}
    at+=len;
   }
   if(rsnxeBound && bool(apRSNXELength)!=haveRSNXE)valid=false;
@@ -269,6 +292,9 @@ public:
   m4Length=response(m4,p,false);
   if(!m4Length){wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));return fail("Falha no MIC da mensagem 4.");}
   // Publish a complete key transaction only after its acknowledgement is ready.
+  // MIC, unwrap, RSN/RSNXE, GTK/IGTK and M4 generation all precede policy.
+  // Cached/replayed M3 and group-key messages never enter this publication.
+  if(sae && haveTransitionDisable)recordTransitionDisable(plain+transitionOffset,transitionBytes,replay);
   copy(keys,candidate,sizeof(keys));wipe(candidate,sizeof(candidate));wipe(plain,sizeof(plain));
   keyChanges=uint8_t(PTKChanged|(gtkChanged?GTKChanged:0)|(management.changed?IGTKChanged:0));commitManagement(management);
   copy(savedM3,p,n);savedLength=n;replay3=replay;state=3;

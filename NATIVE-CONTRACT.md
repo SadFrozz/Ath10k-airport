@@ -79,9 +79,11 @@ protocol after attachment. This candidate still requires hardware validation.
 | P1 | Visibility | Beacon metadata adjusted; latest airportd autojoin lists zero hidden SSIDs; fresh profile/UI consistency still needs explicit verification | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
 | P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences, security cleanup and guarded automatic wake rematch are candidates | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
-| P2 | Queries and capabilities | 190 inline callbacks: 31 forward, 159 reject; source-checked inventory in NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |
+| P2 | Queries and capabilities | 190 inline callbacks: 32 forward, 158 reject; source-checked inventory in NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |
 | P2 | IPv6/multicast and statistics | Partial implementation | Multicast filter and counters reflect delivered traffic; no fabricated metrics |
-| P2 | WPA3/PMF | SAE and mandatory PMF/BIP not implemented | Implement and test complete authentication/protection, not an AKM label change |
+| P1 | WPA3/PMF | Opt-in image 9A07D3C3 auto-associated with AKM8/required PMF on 24G90 and passed en1-bound ICMP/HTTPS; protected management counters initially zero | Validate protected unicast/group management, replay, firmware PN, rekey, reconnect and sleep/wake on hardware |
+| P1 | WPA3 policy notification | Local candidate uses stock event76/40-byte successful exchange format; seven affected sanitizer tests and 72 actual userland parser/decoder cases pass; enqueue retries and connection binding implemented | Verify real kernel delivery and saved-profile persistence with an authenticated AP policy update; broader bitmap octets remain unmapped |
+| P1 | Protected management hardware exchange | Explicit NATIVE_PMF_PROBE mode reuses the production SA Query/CCMP/replay path; five affected sanitizer tests and readiness/one-shot checks pass | On an approved hardware boot observe submitted protected TX, authenticated matching response and successful SA Query; then cover group BIP and rekey/sleep PN behavior separately |
 | P3 | macOS 11–26 | Current adapter is Darwin 24 only | Versioned adapters with per-version ABI and hardware validation |
 | P3 | AWDL/AirDrop | Planned only | AWDL interface/scheduling/IPv6 and Bluetooth integration validated |
 
@@ -777,3 +779,215 @@ with matching kmod/bundle versions and the existing compatible-version floor.
 This fix has software-model evidence; installation/boot and physical stability
 validation must be recorded separately. It does not revive the already stopped
 0.0.98 runtime or implement complete automatic firmware restart after every fault.
+
+RSNXE query/setter contract audit (2026-10-29, Sequoia only):
+- Exact stock AppleBCMWLANCoreMac UUID
+  4C3822FC-8902-3AF6-A791-DD4A8D9E9C66 implements getRSN_XE at
+  0xffffff80015f462e and setRSN_XE at 0xffffff8001610d64. Both use
+  a 16-bit length at offset 4 and element bytes at offset 6. Getter capacity
+  is 257 bytes; setter rejects lengths above 257. Zero-length setter clears
+  the outgoing cache. Stock feature gates may reject both operations.
+- These access JoinAdapter's outgoing association RSNXE cache (length offset
+  0x68, bytes 0x70), distinct from its firmware-associated cache at 0x171.
+  Returning the AP beacon RSNXE would implement a different contract.
+- Both current native callbacks still explicitly reject. Their stock producer
+  addresses and semantics are recorded in NATIVE-CALLBACK-MATRIX.json, separate
+  from consumer evidence. Caller ordering, next-join binding, mid-association
+  update rules and cancellation lifetime need reconstruction before a setter
+  can safely affect the real association. A byte cache with no effect on the
+  transmitted element must not report successful configuration. This audit
+  adds evidence without claiming the callbacks are optional or implemented.
+
+Read-only RSNXE callback candidate (2026-10-29):
+- getRSN_XE now enters the existing WCL-to-radio gated dispatcher. The exact
+  stock request wrapper at 0xffffff80022137d6 requires 264 bytes for operation
+  457; the typed wrapper at 0xffffff80021faca3 invokes protocol slot 0x1068.
+  That corroborates the independently recovered length/data offsets.
+- The candidate exports the production association/M2 encoder's own station
+  RSNXE: H2E is f4 01 20, while legacy SAE and PSK-SHA256 have no station
+  extension. It never returns the AP's different advertised capabilities.
+  The output record is initialized completely, including unused bytes.
+- A prepared pending association or live association is required. Stop, power
+  block, cancellation, teardown, unbound/reset supplicant and retired joins
+  return not-ready without writing output. Port closure during rekey preserves
+  the associated profile. No crypto, wait, I/O or allocation is added.
+- Four affected ASAN/UBSAN regressions pass (native_rsnxe_query,
+  native_pmf_receive, native_key_stage, native_sae_radio); the final expanded
+  query regression also covers PSK-SHA256 and an absent security owner.
+  The regenerated callback inventory is 190 total, 32 forwarded, 158 rejected.
+- setRSN_XE remains unsupported until its association-binding and update
+  semantics can be honored. The read-only candidate is not installed; the
+  hardware-confirmed A3E38378 build remains loaded. Earlier audit wording
+  describing both callbacks as rejected refers to the initial checkpoint.
+
+PMF receive/key-update ordering checkpoint (2026-10-29):
+The retained BIP worker and native dispatch path now have explicit tests for
+same-key retransmission, independent slot rotation, same-slot replacement and
+cancellation while crypto is executing. The old epoch cannot commit into a new
+slot or disconnect after replacement. Native staging and final dispatch also
+pass with a mocked firmware key-completion barrier. These passing host checks
+reduce the remaining matrix to actual AP-driven group BIP and rekey behavior;
+they do not close hardware, long-duration or sleep/wake requirements. See
+WPA3-CONTRACT.md for the exact evidence boundary. Production code is unchanged
+from the pending D1E2649F package during this follow-up.
+
+PCIe idle admission versus native management work (2026-10-29):
+- A production runtime-power regression reproduces SOC/PCIe target idle sleep
+  at the 60 ms threshold while pmfTXPending is already set and station PS is
+  still applied. WCL/native work can set that reservation between radio ticks.
+  The old permitted predicate omitted the flag. The pre-fix test fails at its
+  explicit awake assertion; no hardware hang is inferred from that host failure.
+- Idle admission now also requires no pending PMF TX, no pending spectrum
+  response and no spectrum frame in flight. These reservations use the existing
+  radio wake/drain/retirement paths. Removing a reservation permits ordinary
+  target idle again; system suspend retains its independent quiescence path.
+- Three regression cases individually exercise these reservations and idle
+  resumption. Eight affected ASAN/UBSAN tests pass: runtime_power,
+  station_maintenance, wake_recovery, native_termination,
+  native_security_lifecycle, power, native_bridge and native_rsnxe_query.
+  The RSNXE test extraction is separated from key hooks so broader security
+  lifecycle mocks do not acquire an unrelated query implementation.
+- Live A3E38378 has zero PCIe wake failures, zero TX watchdogs and the same one
+  initial association rejection at observation. Its system sleep/wake counts
+  are both zero: PCIe runtime idle is not a tested laptop suspend/resume cycle.
+  The installed source does not contain this new idle predicate yet.
+
+Full candidate regression and IPv6 checkpoint (2026-10-29):
+- All 59 selected C++ tests pass in the complete development runner with
+  assertions enabled and ASAN/UBSAN, together with its Python/source/config
+  prerequisites. This includes the expanded in-flight BIP rotation checks,
+  isolated RSNXE query, native request/lifecycle/termination/recovery tests and
+  the new three PCIe idle-reservation cases. This is host validation, not a
+  full completion claim for the hardware/ABI matrix.
+- Native candidate 785EFF7A-E357-337E-9F90-A343A3168FD0 passes build, strict
+  signature/import checks and exact-UUID inclusion in a work-local auxiliary
+  collection. It combines the read-only RSNXE reply and PCIe idle admission
+  correction. The one-shot startup PMF diagnostic is disabled. It is not yet
+  installed. The current A3E38378 EFI driver/configuration has a new
+  byte-verified SD rollback. No system collection is modified.
+- On the still-loaded A3E38378 SAE connection, en1 has IPv6 addresses and a
+  default route scoped to en1. An explicitly en1-bound IPv6 HTTPS request
+  returns HTTP 200, 577 bytes and TLS verification result 0. Five IPv6 ICMP
+  requests sent through en1 to its scoped default router all receive replies.
+  Only redacted address-count/route summaries are retained. The DNS resolver
+  is not separately interface-bound by this HTTPS check.
+- IPv6 observations extend the existing IPv4/SAE data-path checkpoint; they
+  do not certify all DHCPv6, multicast, roaming, PMF group rekey or sleep/wake
+  behavior. AWDL/AirDrop and other macOS versions remain separate open stages.
+
+User-observed normal reboot recovery (2026-10-29):
+The user reports that normal reboot now completes without holding the power
+button and manually powering the laptop back on. The user identifies the
+penultimate build as the apparent turning point; the exact first-fixing image
+is not established. Treat this as a positive hardware checkpoint and retain
+normal reboot without forced power intervention as an explicit regression
+gate. It does not by itself certify repeated shutdowns or sleep/wake, and
+causality must not be assigned to one queue/worker change without stronger
+evidence. The report was received while candidate 785EFF7A was loaded.
+
+Normal-mode candidate hardware checkpoint (2026-10-29):
+Boot B629655E-4CCD-4811-844E-CF2BFD504AB9 loaded UUID
+785EFF7A-E357-337E-9F90-A343A3168FD0 through OpenCore. macOS selected SAE/AKM8,
+the controlled port is authorized, and startup diagnostic query properties
+are absent. Both IPv4 and IPv6 HTTPS transfers explicitly bound to en1
+complete with exit 0, HTTP 200 and successful TLS verification. All twenty
+en1-bound ICMP requests receive replies over 60.38 seconds; all thirteen
+samples remain connected-sae/authorized, with no new disconnect or TX watchdog.
+The one initial association-rejected event remains unexplained; the live
+status code was overwritten by successful association. The current kernel
+message ring no longer contains the early rejection. Do not assign its cause
+without a retained failure-status observation. No new protected-management
+round trip was requested in normal mode. The earlier A3E38378 protected-query
+proof remains a separate checkpoint. Actual sleep/wake is still untested.
+
+Association identifier and retained rejection diagnostics (local source
+follow-up after 785EFF7A, 2026-10-29):
+- The parser masked AID with 0x3fff and could reject a valid lower-eleven-bit
+  identifier when reserved bits 11..13 were set. Linux v6.12 mac80211
+  ieee80211_rx_mgmt_assoc_resp uses 0x7ff and cites IEEE 802.11-2016 9.4.1.8
+  (all five high bits reserved). The candidate now uses 0x07ff and retains
+  the existing nonzero/maximum-2007 checks.
+  Reference: https://github.com/torvalds/linux/blob/v6.12/net/mac80211/mlme.c
+- The independent field regression fails before the fix and passes afterward
+  across all 32 high-bit combinations. Invalid low-bit values remain rejected.
+- Association rejection count, last received status and raw AID now survive
+  reset and a later successful join in existing ConnectionDiagnostics. The
+  registry publishes the raw and masked identifier separately. Status zero
+  with an invalid AID is distinguishable from an AP-denied status. Foreign
+  transmitter input cannot replace this diagnostic. No identity or key is
+  exported. The read-only collector whitelists these numeric fields.
+- Four affected ASAN/UBSAN tests pass: connection, security_disconnect,
+  native_join and native_sae_radio. This is a source-only follow-up, not a new
+  installed kext or a repeat of the prior 59-test release checkpoint.
+- The current boot's initial rejection cannot be attributed to this AID bug: its
+  status/raw AID were not retained. Upstream also handles temporary status 30
+  plus an association-comeback Timeout Interval IE; that retry/timer contract
+  is still a separate open implementation item. The loaded 785EFF7A driver
+  is unchanged. No reboot, commit or push accompanies this checkpoint.
+
+Association comeback request handling (local source follow-up, 2026-10-29):
+- A status-30 association response with one valid Timeout Interval IE (56,
+  length 5, type 3) now requests a timed retry. All IE lengths are validated
+  before accepting the interval. Missing, wrong-type, malformed or duplicate
+  timeout elements retain explicit rejection. Constants and upstream behavior
+  are checked against Linux v6.12 ieee80211.h and mac80211/mlme.c.
+  https://github.com/torvalds/linux/blob/v6.12/net/mac80211/mlme.c
+  https://github.com/torvalds/linux/blob/v6.12/include/linux/ieee80211.h
+- The radio service converts TU to milliseconds with a ceiling, waits without
+  sending early, drains existing packet ownership and resubmits association
+  within the same selected security profile. No open-auth/SAE restart, peer
+  recreation, authorized port or success notification occurs during the wait.
+- Native waits are bound to the original _nativeJoinDeadline. They can exceed
+  the ordinary five-second response timer while remaining within the actual
+  OS request lifetime. Non-native control uses a fixed thirty-second fallback
+  from association-stage entry. The original three-transmission limit remains.
+  A duplicate cannot renew either wait or request deadline. Clock reversal,
+  exhausted attempts or an interval exceeding the remaining request fail
+  explicitly. Caller cancellation/teardown removes the pending wait.
+- A fully accepted association response becomes immutable during firmware
+  completion; a delayed temporary failure cannot overwrite its AID/profile.
+  Durable comeback count and last TU complement retained rejection status/AID.
+- Four affected ASAN/UBSAN tests pass: connection, security_disconnect,
+  native_join, native_sae_radio. Expanded tests cover zero/one TU rounding,
+  malformed/duplicate IEs, cancellation, owned-packet drain, large values,
+  overflow/clock reversal, fixed native deadline and a >10-second wait through
+  the real radio service. The SAE fixture preserves its verified session,
+  PMF owner/generation and exact association RSNE/PMKID through the retry.
+- The complete development suite is running after these source changes; its
+  result is not yet claimed. No new kext has been built/installed. Current
+  hardware 785EFF7A remains unchanged. The initial real rejection is still
+  unattributed until its actual retained status is observed on a future boot.
+
+Association-comeback build checkpoint (2026-10-29):
+All 59 C++ tests in the complete development runner pass with assertions and
+ASAN/UBSAN, together with Python/source/config prerequisites. The normal-mode
+native image UUID 0E9AA8BE-EF2E-393A-A9DA-58AEA243E6E5 builds and passes strict
+signature/import checks plus exact-UUID inclusion in a work-local auxiliary
+collection. It includes the AID mask correction, durable rejection/comeback
+metadata and request-deadline-bound association retry. Startup PMF probing is
+disabled. Current hardware remains on 785EFF7A; this new image has not booted.
+A fresh current EFI driver/configuration copy is byte-verified on SD.
+
+A separate read-only direct BSD socket ioctl probe (operation 457, modern SDK
+request size) returns EOPNOTSUPP with the sentinel output unmodified. This is
+not proof that getRSN_XE was reached or failed. Correct native userland transport
+and actual callback-read coverage remain open; no fabricated success or BSD
+forwarding change is introduced on the strength of this probe.
+
+Association-comeback hardware checkpoint (2026-10-29, supersedes unbooted status above):
+The approved installation booted UUID 0E9AA8BE-EF2E-393A-A9DA-58AEA243E6E5
+in a new boot session C58D33F8-487B-41F8-B09D-786D9F103B12. The native
+SAE connection is authorized. Durable fields retain one actual AP temporary
+association refusal (status 30), raw AID 49157 / masked AID 5, and one valid
+comeback request of 1000 TU. The wait is no longer pending and connection
+succeeded. This confirms the real comeback path; the AID masking correction
+was not exercised by this AP's ordinary 0xc005 value. Total time from system
+boot to authorization has not been measured by this checkpoint.
+All 20 en1-bound ICMP requests received replies over 59.16 seconds; all 13
+samples remained authorized, with no disconnect increment or TX watchdog
+increment. IPv4 and IPv6 HTTPS sockets bound to en1 both returned HTTP 200
+with certificate verification successful. Startup PMF probing is absent.
+This bounded observation does not close long-duration stability, group PMF,
+rekey, sleep/wake, RSNXE userland callback coverage or other macOS versions.
+No additional reboot, commit or push was performed. Hardware evidence and
+installation receipt are copied with SHA-256 verification to SD.

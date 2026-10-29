@@ -64,13 +64,46 @@ int main(){
   assert(sec->managementPending && sec->keysPending);d->_connection.portAuthorized=false;d->_connection.securityPhase=2;
   assert(!d->nativePMFPortReady() && sec->managementPending);
   d->_connection.securityPhase=5;assert(d->nativePMFPortReady() && !sec->managementPending);
-  assert(bip(d,n_igtk4_next,sizeof(n_igtk4_next)) && !bip(d,n_igtk5,sizeof(n_igtk5)));stop(d);}
+  assert(bip(d,n_igtk4_next,sizeof(n_igtk4_next)) && !bip(d,n_igtk5,sizeof(n_igtk5)));clearReply(d);
+  d->_connection.portAuthorized=true; // Mock completed group-key firmware/port barrier.
+  // A lost group acknowledgement can retransmit the exact authenticated G1.
+  // ACK it without a GTK transaction, IGTK publication or replay-floor reset.
+  const auto pairEpoch=sec->pmfSession->pairwiseEpoch();
+  const auto generation=sec->pmfSession->activeGeneration();
+  for(unsigned retry=0;retry<3;++retry){
+   assert(sec->supplicant.receive(w_group_both,sizeof(w_group_both))==S::Reply && accept(d,S::Reply));
+   assert(sec->replyPending && !sec->keysPending && !sec->managementPending);
+   assert(sec->pmfSession->pairwiseEpoch()==pairEpoch && sec->pmfSession->activeGeneration()==generation);
+   assert(sec->pmfSession->portReady() && d->_connection.portAuthorized);
+   assert(!bip(d,n_igtk4_next,sizeof(n_igtk4_next)));clearReply(d);
+  }
+  // Old group-key delivery and a changed same-counter G1 must not recover
+  // an obsolete key or manufacture a cached acknowledgement.
+  assert(sec->supplicant.receive(w_mgmt_only,sizeof(w_mgmt_only))==S::Ignore);
+  uint8_t forged[sizeof(w_group_both)];memcpy(forged,w_group_both,sizeof(forged));forged[sizeof(forged)-1]^=1;
+  assert(sec->supplicant.receive(forged,sizeof(forged))==S::Ignore);
+  assert(!sec->supplicant.outputLength && !sec->replyPending && !sec->keysPending && !sec->managementPending);
+  assert(sec->pmfSession->portReady() && !bip(d,n_igtk4_next,sizeof(n_igtk4_next)));stop(d);}
  {auto d=keyDevice();auto sec=d->_nativeSecurity;initial(d);
   assert(sec->supplicant.receive(w_rekey1,sizeof(w_rekey1))==S::Reply && accept(d,S::Reply));clearReply(d);
   assert(sec->supplicant.receive(w_rekey3,sizeof(w_rekey3))==S::PairKeys && accept(d,S::PairKeys));
   assert(!sec->managementPending && sec->keysPending);d->_connection.securityPhase=1;
   assert(d->nativePMFPairwiseAcknowledged(sec->keys));d->_connection.securityPhase=5;assert(d->nativePMFPortReady());
   assert(bip(d,n_igtk4,sizeof(n_igtk4)));stop(d);}
+ // Real native receive/service path: an old-key BIP completion waits while
+ // authenticated EAPOL stages and publishes a replacement IGTK at its barrier.
+ {auto d=keyDevice();initial(d);auto sec=d->_nativeSecurity;auto &state=d->_connection;
+  assert(deliver(d,n_igtk4,sizeof(n_igtk4)));service(d,0);assert(sec->pmfRXInFlight);
+  run(latest); // Authenticated old-key result has not been committed yet.
+  assert(sec->supplicant.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys && accept(d,S::GroupKeys));
+  assert(sec->managementPending && sec->keysPending);
+  state.portAuthorized=false;state.securityPhase=2;assert(!d->nativePMFPortReady());
+  // Mock the completed data-key barrier; this is not a firmware hardware test.
+  state.securityPhase=5;assert(d->nativePMFPortReady());state.portAuthorized=true;clearReply(d);
+  service(d,1);assert(!sec->pmfRXInFlight && sec->pmfRXDropped==1 && !sec->pmfRXVerified && !state.cancelRequested);
+  // The obsolete completion cannot cancel the new association or consume its IPN.
+  assert(deliver(d,n_igtk4_next,sizeof(n_igtk4_next)));service(d,2);run(latest);service(d,3);
+  assert(sec->pmfRXVerified==1 && state.cancelRequested && !state.portAuthorized && state.apDisconnect.reason==6);stop(d);}
  {auto d=keyDevice();auto sec=d->_nativeSecurity;AthSecurity::IGTKCMAC128 key{};key.keyID=4;memcpy(key.key,w_igtk,16);
   assert(d->nativeStageManagementKey(key));sec->pmfSession->cancel();assert(!d->nativePMFPortReady() && !sec->managementPending);
   for(auto b:sec->pendingManagement.key)assert(!b);stop(d);}

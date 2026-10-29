@@ -6,8 +6,8 @@
   "hardware_validation": false,
   "counts": {
     "total": 190,
-    "forwarded": 31,
-    "unsupported": 159
+    "forwarded": 32,
+    "unsupported": 158
   },
   "callbacks": [
     {
@@ -569,11 +569,46 @@
     {
       "callback": "getRSN_XE",
       "parameters": "apple80211_rsn_xe_data* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "implementation": "forwarded",
+      "operation": "getRSN_XE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "read-only native association encoder integrated; host lifecycle/ABI tests, pending hardware verification",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "getRSN_XE(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*)",
+          "address": "0xffffff80022137d6",
+          "ioctl_operation": 457,
+          "input_output_bytes": 264,
+          "protocol_wrapper": "0xffffff80021faca3",
+          "protocol_vtable_byte_offset": 4200,
+          "failure_effect": "rejects record sizes other than 264; delegates through WCL or the typed protocol callback"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::getRSN_XE",
+          "address": "0xffffff80015f462e",
+          "adapter": "AppleBCMWLANJoinAdapter::getAssocRSNXE",
+          "adapter_address": "0xffffff80015894be",
+          "data_fields": {
+            "length_offset": 4,
+            "length_bytes": 2,
+            "element_offset": 6,
+            "maximum_element_bytes": 257
+          },
+          "feature_gates": [
+            109,
+            65
+          ],
+          "additional_context_flag": 64,
+          "semantics": "Reads or replaces the outgoing association RSNXE cache; zero-length set clears it; separate firmware-associated RSNXE cache is not returned",
+          "limitation": "Getter is a current prepared association snapshot, not an arbitrary writable cache; hardware callback verification pending"
+        }
+      ]
     },
     {
       "callback": "getSIB_COEX_STATUS",
@@ -1254,8 +1289,31 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "stock setter reconstructed; next-join binding and update/cancellation semantics pending; still explicitly unsupported",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setRSN_XE",
+          "address": "0xffffff8001610d64",
+          "adapter": "AppleBCMWLANJoinAdapter::setAssocRSNXE",
+          "adapter_address": "0xffffff8001589794",
+          "data_fields": {
+            "length_offset": 4,
+            "length_bytes": 2,
+            "element_offset": 6,
+            "maximum_element_bytes": 257
+          },
+          "feature_gates": [
+            109,
+            65
+          ],
+          "additional_context_flag": 64,
+          "semantics": "Reads or replaces the outgoing association RSNXE cache; zero-length set clears it; separate firmware-associated RSNXE cache is not returned",
+          "limitation": "No safe setter-to-next-association lifetime mapping; setter remains explicitly unsupported"
+        }
+      ]
     },
     {
       "callback": "setWIFI_BT_5G_POLICY",

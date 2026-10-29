@@ -27,8 +27,14 @@ struct IOService : OSObject {
  bool setProperty(const char *key,const char *value){strings[key]=value;writes.emplace_back(key);return true;}
 };
 #include "p256_registry.inc"
-static uint64_t timesNS[3]={};static unsigned clockReads=0;
-static uint64_t testClock(){assert(clockReads<3);return timesNS[clockReads++];}
+static uint64_t timesNS[4]={};static unsigned clockReads=0;
+static uint64_t testClock(){assert(clockReads<4);return timesNS[clockReads++];}
+static Ath10kP256RegistryJob::Admission nextAdmission;
+static unsigned admissionCalls=0;
+static Ath10kP256RegistryJob::Admission testAdmission(const AthSecurity::P256DiagnosticPublication &publication){
+ assert(!ownerGate && !heldLocks && !publication.cancelled());++admissionCalls;
+ return nextAdmission;
+}
 static Pause *pauseCurve=nullptr;
 static const void *curve(){assert(!ownerGate && !heldLocks);++curveCalls;if(pauseCurve)pauseCurve->pause();return realCurve();}
 static bool zero(const void *object,size_t bytes){auto p=static_cast<const uint8_t *>(object);uint8_t value=0;for(size_t i=0;i<bytes;++i)value|=p[i];return value==0;}
@@ -41,6 +47,17 @@ int main(){
  SYMBOL(ccn_read_uint);SYMBOL(ccrng);SYMBOL(cczp_n);SYMBOL(cczp_prime);SYMBOL(cczp_mul);SYMBOL(cczp_inv);SYMBOL(cczp_add);SYMBOL(cczp_sub);
 #undef SYMBOL
  realCurve=ccec_cp_256;ccec_cp_256=curve;
+ const char *testedKernel="Darwin Kernel Version 24.6.0: Mon Jul 14 11:28:17 PDT 2025; root:xnu-11417.140.69~1/RELEASE_X86_64";
+ AthSecurity::P256CoreCryptoAPI admittedPoints{};AthSecurity::P256FieldAPI admittedField{};
+ assert(Ath10kP256KernelBinding::providersForIdentity(24,6,0,"24G90",testedKernel,admittedPoints,admittedField));
+ assert(admittedPoints.complete() && admittedField.multiply && !curveCalls);
+ for(unsigned identity=0;identity<6;++identity){
+  // Start with valid outputs each time: rejection must erase stale providers.
+  assert(Ath10kP256KernelBinding::providersForIdentity(24,6,0,"24G90",testedKernel,admittedPoints,admittedField));
+  assert(!Ath10kP256KernelBinding::providersForIdentity(identity==0?25:24,identity==1?5:6,identity==2?1:0,
+      identity==3?"24G91":identity==4?nullptr:"24G90",identity==5?"other kernel":testedKernel,admittedPoints,admittedField));
+  assert(!admittedPoints.complete() && !admittedPoints.curve && !admittedField.curve && !admittedField.multiply && !curveCalls);
+ }
  ownerGate=true;const auto points=Ath10kP256KernelBinding::points();const auto field=Ath10kP256KernelBinding::field();ownerGate=false;
  assert(!curveCalls && points.complete() && points.curve==curve && field.curve==curve);
  auto workspace=new AthSecurity::P256BackendCheckWorkspace;Report report;
@@ -116,6 +133,27 @@ int main(){
    assert(target->numbers["Ath10kP256CheckEpoch"]==77 && target->writes.back()=="Ath10kP256CheckState");
    if(scenario==0 || scenario==6)assert(target->numbers["Ath10kP256CheckMask"]==0x7ff && target->numbers["Ath10kP256CheckElapsedNS"]==1000000);
   }
+  job->release();target->release();assert(objects==1);
+ }
+ // Boot identity admission must precede all crypto; waiting for identity must
+ // not consume the five-second crypto deadline or renew it after execution.
+ for(unsigned scenario=0;scenario<5;++scenario){
+  auto target=new IOService;auto job=new Ath10kP256RegistryJob;clockReads=0;admissionCalls=0;
+  timesNS[0]=1000000;timesNS[1]=20000000000ull;timesNS[2]=20001000000ull;timesNS[3]=20002000000ull;
+  if(scenario==4)timesNS[1]=0;
+  nextAdmission=scenario==1?Ath10kP256RegistryJob::Admission::Rejected:
+      scenario==2?Ath10kP256RegistryJob::Admission::TimedOut:
+      scenario==3?Ath10kP256RegistryJob::Admission::Cancelled:Ath10kP256RegistryJob::Admission::Ready;
+  const auto before=curveCalls;
+  assert(job->initReport(points,field,target,testClock,88,testAdmission));assert(curveCalls==before);
+  assert(worker->submit(job));run(call);auto done=worker->takeCompletedFor(job);assert(done==job);done->release();
+  assert(admissionCalls==1);
+  const char *state=scenario==0?"passed":scenario==1?"unsupported-kernel":scenario==2?"build-unavailable":scenario==3?"cancelled":"admission-clock-error";
+  assert(target->strings["Ath10kP256CheckState"]==state);
+  assert(target->numbers["Ath10kP256CheckPassed"]==uint64_t(scenario==0));
+  assert(target->writes.back()=="Ath10kP256CheckState");
+  if(scenario==0){assert(curveCalls>before && target->numbers["Ath10kP256CheckMask"]==0x7ff);}
+  else assert(curveCalls==before);
   job->release();target->release();assert(objects==1);
  }
  worker->shutdown();worker->release();assert(!objects && !locks && !calls && !sleeps);dlclose(lib);

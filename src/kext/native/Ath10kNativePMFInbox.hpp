@@ -13,7 +13,7 @@ public:
  void clear(){AthSecurity::wipe(frames,sizeof(frames));read=count=0;}
  bool push(const uint8_t *bytes,size_t length,uint32_t status,uint32_t channel,uint32_t snr,AthSecurity::PMFCCMPRXLayout layout){
   if(!bytes || length<26 || length>512 || (status&0x39u) || count==Capacity ||
-     (layout!=AthSecurity::PMFCCMPRXLayout::Ciphertext && layout!=AthSecurity::PMFCCMPRXLayout::PlaintextWithEncryptedTag))return false;
+     (layout!=AthSecurity::PMFCCMPRXLayout::Ciphertext && layout!=AthSecurity::PMFCCMPRXLayout::PlaintextWithEncryptedTag && layout!=AthSecurity::PMFCCMPRXLayout::Authenticated))return false;
   auto &frame=frames[(read+count)%Capacity];AthSecurity::copy(frame.bytes,bytes,length);
   frame.length=length;frame.status=status;frame.channel=channel;frame.snr=snr;frame.layout=layout;++count;return true;
  }

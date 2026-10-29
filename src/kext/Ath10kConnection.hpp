@@ -185,6 +185,9 @@ struct ConnectionState {
         UInt32 commands=0,lastCommand=0,lastCommandStage=0,lastCommandSecurity=0;
         UInt32 lastCommandDisconnect=0,lastCommandAP=0,lastCommandRadio=0;
         UInt32 rollbacks=0,lastRollbackStage=0;
+        // Last received association denial survives reset and later success.
+        UInt32 associationRejects=0;UInt16 lastAssociationStatus=0,lastAssociationRawAID=0;
+        UInt32 associationComebacks=0,lastAssociationComebackTU=0;
         const char *lastDisconnectReason="none",*cancelOrigin="none",*lastCancelOrigin="none";
         UInt32 lastDisconnectStage=0,lastDisconnectSecurity=0,lastDisconnectPeers=0;
     } diagnostics{};
@@ -226,6 +229,8 @@ struct ConnectionState {
     UInt16 aid=0,peerId=0xffff,txId=0,sequence=0;
     bool submitted=false,startReply=false,peerMapped=false,authReply=false,assocReply=false;
     UInt8 managementAttempts=0;UInt64 managementRetryMs=0;
+    struct AssociationComeback {UInt32 intervalTU=0;UInt64 untilMs=0;bool pending=false,armed=false;} associationComeback{};
+    UInt64 associationDeadlineMs=0;
     UInt32 txPauseMask=0,txPauseEvents=0;bool txWakePending=false;
     bool wmiOwned=false,txOwned=false,txComplete=false,txManagement=false;
     UInt32 wmiNext=0,txNext=0,txStatus=0,associationStatus=0;
@@ -250,6 +255,50 @@ inline bool dataTXAdmissionOpen(const ConnectionState &s){
 // Association survives a controlled-port closure during key replacement.
 inline bool connectionAssociated(const ConnectionState &s){
     return s.stage==LinkStage::Connected && s.disconnect==DisconnectStage::None && !s.cancelRequested;
+}
+// Timeout Interval IE (56), association comeback type (3). Validate the
+// entire IE stream before accepting one interval; duplicates are ambiguous.
+inline bool associationComebackInterval(const UInt8 *ies,UInt32 bytes,UInt32 &tu){
+    if(!ies || !bytes)return false;
+    bool found=false;UInt32 value=0;
+    for(UInt32 at=0;at<bytes;){
+        if(bytes-at<2 || ies[at+1]>bytes-at-2)return false;
+        const UInt32 length=ies[at+1];
+        if(ies[at]==56){
+            if(found || length!=5 || ies[at+2]!=3)return false;
+            found=true;value=UInt32(ies[at+3])|(UInt32(ies[at+4])<<8)|(UInt32(ies[at+5])<<16)|(UInt32(ies[at+6])<<24);
+        }
+        at+=2+length;
+    }
+    if(!found)return false;tu=value;return true;
+}
+// Radio owner only. Bind one fixed overall request deadline, preserving packet
+// ownership and retry bounds. A valid long comeback can outlast the ordinary
+// five-second response timer, but duplicates cannot renew the request lifetime.
+inline const char *serviceAssociationComeback(ConnectionState &s,UInt64 now,bool &waiting,UInt64 joinDeadline=0){
+    waiting=false;auto &c=s.associationComeback;if(!c.pending)return nullptr;
+    if(s.stage!=LinkStage::Assoc || s.assocReply || s.cancelRequested || s.disconnect!=DisconnectStage::None){c={};return nullptr;}
+    if(now<s.sinceMs)return "association-comeback-clock";
+    UInt64 deadline=s.associationDeadlineMs;
+    if(!deadline){
+        if(joinDeadline)deadline=joinDeadline;
+        else {
+            if(s.sinceMs>~UInt64(0)-30000)return "association-comeback-clock";
+            deadline=s.sinceMs+30000; // Non-native control request fallback.
+        }
+    }
+    if(joinDeadline && joinDeadline<deadline)deadline=joinDeadline;
+    if(now>=deadline)return "association-comeback-deadline";
+    if(s.managementAttempts>=3)return "association-comeback-retry-limit";
+    if(!c.armed){
+        // Ceiling converts TU to ms without retrying earlier than requested.
+        const UInt64 delay=(UInt64(c.intervalTU)*1024u+999u)/1000u;
+        if(delay>=deadline-now)return "association-comeback-deadline";
+        c.untilMs=now+delay;c.armed=true;
+    }
+    s.associationDeadlineMs=deadline;
+    if(now<c.untilMs || s.txOwned || s.wmiOwned || !s.txComplete){waiting=true;return nullptr;}
+    c={};s.submitted=false;s.managementRetryMs=0;return nullptr;
 }
 inline bool connectionHasError(const ConnectionState &s){
     return s.error && !(s.error[0]=='n' && s.error[1]=='o' && s.error[2]=='n' && s.error[3]=='e' && !s.error[4]);
@@ -1306,9 +1355,27 @@ inline void receiveStationManagementAuthenticated(ConnectionState &s,const UInt8
         else s.authReply=true;
     }
     if(subtype==0x10 && s.stage==LinkStage::Assoc && s.submitted && bytes>=30){
+        // An accepted response is immutable until its firmware transaction.
+        if(s.assocReply)return;
         s.associationStatus=htcReadLE16(f+26);
-        UInt16 aid=htcReadLE16(f+28)&0x3fff;
-        if(s.associationStatus || aid==0 || aid>2007){s.error="association-rejected";s.stage=LinkStage::Failed;return;}
+        const UInt16 rawAID=htcReadLE16(f+28);
+        // IEEE 802.11-2016 9.4.1.8: the five MSBs are reserved.
+        const UInt16 aid=rawAID&0x07ff;
+        UInt32 comebackTU=0;
+        if(s.associationStatus==30 && associationComebackInterval(f+30,bytes-30,comebackTU)){
+            if(!s.associationComeback.pending){
+                s.associationComeback.intervalTU=comebackTU;s.associationComeback.pending=true;
+                ++s.diagnostics.associationComebacks;s.diagnostics.lastAssociationComebackTU=comebackTU;
+                ++s.diagnostics.associationRejects;s.diagnostics.lastAssociationStatus=30;s.diagnostics.lastAssociationRawAID=rawAID;
+            }
+            return;
+        }
+        if(s.associationStatus || aid==0 || aid>2007){
+            ++s.diagnostics.associationRejects;
+            s.diagnostics.lastAssociationStatus=static_cast<UInt16>(s.associationStatus);
+            s.diagnostics.lastAssociationRawAID=rawAID;
+            s.error="association-rejected";s.stage=LinkStage::Failed;return;
+        }
         // Validate all response IEs before accepting the AID.
         for(UInt32 p=30;p<bytes;){if(bytes-p<2 || f[p+1]>bytes-p-2)return;p+=2+f[p+1];}
         bool ratesSeen=false,extendedSeen=false,rsnSeen=false,responseEDCA=false,responseWMM=false,responseOM=false;
@@ -1386,7 +1453,7 @@ inline void receiveStationManagementAuthenticated(ConnectionState &s,const UInt8
         if(s.ap.wmmPresent && (responseWMM || responseEDCA)){
             s.ap.wmmCount=responseCount;s.ap.wmmVendor=responseWMM;
             for(UInt32 i=0;i<16;++i)s.ap.wmm[i]=responseAC[i];}
-        s.aid=aid;s.assocReply=true;
+        s.aid=aid;s.assocReply=true;s.associationComeback={};
     }
 }
 inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel=0){

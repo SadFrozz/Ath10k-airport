@@ -10,7 +10,11 @@ PM, termination, queue and connection fixes. The optional `DIAGNOSTIC_STAGE=3`
 controller-only build exits before opening PCI, loading firmware or starting DMA.
 It must not be confused with the full driver or installed as a functional release.
 
-Native scanning and WPA2 traffic have been observed; current stability fixes need
-hardware validation. WPA3/PMF, AWDL/AirDrop and other macOS ABI adapters remain
-incomplete. See [connection audit](../NATIVE-CONNECTION-AUDIT.md),
+Native scanning and WPA2 traffic have been observed. On macOS 15.6.1 build 24G90,
+the opt-in experimental SAE build also auto-associated with AKM8 and mandatory
+PMF; interface-bound ICMP and HTTPS traffic passed. This short hardware run does
+not establish long-term stability. One protected unicast SA Query round trip
+was subsequently observed with the explicit startup diagnostic; group BIP,
+AP-driven rekey and sleep/wake still need hardware validation. AWDL/AirDrop
+and other macOS ABI adapters remain incomplete. See [connection audit](../NATIVE-CONNECTION-AUDIT.md),
 [compatibility](../COMPATIBILITY.md) and [WPA3](../WPA3-CONTRACT.md).

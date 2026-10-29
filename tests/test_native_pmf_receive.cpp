@@ -1,4 +1,6 @@
 #include <array>
+#include <map>
+#include <string>
 #include <vector>
 #include "mock_sae_worker.hpp"
 #include "../src/kext/Ath10kWMI.hpp"
@@ -10,11 +12,25 @@
 #include "common_crypto_personal.hpp"
 #include "pmf_ccmp_vectors.inc"
 static unsigned randomCalls=0;
+#ifdef ATH10K_NATIVE_REAL_SAE
+static unsigned nativeOwnerRandomCalls=0,nativeHMACCalls=0;
+static bool (*nativePasswordRandom)(uint8_t *,size_t)=nullptr;
+#endif
 struct Ath10kKernelCrypto : PersonalTestCrypto {
- static bool random(uint8_t *out,size_t n){if(n!=2){assert(n==32);return PersonalTestCrypto::random(out,n);}out[0]=0x12;out[1]=uint8_t(0x34+randomCalls++);return true;}
+#ifdef ATH10K_NATIVE_REAL_SAE
+ static bool hmac(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){++nativeHMACCalls;return PersonalTestCrypto::hmac(k,kl,d,n,o);}
+#endif
+ static bool random(uint8_t *out,size_t n){
+#ifdef ATH10K_NATIVE_REAL_SAE
+ if(ownerGate)++nativeOwnerRandomCalls;
+ if(nativePasswordRandom && !ownerGate && n!=2)return nativePasswordRandom(out,n);
+#endif
+ if(n!=2){assert(n==32);return PersonalTestCrypto::random(out,n);}out[0]=0x12;out[1]=uint8_t(0x34+randomCalls++);return true;}
  static bool encrypt(const uint8_t *key,const uint8_t *in,uint8_t *out){assert(!ownerGate && !heldLocks);return PersonalTestCrypto::encrypt(key,in,out);}
 };
 #include "pmf_session.inc"
+#include "../src/shared/Ath10kPSKPassword.hpp"
+#include "native_psk_preparation.inc"
 #ifdef ATH10K_NATIVE_REAL_SAE
 #include "../src/shared/Ath10kSAEExchange.hpp"
 #include "../src/shared/Ath10kSAEPassword.hpp"
@@ -38,12 +54,38 @@ public:
  class NativeSecurity;NativeSecurity *_nativeSecurity=nullptr;Ath10k::ConnectionState _connection;
  static bool nativePMFManagement(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32);
  struct {bool completed=true,txOwned=false,cancelRequested=false;} _wmiScan;
- struct {struct {unsigned outstanding=0;} credits;} _wmi;
+ struct {struct {unsigned outstanding=0;} credits;UInt32 htCapability=0,vhtCapability=0;} _wmi;
  struct {bool active=true;} _wmiLive;
  Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
  bool _runtimeActive=true;
- bool _nativeJoinPending=false,_nativeRadioOn=true,_networkEnabled=true;
+ bool _nativeJoinPending=false,_nativeRadioOn=true,_networkEnabled=true,_nativeStopping=false;
+ bool nativePreparePersonalAuth(UInt64,const char *&);
  bool _dmaQuarantine=false,blocked=false,failSubmit=false;
+ bool startupProbeOption=false,_nativePMFStartupQueryAttempted=false;
+ unsigned pmfProbeAnnouncements=0;
+ bool nativePMFStartupQueryEnabled() const{return startupProbeOption;}
+#ifdef ATH10K_NATIVE_REAL_SAE
+ bool experimentalSAE=true,_nativeScanPending=false,_nativeAbortRequested=false;
+ bool _nativeWasUp=false,_nativeLinkUpSent=false,_nativeAssocSent=false,_nativeBeaconSent=false,_nativeJoinBSSSent=false,_nativeJoinFailed=false;
+ struct {bool rfKill=false;} _wmiEvents;
+ struct Payload {bool kSupportsMFP=false;} payloadData;
+ const Payload &payload() const {return payloadData;}
+ Ath10k::RegulatoryPolicy _regulatory;
+ UInt8 _nativeMACCurrent[6]{};AirportWCL::JoinRequest _nativeJoin{};UInt64 _nativeJoinDeadline=0;
+ std::map<std::string,uint64_t> numericProperties;std::map<std::string,std::string> stringProperties;
+ void setProperty(const char *k,const char *v){++propertyWrites;stringProperties[k]=v;}
+ void setProperty(const char *k,bool v){++propertyWrites;numericProperties[k]=v;
+  if(!strcmp(k,"Ath10kNativePMFStartupQueryStarted")){assert(v);++pmfProbeAnnouncements;}}
+ void setProperty(const char *k,UInt64 v,unsigned){++propertyWrites;numericProperties[k]=v;}
+ bool nativeSAEEnabled() const {return experimentalSAE;}
+ int nativeJoinRequest(void *);
+ void publishNativeSecurityState(UInt64);
+ UInt64 _nativeSecurityPublished[10]{},_nativeSecuritySnapshotMS=0;bool _nativeSecuritySnapshotPublished=false;
+ unsigned propertyWrites=0;
+#else
+ void setProperty(const char *key,bool value){assert(value && !strcmp(key,"Ath10kNativePMFStartupQueryStarted"));++pmfProbeAnnouncements;}
+#endif
+
  std::vector<std::vector<uint8_t>> transmitted;
  bool powerIOBlocked(){return blocked;}
  unsigned saeDiscards=0;
@@ -55,6 +97,7 @@ public:
  bool nativeAcceptSecurityResult(UInt32);
  bool nativePMFPairwiseAcknowledged(const UInt8 *);
  bool nativePMFPortReady();
+ bool nativeAssociationRSNXE(void *);
  bool nativePMFFirmwareReady();
  bool nativePMFTransportReady();
  const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode=AthSecurity::ManagementTX::Plain){
@@ -86,10 +129,10 @@ static bool deliver(Ath10kPCIDevice *d,const uint8_t *frame,size_t bytes,uint32_
 static void service(Ath10kPCIDevice *d,UInt64 now=0){ownerGate=true;d->serviceNativePMF(now);ownerGate=false;}
 static void roundtrip(Ath10kPCIDevice *d){service(d);assert(d->_nativeSecurity->pmfRXInFlight);run(latest);service(d);}
 class ForeignJob final : public Ath10kSAEWorkItem {public:void execute() override {}void discard() override {}};
-void queryTests();void spectrumTests();void firmwareTests();
+void queryTests();void spectrumTests();void firmwareTests();void startupProbeTests();
 #ifndef ATH10K_NATIVE_KEY_STAGE_TEST
 int main(){
- firmwareTests();queryTests();spectrumTests();
+ firmwareTests();queryTests();spectrumTests();startupProbeTests();
  { auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
    assert(sec->saeWorker->submit(job));run(latest);service(d);
    assert(sec->saeWorker->takeCompleted()==job);job->release();job->release();stop(d);
@@ -107,16 +150,15 @@ int main(){
    sec->pmfLayoutVerified=true;assert(deliver(d,c_deauth_wire,sizeof(c_deauth_wire)));roundtrip(d);
    assert(d->_connection.cancelRequested && sec->pmfRXVerified==1);stop(d);
  }
- { auto d=create();auto sec=d->_nativeSecurity;
+ for(bool plaintext:{false,true}){ auto d=create();auto sec=d->_nativeSecurity;
    // A protected action's first IV byte is not a plaintext action category.
    auto f=std::array<uint8_t,sizeof(c_query_wire)>{};memcpy(f.data(),c_query_wire,f.size());f[24]=4;
    assert(AthSecurity::robustManagementFrame(f.data(),f.size()));
-   assert(deliver(d,c_deauth_wire,sizeof(c_deauth_wire)) && !sec->pmfInbox.size() && !d->_connection.cancelRequested);
-   sec->pmfLayoutVerified=true;
-   auto raw=std::array<uint8_t,sizeof(c_deauth_wire)>{};memcpy(raw.data(),c_deauth_wire,raw.size());
+   assert(!sec->pmfLayoutVerified && sec->pmfRXLayout==AthSecurity::PMFCCMPRXLayout::Authenticated);
+   auto raw=std::array<uint8_t,sizeof(c_deauth_wire)>{};memcpy(raw.data(),plaintext?c_deauth_decrypted:c_deauth_wire,raw.size());
    assert(deliver(d,raw.data(),raw.size()));memset(raw.data(),0xa5,raw.size());
    assert(!d->_connection.cancelRequested);roundtrip(d);
-   assert(d->_connection.cancelRequested && d->_connection.apDisconnect.reason==6 && sec->pmfRXVerified==1);
+   assert(d->_connection.cancelRequested && d->_connection.apDisconnect.reason==6 && sec->pmfRXVerified==1 && sec->pmfLayoutVerified);
    assert(d->_connection.signalDbm==-55);stop(d);
  }
  { auto d=create();auto sec=d->_nativeSecurity;
@@ -153,6 +195,78 @@ int main(){
 static void trigger(Ath10kPCIDevice *d){
  auto f=std::array<uint8_t,sizeof(c_deauth_plain)>{};memcpy(f.data(),c_deauth_plain,f.size());f[1]&=~0x40;
  assert(deliver(d,f.data(),f.size()));
+}
+void startupProbeTests(){
+ {auto d=create();d->_connection.securityAKM=8;service(d,0);
+  assert(!d->_nativePMFStartupQueryAttempted && !randomCalls && !d->pmfProbeAnnouncements && d->transmitted.empty());stop(d);}
+ {auto d=create();d->startupProbeOption=true;d->_connection.securityAKM=6;service(d,0);
+  assert(!d->_nativePMFStartupQueryAttempted && !randomCalls && !d->pmfProbeAnnouncements);stop(d);}
+ // Waiting for owner/firmware readiness must not burn the fixed query deadline.
+ for(unsigned barrier=0;barrier<13;++barrier){
+  auto d=create();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  d->startupProbeOption=true;s.securityAKM=8;
+  uint8_t key[16];memcpy(key,c_key,16);key[0]^=1;
+  if(barrier==0)s.dataPending=1;
+  if(barrier==1)s.radio.appliedPS=true;
+  if(barrier==2)d->_wmi.credits.outstanding=1;
+  if(barrier==3)sec->replyPending=true;
+  if(barrier==4)sec->keysPending=true;
+  if(barrier==5)sec->authorizePending=true;
+  if(barrier==6)s.rekeyKind=1;
+  if(barrier==7)d->blocked=true;
+  if(barrier==8)assert(sec->pmfSession->acknowledgePairwise(key,c_sta,c_ap));
+  if(barrier==9)s.securityPhase=4;
+  if(barrier==10)d->_nativeStopping=true;
+  if(barrier==11)s.eapolPause=true;
+  ForeignJob *foreign=nullptr;
+  if(barrier==12){foreign=new ForeignJob;assert(foreign->init());assert(sec->saeWorker->submit(foreign));}
+  service(d,0);assert(!d->_nativePMFStartupQueryAttempted && !d->pmfProbeAnnouncements && !randomCalls);
+  s.dataPending=0;s.radio.appliedPS=false;d->_wmi.credits.outstanding=0;
+  sec->replyPending=sec->keysPending=sec->authorizePending=false;s.rekeyKind=0;d->blocked=false;
+  assert(sec->pmfSession->authorize());s.securityPhase=5;d->_nativeStopping=false;s.eapolPause=false;
+  if(foreign){run(latest);auto item=sec->saeWorker->takeCompleted();assert(item==foreign);item->release();foreign->release();}
+  service(d,30000);assert(d->_nativePMFStartupQueryAttempted && d->pmfProbeAnnouncements==1 && sec->pmfTXInFlight);
+  assert(sec->pmfQuery.state()==AthSecurity::SAQueryExchange::State::Waiting && !s.cancelRequested);
+  stop(d);
+ }
+ // Real boot regression: the AP enables PS before the diagnostic is ready.
+ // Reserve the normal wake/drain path without starting or extending a query.
+ {auto d=create();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  d->startupProbeOption=true;s.securityAKM=8;s.radio.appliedPS=true;s.dataPending=1;
+  d->_wmiScan.completed=false;
+  service(d,0);assert(s.pmfTXPending && d->_wmiScan.cancelRequested && !Ath10k::dataTXAdmissionOpen(s));
+  assert(!d->_nativePMFStartupQueryAttempted && sec->pmfQuery.state()==AthSecurity::SAQueryExchange::State::Idle);
+  service(d,30000);assert(s.pmfTXPending && !s.cancelRequested && !randomCalls);
+  s.radio.appliedPS=false;s.dataPending=0;d->_wmiScan.completed=true;
+  service(d,30001);assert(d->_nativePMFStartupQueryAttempted && sec->pmfTXInFlight);
+  run(latest);service(d,30002);assert(sec->pmfTXSubmitted==1 && s.pmfTXPending);
+  // Retry interval must not reopen data admission or allow PS to reenter.
+  service(d,30100);assert(s.pmfTXPending && !Ath10k::dataTXAdmissionOpen(s) && !sec->pmfTXInFlight);
+  // Stop before the fixed 1.024s deadline; the fixture response is authentic.
+  assert(deliver(d,c_query_wire,sizeof(c_query_wire)));service(d,30101);run(latest);service(d,30102);
+  assert(sec->pmfQuerySucceeded==1 && !s.pmfTXPending && s.txWakePending && Ath10k::dataTXAdmissionOpen(s));stop(d);
+ }
+ {auto d=create();auto sec=d->_nativeSecurity;d->startupProbeOption=true;d->_connection.securityAKM=8;
+  service(d,0);assert(d->_nativePMFStartupQueryAttempted && sec->pmfTXInFlight);
+  run(latest);service(d,0);assert(d->transmitted.size()==1 && sec->pmfTXSubmitted==1);
+  assert(deliver(d,c_query_wire,sizeof(c_query_wire)));service(d,1);run(latest);service(d,1);
+  assert(sec->pmfQuerySucceeded==1 && sec->pmfRXVerified==1 && d->pmfProbeAnnouncements==1);
+  service(d,20000);assert(d->transmitted.size()==1 && !d->_connection.cancelRequested);
+  // Association reset/rekey cannot schedule another diagnostic query on this controller.
+  sec->reset();assert(d->_nativePMFStartupQueryAttempted);
+  sec->pmfSession=new Ath10kPMFSession;assert(sec->pmfSession->initConnection(c_sta,c_ap,10));
+  assert(sec->pmfSession->acknowledgePairwise(c_key,c_sta,c_ap));
+  AthSecurity::IGTKCMAC128 management{};management.keyID=4;memcpy(management.key,c_key,16);
+  assert(sec->pmfSession->activateManagement(management) && sec->pmfSession->authorize());
+  service(d,20001);assert(d->transmitted.size()==1 && d->pmfProbeAnnouncements==1 && !sec->pmfTXInFlight);
+  stop(d);
+ }
+ {auto d=create();auto sec=d->_nativeSecurity;d->startupProbeOption=true;d->_connection.securityAKM=8;
+  service(d,0);run(latest);service(d,0);service(d,1024);
+  assert(d->_connection.cancelRequested && !d->_connection.portAuthorized &&
+   !strcmp(d->_connection.error,"pmf-sa-query-timeout") && d->_nativePMFStartupQueryAttempted);
+  service(d,2000);assert(d->pmfProbeAnnouncements==1 && !sec->pmfQuerySucceeded);stop(d);
+ }
 }
 void queryTests(){
  // A live query admits an ID only after actual protected handoff. Radio TX
@@ -196,7 +310,7 @@ void queryTests(){
   d->_connection.radio.appliedPS=true;service(d);assert(sec->pmfPendingTX && d->transmitted.empty());
   d->_connection.radio.appliedPS=false;d->_wmi.credits.outstanding=1;service(d,1);assert(sec->pmfPendingTX);
   d->_wmi.credits.outstanding=0;d->blocked=true;service(d,2);assert(sec->pmfPendingTX);
-  d->blocked=false;service(d,3);assert(d->transmitted.size()==1 && !sec->pmfPendingTX && d->_connection.txWakePending);stop(d);}
+  d->blocked=false;service(d,3);assert(d->transmitted.size()==1 && !sec->pmfPendingTX && d->_connection.pmfTXPending);stop(d);}
  {auto d=create();auto sec=d->_nativeSecurity;sec->pmfLayoutVerified=true;trigger(d);service(d);run(latest);service(d);
   auto fake=std::array<uint8_t,sizeof(c_query_plain)>{};memcpy(fake.data(),c_query_plain,fake.size());fake[1]&=~0x40;
   assert(deliver(d,fake.data(),fake.size()));service(d,1);assert(!sec->pmfQuerySucceeded && !sec->pmfRXInFlight);stop(d);}

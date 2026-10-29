@@ -11,6 +11,7 @@
 #include <libkern/c++/OSString.h>
 #include <libkern/version.h>
 #include <kern/clock.h>
+#include <IOKit/IOLib.h>
 static uint64_t diagnosticClockNS(){uint64_t absolute=0,ns=0;clock_get_uptime(&absolute);absolutetime_to_nanoseconds(absolute,&ns);return ns;}
 
 // No IO80211 inheritance, workloop, CoreCapture, power plane, PCI-open or DMA.
@@ -37,17 +38,35 @@ class Ath10kP256DiagnosticService : public IOService {
         if(!registryID(provider,"vendor-id",vendor) || !registryID(provider,"device-id",device) ||
            !registryID(provider,"subsystem-vendor-id",subvendor) || !registryID(provider,"subsystem-id",subsystem) ||
            !AthSecurity::p256DiagnosticDevice(vendor,device,subvendor,subsystem))return false;
-        // osversion is declared by the SDK but is not a supported kext export.
-        // Read the same build identity through the retained registry property.
-        auto root=IORegistryEntry::getRegistryRoot();
-        auto property=root?root->copyProperty("OS Build Version"):nullptr;
-        auto build=OSDynamicCast(OSString,property);
-        const bool supported=build && AthSecurity::p256DiagnosticKernel(version_major,version_minor,version_revision,build->getCStringNoCopy(),version);
-        if(property)property->release();if(supported)return true;
+        provider->setProperty("Ath10kP256CheckKernelMajor",UInt64(version_major),32);
+        provider->setProperty("Ath10kP256CheckKernelMinor",UInt64(version_minor),32);
+        provider->setProperty("Ath10kP256CheckKernelRevision",UInt64(version_revision),32);
+        // Reject the wrong numeric version/XNU tag before creating a worker.
+        // The OS build is checked separately on that worker, before any crypto.
+        if(AthSecurity::p256DiagnosticKernel(version_major,version_minor,version_revision,"24G90",version))return true;
         provider->setProperty("Ath10kP256CheckPassed",false);
         provider->setProperty("Ath10kP256CheckKernel",version);
         provider->setProperty("Ath10kP256CheckState","unsupported-kernel");return false;
     }
+    static Ath10kP256RegistryJob::Admission admitBuild(const AthSecurity::P256DiagnosticPublication &publication){
+        using Admission=Ath10kP256RegistryJob::Admission;
+        // The root build property can be absent during early OpenCore matching.
+        // Wait only on the isolated worker, without holding any driver gate.
+        // A present foreign value fails immediately; absence never admits crypto.
+        for(unsigned attempt=0;attempt<300;++attempt){
+            if(publication.cancelled())return Admission::Cancelled;
+            auto root=IORegistryEntry::getRegistryRoot();
+            auto property=root?root->copyProperty("OS Build Version"):nullptr;
+            if(property){
+                auto build=OSDynamicCast(OSString,property);
+                const bool supported=build && AthSecurity::p256DiagnosticKernel(version_major,version_minor,version_revision,build->getCStringNoCopy(),version);
+                property->release();return supported?Admission::Ready:Admission::Rejected;
+            }
+            IOSleep(100);
+        }
+        return Admission::TimedOut;
+    }
+
     void cleanup(IOService *provider){
         // No owned driver gate exists. The worker never calls back into this
         // service; drain before dropping either retained object.
@@ -76,7 +95,7 @@ public:
         provider->setProperty("Ath10kP256CheckState","pending");
         worker=new Ath10kSAEWorker;job=new Ath10kP256RegistryJob;
         if(!worker || !job || !worker->init() ||
-           !job->initReport(Ath10kP256KernelBinding::points(),Ath10kP256KernelBinding::field(),provider,diagnosticClockNS,1) ||
+           !job->initReport(Ath10kP256KernelBinding::points(),Ath10kP256KernelBinding::field(),provider,diagnosticClockNS,1,admitBuild) ||
            !worker->submit(job)){
             provider->setProperty("Ath10kP256CheckState","allocation-failed");cleanup(nullptr);
             IOService::stop(provider);started=false;return false;

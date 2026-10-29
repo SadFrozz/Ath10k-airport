@@ -215,12 +215,22 @@ class NativeLockOrder(unittest.TestCase):
         self.assertLess(worker.index("sec->supplicant.receive"),worker.index("serviceNativeNotifications(now)"))
         self.assertNotIn("postMessage(",worker)
 
+    def test_terminal_security_cleanup_does_not_publish_registry_properties(self):
+        native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
+        cleanup=native.split("void Ath10kPCIDevice::discardNativeSecurity()",1)[1].split("IOReturn Ath10kPCIDevice::nativeStopAction",1)[0]
+        self.assertNotIn("publishNativeSecurityState(",cleanup)
+        self.assertNotIn("setProperty(",cleanup)
+
     def test_new_transactions_wait_for_terminal_notifications(self):
         native=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()
-        for name in ["MACSet", "setWCL_SCAN_REQ", "setWCL_ASSOCIATE"]:
+        for name in ["MACSet", "setWCL_SCAN_REQ"]:
             case=native.split("case N::"+name+":",1)[1].split("case N::",1)[0]
             self.assertIn("_nativeAbortRequested",case)
             self.assertIn("_nativeLinkUpSent",case)
+        join=native.split("IOReturn Ath10kPCIDevice::nativeJoinRequest(",1)[1].split("IOReturn Ath10kPCIDevice::nativeRequestGated(",1)[0]
+        self.assertIn("_nativeAbortRequested",join)
+        self.assertIn("_nativeLinkUpSent",join)
+        self.assertIn("case N::setWCL_ASSOCIATE:return nativeJoinRequest(data);",native)
 
     def test_radio_worker_uses_queued_wcl_notifications(self):
         source=(Path(__file__).resolve().parents[1]/"src/kext/native/Ath10kNative.cpp").read_text()

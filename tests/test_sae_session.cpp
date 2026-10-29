@@ -277,10 +277,11 @@ int main(){
        assert(nativeSAEPasswordMode(native,selected)==NativeSAEPasswordMode::Legacy);
        auto hidden=selected;hidden.hidden=true;hidden.ssidLength=0;assert(nativeSAEPasswordMode(native,hidden)==NativeSAEPasswordMode::Legacy);
        hidden.hidden=false;assert(nativeSAEPasswordMode(native,hidden)==NativeSAEPasswordMode::Unsupported);
-       for(unsigned bad=0;bad<8;++bad){auto request=native;auto bss=selected;
+       for(unsigned bad=0;bad<11;++bad){auto request=native;auto bss=selected;
         if(bad==0)request.keyCipher=6;if(bad==1)request.upperAuth|=8;if(bad==2)bss.ssid[8]^=1;if(bad==3)bss.bssid[5]^=1;
         if(bad==4)bss.privacy=false;if(bad==5)bss.rsn[19]=2;if(bad==6){bss.rsnxeLength=3;bss.rsnxe[0]=244;bss.rsnxe[1]=2;}
         if(bad==7){request.rsnLength=sizeof(AthSecurity::stationRSN);memcpy(request.rsn,AthSecurity::stationRSN,request.rsnLength);}
+        if(bad==8)request.upperAuthExt=1;if(bad==9)request.transitionDisable=2;if(bad==10)request.transitionDisable=0x10;
         auto job=new Ath10kSAEPrepareJob;const auto before=curveCalls;prepareRandomCalls=0;ownerGate=true;
         assert(initNativeSAEPasswordCandidate(*job,request,bss,api,field,prepareRandom,local,602,200000)==NativeSAEPasswordMode::Unsupported);
         ownerGate=false;job->execute();assert(curveCalls==before && !prepareRandomCalls);job->release();assert(objects==1);

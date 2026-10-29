@@ -5,11 +5,15 @@ from pathlib import Path
 import plistlib
 
 
-def prepare(native, destination, diagnostic_stage=0, p256_diagnostic=False):
+def prepare(native, destination, diagnostic_stage=0, p256_diagnostic=False, native_sae_experimental=False, native_pmf_probe=False):
     if diagnostic_stage not in range(5):
         raise ValueError('unknown diagnostic stage')
     if p256_diagnostic != (diagnostic_stage == 4) or (p256_diagnostic and not native):
         raise ValueError('stage 4 requires native build and explicit P-256 diagnostic compilation')
+    if native_sae_experimental and (not native or diagnostic_stage != 0 or p256_diagnostic):
+        raise ValueError('experimental SAE requires the normal native controller')
+    if native_pmf_probe and not native_sae_experimental:
+        raise ValueError('PMF probe requires explicit experimental SAE')
     root = Path(__file__).resolve().parents[1]
     info = plistlib.loads((root / 'Ath10kMac.kext/Contents/Info.plist').read_bytes())
     if native:
@@ -24,7 +28,15 @@ def prepare(native, destination, diagnostic_stage=0, p256_diagnostic=False):
             'Ath10kNativeExperimental': True, 'IOPCISecondaryMatch': '0x2b511a3b',
             'Ath10kDiagnosticStage': diagnostic_stage, 'Ath10kProbeOnly': False, 'Ath10kStationDFS': True,
         })
+        personality.pop('Ath10kNativeSAEExperimental', None)
+        personality.pop('Ath10kNativePMFStartupQuery', None)
+        if native_sae_experimental:
+            personality['Ath10kNativeSAEExperimental'] = True
+        if native_pmf_probe:
+            personality['Ath10kNativePMFStartupQuery'] = True
         if p256_diagnostic:
+            # This isolated service cannot provide a network-root device.
+            info.pop('OSBundleRequired', None)
             info['OSBundleLibraries'] = {key: info['OSBundleLibraries'][key] for key in (
                 'com.apple.iokit.IOPCIFamily', 'com.apple.kpi.iokit', 'com.apple.kpi.libkern',
                 'com.apple.kpi.mach', 'com.apple.kec.corecrypto')}
@@ -43,5 +55,7 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--diagnostic-stage', type=int, choices=[0, 1, 2, 3, 4], default=0)
     parser.add_argument('--p256-diagnostic', action='store_true')
+    parser.add_argument('--native-sae-experimental', action='store_true')
+    parser.add_argument('--native-pmf-probe', action='store_true')
     args = parser.parse_args()
-    prepare(bool(args.native), args.destination, args.diagnostic_stage, args.p256_diagnostic)
+    prepare(bool(args.native), args.destination, args.diagnostic_stage, args.p256_diagnostic, args.native_sae_experimental, args.native_pmf_probe)

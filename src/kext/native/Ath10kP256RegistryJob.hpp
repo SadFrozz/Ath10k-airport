@@ -13,8 +13,15 @@ class Ath10kP256RegistryJob : public Ath10kSAEWorkItem {
     bool executed=false,consumed=false;
     AthSecurity::P256DiagnosticPublication publication;
 public:
+    enum class Admission {Ready,Rejected,TimedOut,Cancelled};
+    using AdmissionCheck=Admission (*)(const AthSecurity::P256DiagnosticPublication &);
+private:
+    AdmissionCheck admission=nullptr;
+    AthSecurity::P256CoreCryptoAPI points{};
+    AthSecurity::P256FieldAPI field{};
+public:
     bool initReport(const AthSecurity::P256CoreCryptoAPI &,const AthSecurity::P256FieldAPI &,
-        IOService *,uint64_t (*)(),uint32_t);
+        IOService *,uint64_t (*)(),uint32_t,AdmissionCheck=nullptr);
     bool cancelReport(){return publication.cancel();} // Caller retains the job.
     void execute() override;
     void discard() override;

@@ -91,7 +91,7 @@ public:
     IOReturn getWCL_GET_TX_BLANKING_STATUS(unsigned int* data) override { return kIOReturnUnsupported; }
     IOReturn getHE_COUNTERS(apple80211_he_counters_ctl* data) override { return kIOReturnUnsupported; }
     IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo* data) override { return perform(AthNativeOp::getWCL_CHANNELS_INFO,data); }
-    IOReturn getRSN_XE(apple80211_rsn_xe_data* data) override { return kIOReturnUnsupported; }
+    IOReturn getRSN_XE(apple80211_rsn_xe_data* data) override { return perform(AthNativeOp::getRSN_XE,data); }
     IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status* data) override { return kIOReturnUnsupported; }
     IOReturn getWIFI_BT_5G_POLICY(apple80211_wifi_bt_5g_policy_t* data) override { return kIOReturnUnsupported; }
     IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info* data) override { return perform(AthNativeOp::getWCL_EXTENDED_BSS_INFO,data); }

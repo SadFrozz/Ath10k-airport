@@ -30,7 +30,7 @@ Ath10kPMFSession::Submission Ath10kPMFSession::queue(Ath10kSAEWorker *worker,con
     uint32_t status,Layout layout,uint64_t generation){
     if(!current(generation) || !authorized || !worker)return Submission::Aborted;
     if(!frame || bytes<26 || bytes>512 || (status&0x39u) ||
-       (layout!=Layout::Ciphertext && layout!=Layout::PlaintextWithEncryptedTag))return Submission::NoWork;
+       (layout!=Layout::Ciphertext && layout!=Layout::PlaintextWithEncryptedTag && layout!=Layout::Authenticated))return Submission::NoWork;
     if(!worker->available())return Submission::Busy;
     auto job=new Ath10kPMFJob;if(!job)return Submission::NoMemory;
     if(!job->init()){job->release();return Submission::NoMemory;}
@@ -63,7 +63,7 @@ bool Ath10kPMFSession::consume(Ath10kSAEWorkItem *item,uint64_t generation,Messa
         if(!management.commitIPN(job->management.keyID,job->groupEpoch,job->acceptedIPN))return false;
     }else return false;
     AthSecurity::wipe(&out,sizeof(out));out.kind=job->kind;
-    if(job->kind==Kind::Pairwise){out.bytes=job->result.bytes;AthSecurity::copy(out.frame,job->result.frame,out.bytes);out.pairwise=stamp;}
+    if(job->kind==Kind::Pairwise){out.bytes=job->result.bytes;AthSecurity::copy(out.frame,job->result.frame,out.bytes);out.pairwise=stamp;out.layout=job->layout;}
     else {out.bytes=job->bytes-18;AthSecurity::copy(out.frame,job->frame,out.bytes);out.groupID=job->management.keyID;out.groupEpoch=job->groupEpoch;}
     return true;
 }
@@ -108,8 +108,9 @@ void Ath10kPMFJob::execute(){
     if(executed || !session)return;
     using C=AthSecurity::PMFCCMP128<Ath10kKernelCrypto>;
     if(kind==Ath10kPMFSession::Kind::Pairwise){
-        const auto selected=layout==Ath10kPMFSession::Layout::Ciphertext?C::RXLayout::Ciphertext:C::RXLayout::PlaintextWithEncryptedTag;
-        verified=C::receive(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,pairwise.rxPN,selected,result,workspace);
+        if(layout==Ath10kPMFSession::Layout::Authenticated)
+            verified=C::receiveAuthenticated(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,pairwise.rxPN,layout,result,workspace);
+        else verified=C::receive(frame,bytes,pairwise.key,pairwise.local,pairwise.ap,pairwise.rxPN,layout,result,workspace);
     }else if(kind==Ath10kPMFSession::Kind::ProtectTX){
         if(txMode==AthSecurity::ManagementTX::HardwareCCMP)
             verified=AthSecurity::PMFHardwareCCMP::prepare(frame,bytes,pairwise.local,pairwise.ap,txPN,result);

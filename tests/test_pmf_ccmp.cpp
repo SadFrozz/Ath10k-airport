@@ -36,6 +36,35 @@ static void known(){
  assert(!C::receive(c_tx_wire,sizeof(c_tx_wire),c_key,c_sta,c_ap,0,C::RXLayout::Ciphertext,out,w));
  assert(!C::protect(c_query_plain,sizeof(c_query_plain),c_key,c_sta,c_ap,c_query_pn,out,w));
 }
+static void authenticatedLayouts(){
+ Workspace w;Result out;
+ for(const auto &v:vectors)for(bool plaintext:{false,true}){
+  auto selected=C::RXLayout::Authenticated;const auto data=plaintext?v.decrypted:v.wire;
+  assert(C::receiveAuthenticated(data,v.wireBytes,c_key,c_sta,c_ap,0,selected,out,w));
+  assert(selected==(plaintext?C::RXLayout::PlaintextWithEncryptedTag:C::RXLayout::Ciphertext));
+  assert(out.bytes==v.plainBytes && out.pn==v.pn && !memcmp(out.frame,v.plain,v.plainBytes) && zero(w));
+  auto saved=out;selected=C::RXLayout::Authenticated;
+  assert(!C::receiveAuthenticated(data,v.wireBytes,c_key,c_sta,c_ap,v.pn,selected,out,w));
+  unchanged(out,saved);assert(selected==C::RXLayout::Authenticated && zero(w));
+  std::vector<uint8_t> bad(data,data+v.wireBytes);bad.back()^=1;
+  assert(!C::receiveAuthenticated(bad.data(),bad.size(),c_key,c_sta,c_ap,0,selected,out,w));unchanged(out,saved);
+  // Missing CCMP tag is never accepted as a firmware-decrypted shortcut.
+  assert(!C::receiveAuthenticated(data,v.wireBytes-8,c_key,c_sta,c_ap,0,selected,out,w));unchanged(out,saved);
+ }
+ using F=AthSecurity::PMFCCMP128<FailedEncrypt>;
+ for(bool plaintext:{false,true}){
+  const auto &v=vectors[6];const auto data=plaintext?v.decrypted:v.wire;
+  auto selected=C::RXLayout::Authenticated;FailedEncrypt::calls=FailedEncrypt::failAt=0;
+  assert(F::receiveAuthenticated(data,v.wireBytes,c_key,c_sta,c_ap,0,selected,out,w));
+  const auto calls=FailedEncrypt::calls;const auto saved=out;
+  for(unsigned fail=1;fail<=calls;++fail){
+   FailedEncrypt::calls=0;FailedEncrypt::failAt=fail;selected=C::RXLayout::Authenticated;
+   assert(!F::receiveAuthenticated(data,v.wireBytes,c_key,c_sta,c_ap,0,selected,out,w));
+   unchanged(out,saved);assert(selected==C::RXLayout::Authenticated && zero(w));
+  }
+ }
+ FailedEncrypt::calls=FailedEncrypt::failAt=0;
+}
 static void corruption(){
  Workspace w;Result out;out.bytes=77;out.pn=88;memset(out.frame,0xa5,512);const Result saved=out;
  for(size_t i=0;i<sizeof(c_query_wire);++i){
@@ -145,4 +174,4 @@ static void txPacketNumbers(){
  assert(owner.activate(replacement,c_sta,c_ap,9) && !owner.current(old));
  assert(owner.reserveTX(lease,pn) && pn==1);owner.clear();assert(!owner.current(lease) && !owner.reserveTX(lease,pn));
 }
-int main(){known();corruption();bounds();failures();epochsAndQuery();groupFrames();txPacketNumbers();}
+int main(){known();authenticatedLayouts();corruption();bounds();failures();epochsAndQuery();groupFrames();txPacketNumbers();}

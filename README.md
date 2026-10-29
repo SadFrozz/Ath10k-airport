@@ -8,12 +8,18 @@ The driver does not require OpenCore Legacy Patcher or changes to system volumes
 
 ## Status
 
-Native discovery, scanning and WPA2 traffic have worked on the development laptop;
-connection stability, reconnect and power transitions remain under investigation.
-The current fixes have host-test/build evidence and await hardware verification.
-WPA3/SAE and PMF are not implemented. AWDL/AirDrop are unsupported. Compatibility
-with macOS 11–26 is planned; Sequoia ABI declarations are not proof of compatibility
-with other releases. See [the connection audit](NATIVE-CONNECTION-AUDIT.md),
+Native discovery, scanning and WPA2 traffic have worked on the development laptop.
+An explicit experimental build has also connected through native SAE on Sequoia
+15.6.1 (24G90), carried interface-bound IPv4/IPv6 traffic and completed one protected
+unicast SA Query round trip. This is a limited hardware checkpoint, not complete
+WPA3/PMF interoperability or stability certification. Group BIP and rekey have host
+coverage; AP-driven hardware rekey, reconnect timing and sleep/wake remain open.
+Normal reboot without forced power-off has been reported by the user.
+
+Default builds do not enable SAE. The experimental option is guarded for the
+validated kernel; broader macOS 11–26 support remains planned. AWDL/AirDrop are
+unsupported. Sequoia ABI declarations are not proof of compatibility with other
+releases. See [the connection audit](NATIVE-CONNECTION-AUDIT.md),
 [the native contract](NATIVE-CONTRACT.md), [compatibility](COMPATIBILITY.md) and
 [WPA3 requirements](WPA3-CONTRACT.md).
 
@@ -24,6 +30,16 @@ make -j2 kext
 # Explicit equivalent:
 make NATIVE=1 DIAGNOSTIC_STAGE=0 -j2 kext
 ```
+
+The opt-in SAE build for the currently validated kernel is:
+
+```sh
+make NATIVE=1 NATIVE_SAE_EXPERIMENTAL=1 NATIVE_PMF_PROBE=0 DIAGNOSTIC_STAGE=0 -j2 kext
+```
+
+This keeps the one-shot startup PMF hardware diagnostic disabled. Experimental
+admission does not bypass the kernel/profile/key checks or downgrade a requested
+SAE connection to WPA2. See [the WPA3 contract](WPA3-CONTRACT.md) for limitations.
 
 Output: `build/native/out/Ath10kMac.kext`. Only this kext is the driver deliverable;
 release archives also include documentation, licenses and checksums.

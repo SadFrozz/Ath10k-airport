@@ -4,6 +4,29 @@ BUILD_DIR := $(PROJ_ROOT)/build
 NATIVE ?= 1
 DIAGNOSTIC_STAGE ?= 0
 P256_DIAGNOSTIC ?= 0
+NATIVE_SAE_EXPERIMENTAL ?= 0
+NATIVE_PMF_PROBE ?= 0
+ifeq ($(NATIVE_PMF_PROBE),1)
+ifneq ($(NATIVE_SAE_EXPERIMENTAL),1)
+$(error PMF probe requires NATIVE_SAE_EXPERIMENTAL=1)
+endif
+else
+ifneq ($(NATIVE_PMF_PROBE),0)
+$(error NATIVE_PMF_PROBE must be 0 or 1)
+endif
+endif
+ifeq ($(NATIVE_SAE_EXPERIMENTAL),1)
+ifneq ($(NATIVE),1)
+$(error experimental SAE requires NATIVE=1)
+endif
+ifneq ($(DIAGNOSTIC_STAGE),0)
+$(error experimental SAE requires normal DIAGNOSTIC_STAGE=0)
+endif
+else
+ifneq ($(NATIVE_SAE_EXPERIMENTAL),0)
+$(error NATIVE_SAE_EXPERIMENTAL must be 0 or 1)
+endif
+endif
 ifeq ($(P256_DIAGNOSTIC),1)
 ifneq ($(NATIVE),1)
 $(error P256_DIAGNOSTIC requires NATIVE=1)
@@ -62,7 +85,7 @@ LDFLAGS = $(ARCH) -static -nostdlib -Xlinker -kext \
 
 ifeq ($(NATIVE),1)
 CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/vendor/itlwm
-NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kNativeSAEPreparation.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
+NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kNativeSAEPreparation.o $(BUILD_DIR)/Ath10kNativePSKPreparation.o $(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
 endif
 
 ifeq ($(P256_DIAGNOSTIC),1)
@@ -86,6 +109,12 @@ $(BUILD_DIR)/Ath10kSAESession.o: src/kext/native/Ath10kSAESession.cpp src/kext/n
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kNativeSAEPreparation.o: src/kext/native/Ath10kNativeSAEPreparation.cpp src/kext/native/Ath10kNativeSAEPreparation.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kNativePSKPreparation.o: src/kext/native/Ath10kNativePSKPreparation.cpp src/kext/native/Ath10kNativePSKPreparation.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o: src/kext/native/Ath10kNativeSAEKernelBackend.cpp src/kext/native/Ath10kNativeSAEKernelBackend.hpp src/kext/native/Ath10kP256KernelBinding.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kP256CheckJob.o: src/kext/native/Ath10kP256CheckJob.cpp src/kext/native/Ath10kP256CheckJob.hpp | $(BUILD_DIR)
@@ -146,7 +175,7 @@ $(BUILD_DIR)/kmod_info.o: src/kext/kmod_info.c | $(BUILD_DIR)
 .PHONY: FORCE
 FORCE:
 $(BUILD_DIR)/experiment-config: FORCE | $(BUILD_DIR)
-	@printf '%s\n' 'P256_DIAGNOSTIC=$(P256_DIAGNOSTIC) DIAGNOSTIC_STAGE=$(DIAGNOSTIC_STAGE) DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
+	@printf '%s\n' 'NATIVE_PMF_PROBE=$(NATIVE_PMF_PROBE) NATIVE_SAE_EXPERIMENTAL=$(NATIVE_SAE_EXPERIMENTAL) P256_DIAGNOSTIC=$(P256_DIAGNOSTIC) DIAGNOSTIC_STAGE=$(DIAGNOSTIC_STAGE) DIAGNOSTICS=$(DIAGNOSTICS) OPT=$(OPT) PAYLOAD_CACHE=$(PAYLOAD_CACHE) RUNTIME_IRQ=$(RUNTIME_IRQ) RX_BATCH=$(RX_BATCH) RX_RESERVE=$(RX_RESERVE) HT_VHT=$(HT_VHT) MAX_WIDTH=$(MAX_WIDTH) MAX_NSS=$(MAX_NSS) TX_SLOTS=$(TX_SLOTS) AMPDU_LIMIT=$(AMPDU_LIMIT) AMSDU_LIMIT=$(AMSDU_LIMIT)' > "$@.tmp"
 	@cmp -s "$@.tmp" "$@" || cp "$@.tmp" "$@"
 	@rm -f "$@.tmp"
 
@@ -164,7 +193,7 @@ native-preflight:
 
 $(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist scripts/prepare-kext-info.py
 	@mkdir -p "$(OUT_KEXT)/Contents/MacOS"
-	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE) $(if $(filter 1,$(P256_DIAGNOSTIC)),--p256-diagnostic,)
+	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE) $(if $(filter 1,$(P256_DIAGNOSTIC)),--p256-diagnostic,) $(if $(filter 1,$(NATIVE_SAE_EXPERIMENTAL)),--native-sae-experimental,) $(if $(filter 1,$(NATIVE_PMF_PROBE)),--native-pmf-probe,)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 clean:

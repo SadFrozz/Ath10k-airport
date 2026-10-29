@@ -57,6 +57,7 @@ enum BeaconFlags : uint32_t {
 enum Message : uint32_t {
     ResetInterface = 49,
     DriverAvailable = 55,
+    SupplicantEvent = 76,
     ScanResult = 201,
     Deauth = 203,
     AssocComplete = 211,
@@ -67,6 +68,27 @@ enum Message : uint32_t {
     LqmUpdate = 39,
     ScanDone = 237
 };
+
+// Sequoia stock handlePSKEvent -> postMessage(76, payload, 40, true).
+// Successful firmware status6/reason0 maps to these values and classification0.
+// Timing fields default to zero when no firmware duration element is present;
+// WCL derives joiningNewNetwork before userland delivery.
+struct SupplicantEventData {
+    uint32_t status;
+    uint32_t reason;
+    uint32_t classification;
+    uint32_t transitionDisabledFlags;
+    uint32_t durations[5];
+    uint8_t joiningNewNetwork;
+    uint8_t reserved[3];
+};
+static_assert(sizeof(SupplicantEventData)==40,"Sequoia supplicant event size");
+static_assert(offsetof(SupplicantEventData,transitionDisabledFlags)==12,"Sequoia transition policy offset");
+static_assert(offsetof(SupplicantEventData,joiningNewNetwork)==36,"Sequoia joining flag offset");
+inline SupplicantEventData completedSupplicantPolicy(uint8_t flags){
+    SupplicantEventData event{};event.status=0xe0820406u;event.reason=0xe0822c00u;
+    event.transitionDisabledFlags=flags;return event;
+}
 
 struct SequoiaLqmUpdate {
     uint8_t rssiValid;
@@ -453,6 +475,9 @@ inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
 struct JoinRequest {
     uint32_t lowerAuth;
     uint32_t upperAuth;
+    uint32_t upperAuthExt;
+    uint32_t allowAuths; // Opaque allowed-auth metadata; not the selected AKM.
+    uint8_t transitionDisable;
     uint32_t ssidLength;
     uint8_t ssid[32];
     uint32_t keyLength;
@@ -532,6 +557,11 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     out = {};
     out.lowerAuth = read32(p + 0x10);
     out.upperAuth = read32(p + 0x14);
+    // WCLJoinRequest::fillAssocCandidatesList, stock Sequoia image. These are
+    // the outbound candidate-envelope offsets, not raw assoc_data offsets.
+    out.upperAuthExt = read32(p + 0x18);
+    out.allowAuths = read32(p + 0x210);
+    out.transitionDisable = p[0x1e8]; // Stock ORs individual bits into this byte.
     out.ssidLength = ssidLength;
     memcpy(out.ssid, p + 0x20, ssidLength);
     out.keyLength = keyLength;

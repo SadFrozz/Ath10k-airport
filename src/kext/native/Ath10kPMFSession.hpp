@@ -20,7 +20,7 @@ public:
     enum class Kind : uint8_t {Empty,Pairwise,GroupManagement,ProtectTX};
     using Layout=AthSecurity::PMFCCMPRXLayout;
     struct Message {
-        uint8_t frame[512]{};size_t bytes=0;Kind kind=Kind::Empty;
+        uint8_t frame[512]{};size_t bytes=0;Kind kind=Kind::Empty;Layout layout=Layout::Authenticated;
         AthSecurity::PMFVerifiedRX pairwise{};uint16_t groupID=0;uint64_t groupEpoch=0;
         ~Message(){AthSecurity::wipe(this,sizeof(*this));}
     };
@@ -30,6 +30,7 @@ public:
     bool activateManagement(const AthSecurity::IGTKCMAC128 &);
     // Called after the data-key transaction/barrier, before controlled port up.
     bool authorize();
+    bool portReady() const {return current(connection) && authorized && havePairwise && haveManagement;}
     void cancel(); // Independent running snapshots stay retained until drained.
     uint64_t activeGeneration() const {return current(connection)?connection:0;}
     uint64_t pairwiseEpoch() const {return current(connection)?pairwise.currentEpoch():0;}

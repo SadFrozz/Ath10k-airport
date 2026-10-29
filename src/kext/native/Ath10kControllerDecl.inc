@@ -26,6 +26,15 @@ public:
     IOReturn nativeRequest(AthNativeOp,void *);
     static IOReturn nativeAction(OSObject *,void *,void *,void *,void *);
     IOReturn nativeRequestGated(AthNativeOp,void *);
+    IOReturn nativeJoinRequest(void *);
+    bool nativePreparePersonalAuth(UInt64,const char *&);
+    bool nativeSAEEnabled() const;
+    bool nativePMFStartupQueryEnabled() const;
+    bool _nativePMFStartupQueryAttempted=false;
+    void publishNativeSecurityState(UInt64);
+    UInt64 _nativeSecurityPublished[10]{};
+    UInt64 _nativeSecuritySnapshotMS=0;
+    bool _nativeSecuritySnapshotPublished=false;
     IOReturn nativeCurrentAPInfo(AthNativeOp,void *);
     IOReturn nativeLinkStateUpdate(void *);
     IOReturn nativeLinkMetrics(AthNativeOp,void *);
@@ -45,6 +54,7 @@ public:
     bool nativeAcceptSecurityResult(UInt32);
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
+    bool nativeAssociationRSNXE(void *);
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);

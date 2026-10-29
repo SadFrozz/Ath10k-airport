@@ -1,8 +1,8 @@
 #pragma once
 #include "Ath10kNativeWire.hpp"
 #include "../../shared/Ath10kP256CoreCrypto.hpp"
-// Preparation policy only. NativeJoinAuth still rejects SAE until native
-// credentials, kernel backend and firmware PMF behavior are validated.
+// Preparation policy only. Native SAE admission is an explicit experimental
+// opt-in and still requires kernel providers, PMF readiness and empty owners.
 enum class NativeSAEPasswordMode {Unsupported,Legacy,H2E};
 inline NativeSAEPasswordMode nativeSAEPasswordMode(const AirportWCL::JoinRequest &join,const Ath10k::WMIBSS &ap){
     if(!nativeSAEPasswordEnvelope(join) || !ap.privacy || !ap.rsnPresent ||

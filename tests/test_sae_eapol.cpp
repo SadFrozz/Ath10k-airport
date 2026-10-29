@@ -1,10 +1,13 @@
 #include <cassert>
 #include <cstring>
 #include <initializer_list>
+#include <vector>
 #include "../src/shared/Ath10kSupplicant.hpp"
 #include "common_crypto_personal.hpp"
 #include "sae_eapol_vectors.inc"
 #include "rsnxe_eapol_vectors.inc"
+#include "sha256_vectors.inc"
+#include "transition_disable_vectors.inc"
 using S=AthSecurity::Supplicant<PersonalTestCrypto,true,true>;
 struct FailedEncrypt : PersonalTestCrypto {
  static inline unsigned calls=0,failAt=0;
@@ -13,7 +16,68 @@ struct FailedEncrypt : PersonalTestCrypto {
 template<class T> static void begin(T &s){assert(s.begin(w_pmk,w_snonce,w_sta,w_ap,w_rsn,sizeof(w_rsn),8,w_pmkid,16));}
 static void connected(S &s){begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);assert(s.receive(w_m3,sizeof(w_m3))==S::Keys);}
 static void rotated(S &s){connected(s);assert(s.receive(w_mgmt_only,sizeof(w_mgmt_only))==S::ManagementKeys);assert(s.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys);assert(s.receive(w_group_gtk_only,sizeof(w_group_gtk_only))==S::GroupKeys);}
+static void checkTransitionDisable(){
+ using Update=AthSecurity::TransitionDisableUpdate;
+ auto take=[](S &s,Update &out){return s.takeTransitionDisable(w_sta,w_ap,out);};
+ {S s;Update out;begin(s);assert(!take(s,out));assert(s.receive(w_m1,sizeof(w_m1))==S::Reply && !take(s,out));
+  assert(s.receive(td_m3,sizeof(td_m3))==S::Keys && s.keyChanges==7);
+  uint8_t wrong[6];memcpy(wrong,w_ap,6);wrong[5]^=1;memset(&out,0xa5,sizeof(out));
+  assert(!s.takeTransitionDisable(w_sta,wrong,out) && !out.length && !out.replay);
+  assert(take(s,out) && out.length==1 && out.bitmap[0]==1 && out.replay==2);
+  assert(!memcmp(out.station,w_sta,6) && !memcmp(out.bssid,w_ap,6));
+  assert(!take(s,out));assert(s.receive(td_m3,sizeof(td_m3))==S::Reply && !take(s,out));
+  assert(s.receive(td_retry,sizeof(td_retry))==S::Reply && !take(s,out));
+ }
+ {S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  assert(s.receive(td_long,sizeof(td_long))==S::Keys && take(s,out));
+  assert(out.length==251 && out.bitmap[0]==0x81 && out.bitmap[250]==0x40);
+  for(unsigned i=1;i<250;++i)assert(!out.bitmap[i]);
+ }
+ for(bool consumeFirst:{false,true}){S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  assert(s.receive(td_m3,sizeof(td_m3))==S::Keys);if(consumeFirst)assert(take(s,out));
+  assert(s.receive(w_rekey1,sizeof(w_rekey1))==S::Reply && !take(s,out));
+  assert(s.receive(td_rekey,sizeof(td_rekey))==S::PairKeys && take(s,out));
+  assert(out.length==1 && out.bitmap[0]==(consumeFirst?8:9));
+  assert(s.receive(td_rekey,sizeof(td_rekey))==S::Reply && !take(s,out));
+ }
+ {S s;Update out;connected(s);assert(s.receive(td_group,sizeof(td_group))==S::GroupKeys && !take(s,out));}
+ {S s;Update out;assert(s.begin(s_pmk,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));
+  assert(s.receive(s_m1,sizeof(s_m1))==S::Reply);assert(s.receive(td_psk,sizeof(td_psk))==S::Keys && !take(s,out));}
+ struct Packet {const uint8_t *data;size_t bytes;};
+ for(const auto &packet:{Packet{td_empty,sizeof(td_empty)},Packet{td_duplicate,sizeof(td_duplicate)},
+     Packet{td_wrong_rsn,sizeof(td_wrong_rsn)},Packet{td_bad_wrap,sizeof(td_bad_wrap)}}){
+  S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  assert(s.receive(packet.data,packet.bytes)==S::Fatal && !take(s,out) && !s.keyChanges && !s.managementKey.keyID);
+ }
+ {S s;Update out;begin(s);
+  std::vector<uint8_t> unauth(w_m1,w_m1+sizeof(w_m1));
+  const uint8_t kde[]={221,5,0x50,0x6f,0x9a,0x20,1};unauth.insert(unauth.end(),kde,kde+sizeof(kde));
+  AthSecurity::put16(unauth.data()+16,uint16_t(unauth.size()-18));AthSecurity::put16(unauth.data()+111,sizeof(kde));
+  assert(s.receive(unauth.data(),unauth.size())==S::Reply && !take(s,out));
+ }
+ {S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  std::vector<uint8_t> bad(td_m3,td_m3+sizeof(td_m3));bad[95]^=1;
+  assert(s.receive(bad.data(),bad.size())==S::Fatal && !take(s,out));
+ }
+ {S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  std::vector<uint8_t> bad(td_m3,td_m3+sizeof(td_m3));bad[19]&=~uint8_t(0x10);
+  assert(s.receive(bad.data(),bad.size())==S::Ignore && !take(s,out));
+ }
+ {AthSecurity::Supplicant<FailedEncrypt,true,true> s;Update out;begin(s);
+  FailedEncrypt::calls=FailedEncrypt::failAt=0;assert(s.receive(w_m1,sizeof(w_m1))==decltype(s)::Reply);
+  FailedEncrypt::calls=0;FailedEncrypt::failAt=2+(sizeof(td_m3)-14+15)/16;
+  assert(s.receive(td_m3,sizeof(td_m3))==decltype(s)::Fatal);
+  assert(!s.takeTransitionDisable(w_sta,w_ap,out) && !s.keyChanges && !s.managementKey.keyID);
+  FailedEncrypt::calls=FailedEncrypt::failAt=0;
+ }
+ {S s;Update out;begin(s);assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  assert(s.receive(td_m3,sizeof(td_m3))==S::Keys);s.reset();assert(!take(s,out));
+  begin(s);assert(!take(s,out));assert(s.receive(w_m1,sizeof(w_m1))==S::Reply);
+  assert(s.receive(w_m3,sizeof(w_m3))==S::Keys && !take(s,out));
+ }
+}
 int main(){
+ checkTransitionDisable();
  { S bound;begin(bound);uint8_t snapshot[3];memcpy(snapshot,x_rsnxe,3);
    assert(bound.bindRSNXE(snapshot,3,true));snapshot[2]=0;
    uint8_t own[3]{};size_t bytes=99;assert(bound.copyAssociationRSNXE(own,sizeof(own),bytes) && bytes==3 && !memcmp(own,x_rsnxe,3));

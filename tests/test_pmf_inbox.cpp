@@ -16,5 +16,5 @@ int main(){
    assert(entry->layout==Layout::PlaintextWithEncryptedTag);inbox.pop();}
   assert(!inbox.peek() && !inbox.size());inbox.pop();
  }
- assert(inbox.push(frame,26,0,1,20,Layout::Ciphertext));inbox.clear();assert(!inbox.size() && !inbox.peek());
+ assert(inbox.push(frame,26,0,1,20,Layout::Authenticated));assert(inbox.peek()->layout==Layout::Authenticated);inbox.clear();assert(!inbox.size() && !inbox.peek());
 }

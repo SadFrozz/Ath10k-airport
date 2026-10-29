@@ -201,6 +201,15 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kDisconnectStage",static_cast<UInt32>(_connection.disconnect),32);
     setProperty("Ath10kDisconnectCount",_connection.disconnectCount,32);
     const auto &cd=_connection.diagnostics;
+    setProperty("Ath10kAssociationComebacks",cd.associationComebacks,32);
+    setProperty("Ath10kLastAssociationComebackTU",cd.lastAssociationComebackTU,32);
+    setProperty("Ath10kAssociationComebackPending",_connection.associationComeback.pending);
+    setProperty("Ath10kAssociationComebackUntilMs",_connection.associationComeback.untilMs,64);
+    setProperty("Ath10kAssociationDeadlineMs",_connection.associationDeadlineMs,64);
+    setProperty("Ath10kAssociationRejects",cd.associationRejects,32);
+    setProperty("Ath10kLastAssociationRejectStatus",cd.lastAssociationStatus,16);
+    setProperty("Ath10kLastAssociationRejectRawAID",cd.lastAssociationRawAID,16);
+    setProperty("Ath10kLastAssociationRejectAID",cd.lastAssociationRawAID&0x07ffu,16);
     setProperty("Ath10kConnectionLastDisconnectReason",cd.lastDisconnectReason);
     setProperty("Ath10kConnectionLastCancelOrigin",cd.lastCancelOrigin);
     setProperty("Ath10kConnectionLastDisconnectStage",cd.lastDisconnectStage,32);
@@ -233,7 +242,7 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kConnectionMLMEChannel",cd.mlmeChannel,32);
     setProperty("Ath10kConnectionPeerCreateIssued",_connection.peerCreateIssued);
     setProperty("Ath10kConnectionVdevStartIssued",_connection.vdevStartIssued);
-    setProperty("Ath10kConnectionState",_connection.disconnect!=Ath10k::DisconnectStage::None?"disconnecting":_connection.secure && _connection.stage==Ath10k::LinkStage::Connected?(_connection.portAuthorized?"connected-wpa2":"wpa2-handshake"):Ath10k::linkStageName(_connection.stage));
+    setProperty("Ath10kConnectionState",_connection.disconnect!=Ath10k::DisconnectStage::None?"disconnecting":_connection.secure && _connection.stage==Ath10k::LinkStage::Connected?(_connection.securityAKM==8?(_connection.portAuthorized?"connected-sae":"sae-four-way-handshake"):(_connection.portAuthorized?"connected-wpa2":"wpa2-handshake")):Ath10k::linkStageName(_connection.stage));
     setProperty("Ath10kSecurityPhase",_connection.securityPhase,32);
     setProperty("Ath10kSecurityGeneration",_connection.securityGeneration,32);
     setProperty("Ath10kSecurityRekeyKind",_connection.rekeyKind,32);
@@ -820,13 +829,29 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return "connection-command-allocation";
     }
 #ifdef ATH10K_NATIVE
+    if(s.stage==LinkStage::Auth && s.secure && (s.securityAKM==2 || s.securityAKM==6)){
+        const char *error=nullptr;
+        if(!nativePreparePersonalAuth(nowMs,error)){
+            if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();}return nullptr;
+        }
+    }
     if(s.stage==LinkStage::Auth && s.securityAKM==8){
         const char *error=serviceNativeSAE(nowMs);
         if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();return nullptr;}
         if(!s.authReply || s.txOwned || !s.txComplete)return nullptr;
     }
 #endif
-    if(nowMs-s.sinceMs>=5000 && !s.wmiOwned && !s.txOwned){
+    bool comebackWaiting=false;UInt64 comebackDeadline=0;
+#ifdef ATH10K_NATIVE
+    if(_nativeJoinPending)comebackDeadline=_nativeJoinDeadline;
+#endif
+    if(const char *error=Ath10k::serviceAssociationComeback(s,nowMs,comebackWaiting,comebackDeadline)){
+        Ath10k::connectionFailure(s,error);s.cancelRequested=true;return nullptr;
+    }
+    if(comebackWaiting)return nullptr;
+    const bool stageExpired=s.stage==LinkStage::Assoc && s.associationDeadlineMs?
+        nowMs>=s.associationDeadlineMs:nowMs-s.sinceMs>=5000;
+    if(stageExpired && !s.wmiOwned && !s.txOwned){
         Ath10k::connectionFailure(s,"connection-stage-timeout");s.cancelRequested=true;
         IOLog("Ath10kMac: CONNECTION timeout stage=%u cmd=0x%x start-reply=%u peer-mapped=%u echo-reply=%u peers=%u\n",
             static_cast<UInt32>(s.stage),s.diagnostics.lastCommand,s.startReply,s.peerMapped,_connectionEcho.replyReceived,s.peerCount);
@@ -885,7 +910,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
     if(s.stage==LinkStage::Assoc && !s.assocReply)return nullptr;
     if(s.stage==LinkStage::Barrier && !_connectionEcho.replyReceived)return nullptr;
     s.stage=static_cast<LinkStage>(static_cast<UInt32>(s.stage)+1);s.submitted=false;s.sinceMs=nowMs;
-    s.managementAttempts=0;s.managementRetryMs=0;
+    s.managementAttempts=0;s.managementRetryMs=0;s.associationComeback={};s.associationDeadlineMs=0;
     if(s.stage==LinkStage::Connected){
         s.lastBeaconMs=nowMs;s.radio.appliedPower=s.radio.vdevPower=s.txPowerHalfDbm;
         s.maintenance.blocked=true;s.portAuthorized=!s.secure;networkLink(!s.secure);

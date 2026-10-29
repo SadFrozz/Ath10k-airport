@@ -36,6 +36,7 @@ struct Ath10kSAEWorker {
     void shutdown(){++drained;}
     void release(){++released;delete this;}
 };
+struct Ath10kNativePSKPreparation {void cancel(){}bool active() const{return false;}};
 class Ath10kPCIDevice {
 public:
     class NativeSecurity;

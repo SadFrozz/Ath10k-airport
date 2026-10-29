@@ -1,10 +1,11 @@
 #pragma once
-// Isolated diagnostic translation units only: private, version-sensitive ABI.
+// Explicit diagnostic/native translation units only: private, version-sensitive ABI.
 // Constructing these tables calls no crypto. Export linkage is not ABI approval.
-#ifndef ATH10K_P256_DIAGNOSTIC_BINDING
-#error "P-256 kernel binding requires explicit diagnostic compilation"
+#if !defined(ATH10K_P256_DIAGNOSTIC_BINDING) && !defined(ATH10K_P256_NATIVE_BINDING)
+#error "P-256 kernel binding requires explicit compilation"
 #endif
 #include "../../shared/Ath10kP256CoreCrypto.hpp"
+#include "../../shared/Ath10kP256DiagnosticPolicy.hpp"
 namespace Ath10kP256KernelSymbols {
 #ifdef ATH10K_P256_SYMBOLS_TEST
 #define ATH10K_P256_SYMBOL(result,name,args) static result (*name) args=nullptr
@@ -31,6 +32,14 @@ ATH10K_P256_SYMBOL(int,cczp_sub,(const void *,uint64_t *,const uint64_t *,const 
 #undef ATH10K_P256_SYMBOL
 }
 struct Ath10kP256KernelBinding {
+    // Constructing a provider calls no crypto. A different OS never receives
+    // these function pointers, even when the caller reuses a previous output.
+    static bool providersForIdentity(int major,int minor,int revision,const char *build,const char *kernel,
+        AthSecurity::P256CoreCryptoAPI &pointAPI,AthSecurity::P256FieldAPI &fieldAPI){
+        pointAPI={};fieldAPI={};
+        if(!AthSecurity::p256DiagnosticKernel(major,minor,revision,build,kernel))return false;
+        pointAPI=points();fieldAPI=field();return true;
+    }
     static AthSecurity::P256CoreCryptoAPI points(){
         using namespace Ath10kP256KernelSymbols;
         return {ccec_cp_256,ccec_x963_import_pub,ccec_validate_pub,ccec_x963_export,

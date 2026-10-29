@@ -47,6 +47,25 @@ def inventory():
                 address='0xffffff800212933e', command=0x1aa, input_bytes=0xbc,
                 observed_fields=dict(channel_count=0x94, flags=0x98, ssid=0x99, ssid_length=0xb9),
                 failure_effect='nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established')]
+        if name in ('getRSN_XE', 'setRSN_XE'):
+            row['requirement_audit'] = ('read-only native association encoder integrated; host lifecycle/ABI tests, pending hardware verification' if name == 'getRSN_XE' else 'stock setter reconstructed; next-join binding and update/cancellation semantics pending; still explicitly unsupported')
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANCore::'+name,
+                address='0xffffff80015f462e' if name == 'getRSN_XE' else '0xffffff8001610d64',
+                adapter='AppleBCMWLANJoinAdapter::getAssocRSNXE' if name == 'getRSN_XE' else 'AppleBCMWLANJoinAdapter::setAssocRSNXE',
+                adapter_address='0xffffff80015894be' if name == 'getRSN_XE' else '0xffffff8001589794',
+                data_fields=dict(length_offset=4, length_bytes=2, element_offset=6, maximum_element_bytes=257),
+                feature_gates=[0x6d, 0x41], additional_context_flag=0x40,
+                semantics='Reads or replaces the outgoing association RSNXE cache; zero-length set clears it; separate firmware-associated RSNXE cache is not returned',
+                limitation=('Getter is a current prepared association snapshot, not an arbitrary writable cache; hardware callback verification pending' if name == 'getRSN_XE' else 'No safe setter-to-next-association lifetime mapping; setter remains explicitly unsupported'))]
+        if name == 'getRSN_XE':
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='getRSN_XE(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*)',
+                address='0xffffff80022137d6', ioctl_operation=457, input_output_bytes=264,
+                protocol_wrapper='0xffffff80021faca3', protocol_vtable_byte_offset=0x1068,
+                failure_effect='rejects record sizes other than 264; delegates through WCL or the typed protocol callback')]
         rows.append(row)
     if not rows or len({r['callback'] for r in rows}) != len(rows):
         raise ValueError('Missing or duplicate callbacks')

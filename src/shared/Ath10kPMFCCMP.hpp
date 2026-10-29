@@ -14,7 +14,7 @@ inline bool pmfRobustBody(const uint8_t *f,size_t n){
  if((f[0]&0xf0)!=0xd0)return true;
  return robustManagementActionCategory(f[24]);
 }
-enum class PMFCCMPRXLayout : uint8_t {Ciphertext,PlaintextWithEncryptedTag};
+enum class PMFCCMPRXLayout : uint8_t {Ciphertext,PlaintextWithEncryptedTag,Authenticated};
 struct PMFCCMPResult {
  uint8_t frame[512]{};size_t bytes=0;uint64_t pn=0;
  ~PMFCCMPResult(){wipe(this,sizeof(*this));}
@@ -83,24 +83,42 @@ private:
  }
 public:
  static constexpr uint64_t MaxPN=0xffffffffffffull;
- // Verify either wire ciphertext or an explicitly normalized firmware layout
- // with plaintext payload and the ORIGINAL encrypted CCMP tag still retained.
- // The latter layout must be established experimentally before native use.
- static bool receive(const uint8_t *frame,size_t bytes,const uint8_t *key,const uint8_t *local,const uint8_t *ap,
+private:
+ enum class RXVerdict {Invalid,CryptoFailure,Unauthenticated,Verified};
+ static RXVerdict receiveDetailed(const uint8_t *frame,size_t bytes,const uint8_t *key,const uint8_t *local,const uint8_t *ap,
     uint64_t lastPN,RXLayout layout,PMFCCMPResult &out,PMFCCMPWorkspace &w){
   if(!frame || !key || !local || !ap || bytes<42 || bytes>512 || lastPN>MaxPN ||
      (layout!=RXLayout::Ciphertext && layout!=RXLayout::PlaintextWithEncryptedTag) ||
-     !disjoint(frame,bytes,key,local,ap,out,w))return false;
+     !disjoint(frame,bytes,key,local,ap,out,w))return RXVerdict::Invalid;
   w.clear();Clear clear{w};
-  if(!pmfCCMPHeader(frame,bytes,local,ap,true) || frame[26] || frame[27]!=0x20)return false;
+  if(!pmfCCMPHeader(frame,bytes,local,ap,true) || frame[26] || frame[27]!=0x20)return RXVerdict::Invalid;
   const uint64_t pn=uint64_t(frame[24])|(uint64_t(frame[25])<<8)|(uint64_t(frame[28])<<16)|
    (uint64_t(frame[29])<<24)|(uint64_t(frame[30])<<32)|(uint64_t(frame[31])<<40);
-  if(pn<=lastPN)return false;
+  if(pn<=lastPN)return RXVerdict::Invalid;
   const size_t body=bytes-40;copy(w.candidate,frame,24);init(w,frame,pn,body);
-  if(layout==RXLayout::Ciphertext){if(!crypt(w,key,frame+32,w.candidate+24,body))return false;}
+  if(layout==RXLayout::Ciphertext){if(!crypt(w,key,frame+32,w.candidate+24,body))return RXVerdict::CryptoFailure;}
   else copy(w.candidate+24,frame+32,body);
-  if(!mac(w,key,w.candidate+24,body) || !equal(w.state,frame+bytes-8,8) || !pmfRobustBody(w.candidate,body+24))return false;
-  publish(out,w,body+24,pn);return true;
+  if(!mac(w,key,w.candidate+24,body))return RXVerdict::CryptoFailure;
+  if(!equal(w.state,frame+bytes-8,8) || !pmfRobustBody(w.candidate,body+24))return RXVerdict::Unauthenticated;
+  publish(out,w,body+24,pn);return RXVerdict::Verified;
+ }
+public:
+ // Explicit wire ciphertext or plaintext with the ORIGINAL encrypted CCMP tag.
+ static bool receive(const uint8_t *frame,size_t bytes,const uint8_t *key,const uint8_t *local,const uint8_t *ap,
+    uint64_t lastPN,RXLayout layout,PMFCCMPResult &out,PMFCCMPWorkspace &w){
+  return receiveDetailed(frame,bytes,key,local,ap,lastPN,layout,out,w)==RXVerdict::Verified;
+ }
+ // Select a layout through full CCM authentication of this frame, not header
+ // heuristics or a firmware status bit. Stripped/replaced tags are unsupported.
+ // AES provider errors fail immediately; they cannot trigger another attempt.
+ // Neither attempt commits a replay counter or mutates a failed output.
+ static bool receiveAuthenticated(const uint8_t *frame,size_t bytes,const uint8_t *key,const uint8_t *local,const uint8_t *ap,
+    uint64_t lastPN,RXLayout &detected,PMFCCMPResult &out,PMFCCMPWorkspace &w){
+  const auto first=receiveDetailed(frame,bytes,key,local,ap,lastPN,RXLayout::Ciphertext,out,w);
+  if(first==RXVerdict::Verified){detected=RXLayout::Ciphertext;return true;}
+  if(first!=RXVerdict::Unauthenticated)return false;
+  if(receiveDetailed(frame,bytes,key,local,ap,lastPN,RXLayout::PlaintextWithEncryptedTag,out,w)!=RXVerdict::Verified)return false;
+  detected=RXLayout::PlaintextWithEncryptedTag;return true;
  }
  // Caller must reserve an UNUSED nonzero PN for this PTK before encryption.
  // Failed construction/submission consumes the PN; never roll it back/reuse it.

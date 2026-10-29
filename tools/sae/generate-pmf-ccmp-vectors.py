@@ -53,11 +53,11 @@ mac = CMAC(algorithms.AES(KEY));mac.update(aad)
 bip = bip[:-8] + mac.finalize()[:8]
 emit('c_bip_disconnect', bip)
 
-def group_vector(name, body, pn, subtype=0xd0, flags=0):
+def group_vector(name, body, pn, subtype=0xd0, flags=0, key=KEY, key_id=4):
     h = bytes([subtype, flags, 0, 0]) + b'\xff'*6 + AP + AP + bytes(2)
-    frame = h + body + bytes.fromhex('4c100400') + pn.to_bytes(6, 'little') + bytes(8)
+    frame = h + body + bytes.fromhex('4c10') + key_id.to_bytes(2, 'little') + pn.to_bytes(6, 'little') + bytes(8)
     fc = (int.from_bytes(h[:2], 'little') & ~0x3800).to_bytes(2, 'little')
-    mac = CMAC(algorithms.AES(KEY));mac.update(fc + frame[4:22] + frame[24:])
+    mac = CMAC(algorithms.AES(key));mac.update(fc + frame[4:22] + frame[24:])
     frame = frame[:-8] + mac.finalize()[:8]
     emit(name+'_wire', frame);emit(name+'_plain', h+body)
     print(f'static constexpr uint64_t {name}_pn=0x{pn:012x}ull;')
@@ -79,3 +79,10 @@ vector('c_tpc_request', header(), bytes.fromhex('00025a2200'), 3)
 vector('c_measure_request', header(), bytes.fromhex('00006b2603770003'), 4)
 vector('c_tx_tpc', header(incoming=False), bytes.fromhex('00035a23020a00'), 1)
 vector('c_tx_measure', header(incoming=False), bytes.fromhex('00016b2703770203'), 1)
+
+# Independent BIP key-rotation/in-flight fixtures, with synthetic public keys.
+rotated = bytes([KEY[0] ^ 1]) + KEY[1:]
+emit('c_bip_rotated_key', rotated)
+group_vector('c_group_rotated4', bytes.fromhex('00042503012c01'), 1, key=rotated)
+group_vector('c_group_rotated4_next', bytes.fromhex('00042503012c01'), 2, key=rotated)
+group_vector('c_group_rotated5', bytes.fromhex('00042503012c01'), 1, key=rotated, key_id=5)

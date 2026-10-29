@@ -1,5 +1,21 @@
 # Native connection audit (2026-10-28)
 
+Current hardware checkpoint (2026-10-29): experimental native image
+A3E38378-BAE6-346C-8E1D-88A192367DE1 booted on Sequoia 15.6.1/24G90.
+macOS selected SAE (upper auth 4096, password cipher 10, zero flags/index).
+The opt-in PMF diagnostic started and completed one authenticated SA Query:
+TX submitted 1, RX verified 1, successful exchange 1, RX/TX drops 0.
+These counters are controller-lifetime totals. An en1-bound IPv4 HTTPS request
+completed with HTTP 200 and successful TLS verification. All twenty en1-bound
+ICMP requests received replies over 60.31 seconds; all thirteen observations
+remained authorized/connected-sae, with no new disconnect or TX watchdog.
+The station returned to requested PS after the query. A prior initial failure
+is recorded as association-rejected; it is not a PMF timeout.
+This establishes a short native SAE data-path and protected unicast-management
+round trip. Group BIP, rekey PN/IPN behavior, long-term stability, sleep/wake,
+and cross-version certification remain separate open checks. The older entries
+below are chronological and do not supersede this checkpoint.
+
 Hardware-confirmed: firmware starts, macOS creates en1 and shows scanned networks.
 Earlier e2b8293 hardware testing confirmed association and bidirectional traffic,
 but later watchdogs/stalls prevent a current stability claim. Initially WCLJoinManager aborted

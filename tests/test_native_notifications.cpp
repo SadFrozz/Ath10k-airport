@@ -21,7 +21,20 @@ public:
     struct {bool active=true;} _wmiLive;
     AirportWCL::JoinRequest _nativeJoin{};
     AirportWCL::ScanRequest _nativeScan{};
-    struct Security {unsigned resets=0;void reset(){++resets;}} security;
+    struct Security {
+        struct PMF {UInt64 generation=91;bool ready=true;
+            UInt64 activeGeneration() const{return generation;}bool portReady() const{return ready;}} pmf;
+        PMF *pmfSession=&pmf;
+        struct Export {AthSecurity::TransitionDisableUpdate pending{};bool pairing=false;
+            bool pairwisePending() const{return pairing;}
+            bool takeTransitionDisable(const UInt8 *local,const UInt8 *ap,AthSecurity::TransitionDisableUpdate &out){
+                if(!pending.length || !AthSecurity::equal(pending.station,local,6) || !AthSecurity::equal(pending.bssid,ap,6))return false;
+                out=pending;pending={};return true;}} supplicant;
+        AthSecurity::TransitionDisableDelivery transitionPolicy;
+        bool replyPending=false,keysPending=false,authorizePending=false;
+        unsigned resets=0;
+        void reset(){++resets;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
+    } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
     bool _nativeStarted=true,_nativeStopping=false,_nativeMACActive=false,_nativeMACWaiting=false;
@@ -69,7 +82,71 @@ static void bootJoin(Ath10kPCIDevice &d){
 static std::vector<UInt32> ids(const Ath10kPCIDevice &d){
     std::vector<UInt32> result;for(const auto &e:d.events)result.push_back(e.id);return result;
 }
+static void policyJoin(Ath10kPCIDevice &d){
+    bootJoin(d);auto &s=d._connection;s.securityAKM=8;s.secure=s.pmfRequired=true;s.securityPhase=5;
+    const UInt8 local[]={2,0,0,0,0,1};memcpy(s.local,local,6);
+    assert(d.security.transitionPolicy.bind(s.local,s.bssid,91,16));
+    auto &u=d.security.supplicant.pending;u.length=1;u.bitmap[0]=1;u.replay=2;
+    memcpy(u.station,s.local,6);memcpy(u.bssid,s.bssid,6);
+}
+static void policyNotifications(){
+    const std::vector<UInt32> expected={49,55,201,201,237,211,201,216,212,213,76,39};
+    for(unsigned fail=0;fail<=expected.size();++fail){
+        auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);d->failAt=fail;
+        d->serviceNativeNotifications(100);d->serviceNativeNotifications(110);
+        assert(ids(*d)==expected && !d->_nativeJoinPending);
+        const auto &bytes=d->events[10].data;
+        const UInt8 golden[40]={6,4,0x82,0xe0,0,0x2c,0x82,0xe0,0,0,0,0,17};
+        assert(bytes.size()==40 && !memcmp(bytes.data(),golden,40));
+        d->serviceNativeNotifications(120);assert(ids(*d)==expected);
+        // Healthy rekey waits for its data/PMF port and retains accumulated policy.
+        auto &u=d->security.supplicant.pending;u.length=1;u.bitmap[0]=2;u.replay=3;
+        memcpy(u.station,d->_connection.local,6);memcpy(u.bssid,d->_connection.bssid,6);
+        d->_connection.portAuthorized=false;d->_connection.rekeyKind=1;
+        d->serviceNativeNotifications(130);assert(u.length && ids(*d)==expected);
+        d->_connection.portAuthorized=true;d->_connection.rekeyKind=0;
+        d->serviceNativeNotifications(140);assert(d->events.back().id==76);
+        assert(Ath10k::wmiReadLE32(d->events.back().data.data()+12)==19);
+    }
+    for(unsigned retire=0;retire<4;++retire){
+        auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);d->failAt=11;
+        d->serviceNativeNotifications(100);assert(d->events.size()==10 && !d->_nativeJoinPending);
+        if(retire==0)d->_connection.cancelRequested=true;
+        if(retire==1)++d->security.pmf.generation;
+        if(retire==2)d->_connection.bssid[5]^=4;
+        if(retire==3)d->_wmiLive.active=false;
+        d->serviceNativeNotifications(110);
+        for(const auto &e:d->events)assert(e.id!=76);
+    }
+    for(unsigned barrier=0;barrier<5;++barrier){
+        auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);
+        // A newly authenticated rekey M3 can still see the old open port
+        // before the next radio tick starts the key transaction.
+        if(barrier==0)d->security.replyPending=true;
+        if(barrier==1)d->security.keysPending=true;
+        if(barrier==2)d->security.authorizePending=true;
+        if(barrier==3)d->security.supplicant.pairing=true;
+        if(barrier==4)d->security.pmf.ready=false;
+        d->serviceNativeNotifications(100);
+        for(const auto &e:d->events)assert(e.id!=76);
+        assert(d->security.supplicant.pending.length);
+        d->security.replyPending=d->security.keysPending=d->security.authorizePending=false;
+        d->security.supplicant.pairing=false;d->security.pmf.ready=true;
+        d->serviceNativeNotifications(110);assert(d->events.back().id==76);
+    }
+    { // Preserve the admission binding while Auth is still in progress.
+        auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);
+        d->_connection.stage=Ath10k::LinkStage::Auth;d->_connection.portAuthorized=false;
+        d->serviceNativeNotifications(100);
+        assert(d->security.transitionPolicy.matches(d->_connection.local,d->_connection.bssid,91));
+        assert(d->security.supplicant.pending.length);
+        d->_connection.stage=Ath10k::LinkStage::Connected;d->_connection.portAuthorized=true;
+        d->serviceNativeNotifications(110);bool delivered=false;
+        for(const auto &e:d->events)delivered|=e.id==76;assert(delivered);
+    }
+}
 int main(){
+    policyNotifications();
     // Independent expected WCL sequence. Every single enqueue can fail once:
     // the exact production notification method must resume without duplicates.
     const std::vector<UInt32> expected={49,55,201,201,237,211,201,216,212,213,39};
