@@ -92,7 +92,7 @@ ifeq ($(P256_DIAGNOSTIC),1)
 # Standalone registry diagnostic: no controller, networking, firmware or DMA code.
 OBJS := $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kP256RegistryJob.o $(BUILD_DIR)/Ath10kP256DiagnosticService.o $(BUILD_DIR)/kmod_info.o
 else
-OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kRecovery.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
+OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPowerNotifications.o $(BUILD_DIR)/Ath10kRecovery.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
 endif
 $(OBJS): $(wildcard src/shared/*.hpp)
 ifeq ($(NATIVE),1)
@@ -163,6 +163,9 @@ $(BUILD_DIR)/Ath10kRecovery.o: src/kext/Ath10kRecovery.cpp $(wildcard src/kext/*
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kPower.o: src/kext/Ath10kPower.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kPowerNotifications.o: src/kext/Ath10kPowerNotifications.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kUserClient.o: src/kext/Ath10kUserClient.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)

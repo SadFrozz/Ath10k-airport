@@ -129,10 +129,10 @@ static bool deliver(Ath10kPCIDevice *d,const uint8_t *frame,size_t bytes,uint32_
 static void service(Ath10kPCIDevice *d,UInt64 now=0){ownerGate=true;d->serviceNativePMF(now);ownerGate=false;}
 static void roundtrip(Ath10kPCIDevice *d){service(d);assert(d->_nativeSecurity->pmfRXInFlight);run(latest);service(d);}
 class ForeignJob final : public Ath10kSAEWorkItem {public:void execute() override {}void discard() override {}};
-void queryTests();void spectrumTests();void firmwareTests();void startupProbeTests();
+void queryTests();void spectrumTests();void firmwareTests();void startupProbeTests();void suspendCryptoTests();
 #ifndef ATH10K_NATIVE_KEY_STAGE_TEST
 int main(){
- firmwareTests();queryTests();spectrumTests();startupProbeTests();
+ firmwareTests();queryTests();spectrumTests();startupProbeTests();suspendCryptoTests();
  { auto d=create();auto sec=d->_nativeSecurity;auto job=new ForeignJob;assert(job->init());
    assert(sec->saeWorker->submit(job));run(latest);service(d);
    assert(sec->saeWorker->takeCompleted()==job);job->release();job->release();stop(d);
@@ -377,4 +377,39 @@ void firmwareTests(){
   d->_runtimeActive=d->_wmiLive.active=d->_connection.pmfQoSTransported=qos.completed=qos.txConsumed=qos.creditReturned=true;d->_dmaQuarantine=false;
  }
  d->blocked=true;assert(!d->nativePMFFirmwareReady());d->blocked=false;stop(d);
+}
+
+// Use the real NativeSecurity reset, worker cancellation and PMF session.
+// Firmware/PM events are mocked: this checks the security boundary used by
+// sleep, not physical PCI wake or automatic macOS reassociation.
+void suspendCryptoTests(){
+ for(unsigned phase=0;phase<3;++phase){
+  auto d=create();auto sec=d->_nativeSecurity;auto worker=sec->saeWorker;
+  assert(deliver(d,c_deauth_wire,sizeof(c_deauth_wire)));service(d,0);
+  assert(sec->pmfRXInFlight);auto call=latest;
+  if(phase==1)claim(call); // XNU dispatch happened, callback has not entered.
+  if(phase==2)run(call);   // Crypto completed, radio has not consumed it.
+  d->blocked=true;d->_wmiLive.active=false;d->_connection.portAuthorized=false;
+  ownerGate=true;sec->reset();ownerGate=false;
+  assert(!sec->pmfSession && !sec->pmfRXInFlight && !sec->pmfInbox.size());
+  assert(!sec->pmfQueryTrigger && !sec->replyPending && !sec->keysPending && !sec->managementPending);
+  assert(!sec->pmfPendingTX && !sec->pmfTXInFlight && !sec->ready);
+  assert(!sec->pmfRXVerified && !d->_connection.cancelRequested && d->transmitted.empty());
+  if(phase==1){
+   assert(!worker->available()); // Old callback still owns its immutable job.
+   invoke(call);finish(call);
+  }
+  assert(worker->available() && !worker->takeCompleted());
+  // Model fresh firmware/key authorization after wake. Same worker can be
+  // reused, but no result or replay floor from the retired PMF owner may cross.
+  ownerGate=true;sec->pmfSession=new Ath10kPMFSession;
+  assert(sec->pmfSession->initConnection(c_sta,c_ap,10));
+  assert(sec->pmfSession->acknowledgePairwise(c_key,c_sta,c_ap));
+  AthSecurity::IGTKCMAC128 key{};key.keyID=4;key.ipn=6;memcpy(key.key,c_key,16);
+  assert(sec->pmfSession->activateManagement(key) && sec->pmfSession->authorize());ownerGate=false;
+  d->blocked=false;d->_wmiLive.active=true;d->_connection.portAuthorized=true;
+  assert(deliver(d,c_deauth_wire,sizeof(c_deauth_wire)));roundtrip(d);
+  assert(sec->pmfRXVerified==1 && d->_connection.cancelRequested && d->_connection.apDisconnect.reason==6);
+  stop(d);
+ }
 }

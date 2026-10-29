@@ -12,7 +12,7 @@ struct Driver {
     struct {bool completed=true,cancelRequested=false;} _wmiScan;
     struct Security {unsigned resets=0;void reset(){++resets;}} security;
     Security *_nativeSecurity=&security;
-    bool _nativeJoinPending=false,_nativeAbortRequested=false;
+    bool _nativeJoinPending=false,_nativeAbortRequested=false,_nativeJoinFailed=false;
     unsigned _nativeJoin=123,services=0,links=0;
     void networkLink(bool up){assert(!up);++links;}
     void requestNativeService(){++services;}
@@ -33,6 +33,12 @@ int main(){
             assert(active.leave(op)==0 && active.s.cancelRequested && !active.s.portAuthorized);
             assert(active._wmiScan.cancelRequested && active.security.resets==1);
         }
+        // The radio may already be disabled while WCL still owns a join.
+        Driver retired;retired._nativeJoinPending=true;
+        assert(retired.leave(op)==0 && retired._nativeJoinFailed);
+        assert(!retired.s.cancelRequested); // Do not poison the next radio owner.
+        if(op==N::setWCL_LEAVE_NETWORK)assert(retired._nativeJoinPending);
+        else assert(!retired._nativeJoinPending && retired._nativeAbortRequested);
         Driver teardown;teardown.s.disconnect=Ath10k::DisconnectStage::DeletePeer;
         assert(teardown.leave(op)==0 && teardown.s.cancelRequested);
     }

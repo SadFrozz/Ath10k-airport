@@ -2,6 +2,20 @@ import unittest
 from pathlib import Path
 
 class NativeLockOrder(unittest.TestCase):
+    def test_output_and_radio_share_gate_and_reserve_has_no_radio_wait(self):
+        root=Path(__file__).resolve().parents[1]
+        driver=(root/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        network=(root/'src/kext/Ath10kNetwork.cpp').read_text()
+        runtime=(root/'src/kext/Ath10kRuntime.cpp').read_text()
+        # Output dispatch and runtime stop must not acquire distinct gates in
+        # opposite order. This guards topology, not hardware sleep success.
+        self.assertIn('_wmiWorkLoop=getWorkLoop();',driver)
+        output=network.split('IOOutputQueue *Ath10kPCIDevice::createOutputQueue()',1)[1].split('IOReturn Ath10kPCIDevice::getHardwareAddress',1)[0]
+        self.assertIn('IOGatedOutputQueue::withTarget(this,getWorkLoop()',output)
+        reserve=runtime.split('void Ath10kPCIDevice::refillRXReserve()',1)[1].split('mbuf_t Ath10kPCIDevice::takeRXPacket',1)[0]
+        for dependency in ['runAction(', '_probePowerLock', '_nativeGate', '_wmiWorkLoop']:
+            self.assertNotIn(dependency,reserve)
+
     def test_wake_recovery_hands_off_before_termination_and_keeps_sleep_veto(self):
         root=Path(__file__).resolve().parents[1]
         recovery=(root/'src/kext/Ath10kRecovery.cpp').read_text()

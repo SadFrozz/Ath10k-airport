@@ -6,7 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include "Ath10kPower.hpp"
-using IOReturn=int;using vm_size_t=unsigned long;
+using IOReturn=int;using vm_size_t=unsigned long;using IOOptionBits=unsigned;
 constexpr int kIOReturnBadArgument=1,kIOReturnSuccess=0;
 constexpr unsigned kIOMessageSystemWillSleep=1,kIOMessageSystemHasPoweredOn=2,kIOMessageSystemWillNotSleep=3;
 class Ath10kPCIDevice;using OSObject=Ath10kPCIDevice;using IOService=Ath10kPCIDevice;
@@ -29,13 +29,16 @@ static IONotifier notifier;static bool registrationFail=false;static unsigned re
 using Handler=IOReturn(*)(void *,void *,UInt32,IOService *,void *,vm_size_t);
 static IONotifier *registerPrioritySleepWakeInterest(Handler,void *,void *){++registrations;return registrationFail?nullptr:&notifier;}
 struct IOPowerStateChangeNotification{void *powerRef=nullptr;unsigned long returnValue=123;};
-static void *acked=nullptr;static void acknowledgeSleepWakeNotification(void *ref){acked=ref;}
+static void *acked=nullptr;[[maybe_unused]] static void acknowledgeSleepWakeNotification(void *ref){acked=ref;}
 struct Gate{
  bool inside=false;std::atomic<bool> *hold=nullptr,*entered=nullptr;
  template<class F> int runAction(F fn,Ath10kPCIDevice *d,void *p){inside=true;if(entered)*entered=true;if(hold)while(hold->load())std::this_thread::yield();int r=fn(d,p,nullptr,nullptr,nullptr);inside=false;return r;}
 };
 struct MockPCI {template<class... T> bool setProperty(T...){return true;}};
-class Ath10kPCIDevice{
+struct ShutdownBase{void systemWillShutdown(IOOptionBits);};
+static unsigned shutdownAcks=0;static Ath10kPCIDevice *shutdownTarget=nullptr;
+class Ath10kPCIDevice:public ShutdownBase{
+ using super=ShutdownBase;
  MockPCI mockPCI;MockPCI *_pci=&mockPCI;
 public:
  Gate loop;Gate *_wmiWorkLoop=&loop;
@@ -51,12 +54,18 @@ public:
  unsigned dmaChecks=0;bool dmaSafe=true;
  bool stopDMAForRelease(){assert(loop.inside && pciPowered);++dmaChecks;return dmaSafe;}
  unsigned resets=0,published=0;bool resetQuarantines=false,pciPowered=true;
- bool preparePowerNotifications();void releasePowerNotifications();bool powerIOBlocked();bool powerRestartAllowed();
+ // Exercise the emergency synchronous fallback here. The actual retained
+ // notification queue/registration/drain is covered by power_notifications.
+ bool queuePowerNotification(UInt32,void *){return false;}
+ bool preparePowerNotifications(){if(_powerNotifier)return true;_powerNotifier=registerPrioritySleepWakeInterest(powerNotification,this,nullptr);return _powerNotifier;}
+ void releasePowerNotifications(){if(_powerNotifier){_powerNotifier->remove();_powerNotifier=nullptr;}}
+ bool powerIOBlocked();bool powerRestartAllowed();
  void beginPowerSuspend();void finishPowerSuspend();void blockPowerIOForTermination();
  volatile UInt32 _controllerPowerClosed=0;bool _powerManaged=false;unsigned pmStops=0;
  bool controllerPowerClosed();void drainControllerPowerCalls();
  void PMstop(){assert(controllerPowerClosed() && !_wmiLive.active);++pmStops;pciPowered=false;}
- void requestPowerEvent(Ath10k::PowerEvent);void publishPowerState();
+ void systemWillShutdown(IOOptionBits);
+ void requestPowerEvent(Ath10k::PowerEvent,bool suspendAlreadyQueued=false);void publishPowerState();
  static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
  static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);
  template<class... T> void setProperty(T...){assert(resourcesLive);}
@@ -68,15 +77,64 @@ public:
   if(resetQuarantines)_dmaQuarantine=true;
  }
 };
+void ShutdownBase::systemWillShutdown(IOOptionBits){
+ assert(shutdownTarget && !shutdownTarget->_wmiLive.active && !shutdownTarget->_power.deviceOn);
+ assert(!shutdownTarget->loop.inside);
+ assert(shutdownTarget->probeLock.try_lock());shutdownTarget->probeLock.unlock();
+ ++shutdownAcks;
+}
 #include "power_methods.inc"
+#ifdef ATH10K_TEST_SHUTDOWN
+#include "controller_shutdown.inc"
+#endif
 int main(){
  using Ath10k::PowerEvent;
+#ifdef ATH10K_TEST_SHUTDOWN
+ // Execute the production shutdown body: superclass acknowledgement cannot
+ // overtake producer ownership, radio quiescence, or the release of our locks.
+ Ath10kPCIDevice shutting;shutdownTarget=&shutting;shutting.probeLock.lock();
+ std::thread shutdownThread([&]{shutting.systemWillShutdown(1);});
+ while(!shutting.powerIOBlocked())std::this_thread::yield();
+ assert(!shutdownAcks);shutting.probeLock.unlock();shutdownThread.join();
+ assert(shutdownAcks==1 && shutting.resets==1 && shutting.dmaChecks==1);
+ shutting.pciPowered=false;shutting.systemWillShutdown(1);
+ assert(shutdownAcks==2 && shutting.resets==1 && shutting.dmaChecks==1);
+ Ath10kPCIDevice bootShutdown;shutdownTarget=&bootShutdown;
+ bootShutdown._deferredProbeStarted=false;bootShutdown._wmiLive.active=false;
+ bootShutdown.pciPowered=false;bootShutdown.systemWillShutdown(1);
+ assert(shutdownAcks==3 && !bootShutdown.resets && !bootShutdown.probesQueued);
+ shutdownTarget=nullptr;
+#endif
+ // Root admission already counted this suspend before publishing its worker.
+ // Consuming that event must not count it twice or leave recovery blocked.
+ Ath10kPCIDevice queuedRoot;queuedRoot.beginPowerSuspend();
+ assert(queuedRoot._powerIOBlock==5);
+ queuedRoot.requestPowerEvent(PowerEvent::SystemSleep,true);
+ assert(queuedRoot._powerIOBlock==1 && queuedRoot.resets==1);
+ queuedRoot.requestPowerEvent(PowerEvent::SystemWake);
+ assert(queuedRoot.powerRestartAllowed() && queuedRoot._power.wakes==1);
+ // A callback already admitted two suspend intents, but its worker has not
+ // acquired the radio gate yet. Early awake events must not reopen I/O.
+ Ath10kPCIDevice delayed;delayed.beginPowerSuspend();delayed.beginPowerSuspend();
+ assert(delayed._powerIOBlock==9);
+ delayed.requestPowerEvent(PowerEvent::DeviceOn);
+ delayed.requestPowerEvent(PowerEvent::SystemWake);
+ assert(delayed._powerIOBlock==9 && !delayed.powerRestartAllowed() && !delayed.resets);
+ delayed.requestPowerEvent(PowerEvent::SystemSleep,true);
+ assert(delayed._powerIOBlock==5 && delayed.resets==1);
+ delayed.requestPowerEvent(PowerEvent::SystemWake);
+ assert(delayed._powerIOBlock==5 && !delayed.powerRestartAllowed());
+ delayed.requestPowerEvent(PowerEvent::DeviceOff,true);
+ assert(delayed._powerIOBlock==1 && !delayed.powerRestartAllowed());
+ delayed.requestPowerEvent(PowerEvent::DeviceOn);
+ assert(delayed.powerRestartAllowed());
  Ath10kPCIDevice d;assert(d.preparePowerNotifications() && registrations==1);
  assert(d.preparePowerNotifications() && registrations==1);
- // Priority root notice quiesces while PCI is still on, before acknowledging.
+ // A synchronous root notice quiesces before returnValue=0. XNU itself
+ // records that acknowledgement after the callback; no asynchronous ack call.
  IOPowerStateChangeNotification note;note.powerRef=&d;
  assert(d.powerNotification(&d,nullptr,kIOMessageSystemWillSleep,nullptr,&note,sizeof(note))==0);
- assert(note.returnValue==0 && acked==&d && d.resets==1 && d.powerIOBlocked());
+ assert(note.returnValue==0 && acked==nullptr && d.resets==1 && d.powerIOBlocked());
  d.pciPowered=false;d.requestPowerEvent(PowerEvent::DeviceOff);
  d.requestPowerEvent(PowerEvent::DeviceOff);
  assert(d.resets==1 && d._power.sleeps==1 && d._systemSuspended);
@@ -134,7 +192,7 @@ int main(){
  assert(boot.powerIOBlocked() && !callbackDone && !acked);
  // This point models the last bootstrap DMA producer leaving the barrier.
  boot.probeLock.unlock();sleeper.join();
- assert(callbackDone && acked==&boot && boot.dmaChecks==1 && boot._systemSuspended && !boot.resets);
+ assert(callbackDone && acked==nullptr && boot.dmaChecks==1 && boot._systemSuspended && !boot.resets);
  // Partial bootstrap DMA which cannot be verified stays quarantined at wake.
  Ath10kPCIDevice partial;partial._wmiLive.active=false;partial.dmaSafe=false;
  partial.requestPowerEvent(PowerEvent::SystemSleep);
@@ -183,7 +241,7 @@ int main(){
  Ath10kPCIDevice rootDuringRetire;rootDuringRetire.blockPowerIOForTermination();
  IOPowerStateChangeNotification retireNote;retireNote.powerRef=&rootDuringRetire;acked=nullptr;
  rootDuringRetire.powerNotification(&rootDuringRetire,nullptr,kIOMessageSystemWillSleep,nullptr,&retireNote,sizeof(retireNote));
- assert(acked==&rootDuringRetire && rootDuringRetire.resets==1 && !rootDuringRetire.controllerPowerClosed());
+ assert(acked==nullptr && rootDuringRetire.resets==1 && !rootDuringRetire.controllerPowerClosed());
  rootDuringRetire.drainControllerPowerCalls();assert(rootDuringRetire.controllerPowerClosed());
 
  // Already dispatched callback pauses after its first admission check.
@@ -199,7 +257,7 @@ int main(){
  stale.requestPowerEvent(PowerEvent::DeviceOff);stale.requestPowerEvent(PowerEvent::DeviceOn);
  IOPowerStateChangeNotification after;after.powerRef=&stale;acked=nullptr;
  stale.powerNotification(&stale,nullptr,kIOMessageSystemWillSleep,nullptr,&after,sizeof(after));
- assert(acked==&stale && !after.returnValue && stale.published==before && stale.resets==1);
+ assert(acked==nullptr && !after.returnValue && stale.published==before && stale.resets==1);
  stale.drainControllerPowerCalls();assert(stale.pmStops==1 && stale.resets==1); // Repeated stop/free.
 
  // An executing callback owns the initialization barrier through its last

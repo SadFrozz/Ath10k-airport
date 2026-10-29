@@ -584,6 +584,19 @@
           "protocol_wrapper": "0xffffff80021faca3",
           "protocol_vtable_byte_offset": 4200,
           "failure_effect": "rejects record sizes other than 264; delegates through WCL or the typed protocol callback"
+        },
+        {
+          "module": "IO80211.framework",
+          "uuid": "D6F428E5-23D1-3240-9E20-5D29BD41DC85",
+          "consumer": "Apple80211Get public userland dispatch",
+          "ioctl_operation": 457,
+          "disposition": "unsupported in this public dispatcher before kernel I/O",
+          "evidence": "exact-UUID bounded dispatch reconstruction and process-owned synthetic context probe",
+          "synthetic_probe_result": -3903,
+          "synthetic_payload_unchanged": true,
+          "live_bind_result": -1,
+          "live_callback_verified": false,
+          "limitation": "Public API rejection and failed interface binding do not test the implemented kernel callback; internal WCL dispatch remains distinct"
         }
       ],
       "stock_producer_evidence": [
@@ -1290,7 +1303,21 @@
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
       "requirement_audit": "stock setter reconstructed; next-join binding and update/cancellation semantics pending; still explicitly unsupported",
-      "stock_consumer_evidence": [],
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "setRSN_XE(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*)",
+          "address": "0xffffff800221f389",
+          "ioctl_operation": 457,
+          "input_output_bytes": 264,
+          "internal_command": "0x802869c8",
+          "protocol_wrapper": "0xffffff80021fff5a",
+          "protocol_vtable_byte_offset": 4792,
+          "failure_effect": "rejects non-264-byte or null records; WCL dispatch falls back to the typed callback only when unhandled or returning 0xe082280f",
+          "limitation": "Dispatch reconstruction does not establish setter-to-next-join lifetime or admission requirements"
+        }
+      ],
       "stock_producer_evidence": [
         {
           "module": "AppleBCMWLANCoreMac",
@@ -1474,8 +1501,27 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::setIPV4_PARAMS",
+          "address": "0xffffff8002128a58",
+          "behavior": "issues cmdIouc 0x1e9, ignores its return value, then calls receivedIPv4Address with request words 0 and 4; non-null request returns success",
+          "limitation": "Only this bulletin-board path inspected; ioctl paths and downstream address handlers remain distinct"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setIPV4_PARAMS",
+          "address": "0xffffff8001643b3c",
+          "observed_behavior": "copies request fields at offsets 0, 4, 8 and 12 into core state; calls handleIPv4AddressNotificationGated; conditionally calls handleKeepaliveDataNotificationGated",
+          "limitation": "Provider disassembly does not establish WCL caller admission, required capability bits, or safe success-without-offload semantics"
+        }
+      ]
     },
     {
       "callback": "setWCL_WNM_OPS",
@@ -1582,8 +1628,27 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::setIPV6_PARAMS",
+          "address": "0xffffff8002128ac4",
+          "behavior": "copies up to ten 16-byte addresses from request+4 and calls receivedIPv6Address; no driver command in this handler",
+          "limitation": "Only this bulletin-board path inspected; ioctl paths and downstream address handlers remain distinct"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setIPV6_PARAMS",
+          "address": "0xffffff8001643e80",
+          "observed_behavior": "reads count at offset 0 and clamps to 10; processes entries at 16-byte strides starting offset 4; subsequent offload flow needs further reconstruction",
+          "limitation": "Provider disassembly does not establish WCL caller admission, required capability bits, or safe success-without-offload semantics"
+        }
+      ]
     },
     {
       "callback": "setINFRA_ENUMERATED",

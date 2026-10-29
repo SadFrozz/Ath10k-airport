@@ -2,10 +2,14 @@
 #include <cstring>
 #include <cstdint>
 #include <initializer_list>
-#define __MAC_15_2 150200
-#define __IO80211_TARGET __MAC_15_2
+// Include the scan plan first without target macros: reproduce the
+// production order that previously selected the wrong 0x44-byte layout.
+#include "../src/kext/native/Ath10kNativeScanPlan.hpp"
+static_assert(sizeof(AirportWCL::BeaconMetadata)==0x40, "Sequoia wire layout");
+static_assert(offsetof(AirportWCL::BeaconMetadata,flags)==0x3c, "Sequoia flags");
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/kext/Ath10kWMI.hpp"
+#include "../src/kext/native/Ath10kNativeScanPlan.hpp"
 
 // Execute the production pre-submission cancellation path. The seam records
 // reaching the hardware submission section without touching hardware.
@@ -19,6 +23,69 @@ public:
 #include "native_scan_start.inc"
 
 int main(){
+    using namespace Ath10k;
+    {
+        // Stock serializer fixture: two names followed by its zero entry.
+        // User count/entries 0x1314/0x1318 become driver 0x1318/0x131c.
+        UInt8 request[0x1550]{};
+        htcWriteLE32(request+0x1318,3);
+        for(unsigned i=0;i<2;++i){
+            auto e=request+0x131c+i*56;htcWriteLE32(e,1);htcWriteLE32(e+4,6);
+            memcpy(e+8,i?"test-1":"test-0",6);
+        }
+        AirportWCL::ScanSSIDList list{};
+        assert(AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        assert(list.count==3 && list.entries[0].length==6);
+        assert(!memcmp(list.entries[1].bytes,"test-1",6));
+        assert(list.entries[2].version==0 && list.entries[2].length==0);
+        htcWriteLE32(request+0x40,1);
+        AirportWCL::ScanRequest modern{};
+        assert(AirportWCL::decodeModernScan(request,sizeof(request),modern));
+        assert(modern.type==1 && modern.ssids.count==3);
+        NativeScanPlan plan{};assert(nativeScanPlan(modern,plan));
+        assert(plan.count==3 && plan.active && plan.ssids[1].length==6 && plan.ssids[2].length==0);
+        UInt8 command[1024]{};
+        assert(buildWMIScan(command,sizeof(command),2,0xa123,false,nullptr,110,1,plan.ssids,plan.count,plan.active));
+        assert(wmiReadLE32(command+72)==0x30 && wmiReadLE32(command+96)==3);
+        modern.type=2;assert(nativeScanPlan(modern,plan) && !plan.active);
+        modern.type=1;modern.ssids.entries[0].metadata[0]=1;
+        assert(!nativeScanPlan(modern,plan));modern.ssids.entries[0].metadata[0]=0;
+        const auto oldModern=modern;
+        assert(!AirportWCL::decodeModernScan(request,sizeof(request)-1,modern));
+        assert(!memcmp(&modern,&oldModern,sizeof(modern)));
+        htcWriteLE32(request+0x1318,11);
+        assert(!AirportWCL::decodeModernScan(request,sizeof(request),modern));
+        assert(!memcmp(&modern,&oldModern,sizeof(modern)));
+        htcWriteLE32(request+0x1318,3);
+        const auto saved=list;
+        for(size_t length=0;length<0x131c+3*56;++length){
+            assert(!AirportWCL::decodeScanSSIDList(request,length,list));
+            assert(!memcmp(&list,&saved,sizeof(list)));
+        }
+        assert(!AirportWCL::decodeScanSSIDList(nullptr,sizeof(request),list));
+        htcWriteLE32(request+0x1318,11);
+        assert(!AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        htcWriteLE32(request+0x1318,3);
+        htcWriteLE32(request+0x1320,33);
+        assert(!AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        htcWriteLE32(request+0x1320,6);
+        htcWriteLE32(request+0x131c,2);
+        assert(!AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        htcWriteLE32(request+0x131c,1);
+        request[0x131c+2*56+55]=1;
+        assert(!AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        request[0x131c+2*56+55]=0;
+        request[0x131c+40]=0x80;
+        assert(AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        assert(list.entries[0].metadata[0]==0x80);
+        htcWriteLE32(request+0x1318,10);
+        assert(AirportWCL::decodeScanSSIDList(request,sizeof(request),list));
+        assert(list.count==10);
+        htcWriteLE32(request+0x1318,0);
+        assert(AirportWCL::decodeScanSSIDList(request,0x131c,list));
+        assert(list.count==0 && list.entries[0].length==0);
+    }
+
     using namespace Ath10k;
     for(unsigned phase=1;phase<=unsigned(ChannelSwitchPhase::Confirm);++phase){
         Ath10kPCIDevice driver;
@@ -43,6 +110,25 @@ int main(){
         assert(!finished.serviceWMIScan(100) && !finished.submissions);
         assert(!memcmp(&saved,&finished._wmiScan,sizeof(saved)));
 
+    }
+    for(unsigned security=0;security<3;++security){
+        // Accepted scans must yield to EAPOL/group/pair key maintenance.
+        for(bool submitted:{false,true}){
+            Ath10kPCIDevice d;d._connection.stage=LinkStage::Connected;
+            d._connection.eapolPause=security==0;
+            d._connection.rekeyKind=security;
+            d._wmiScan.attempted=d._wmiScan.submitted=d._wmiScan.txOwned=submitted;
+            assert(!d.serviceWMIScan(100));
+            assert(d._wmiScan.cancelRequested);
+            assert(d._wmiScan.completed==!submitted && d._wmiScan.txOwned==submitted);
+        }
+    }
+    { // Finished scans retain their terminal result; initial association scans remain allowed.
+        Ath10kPCIDevice done;done._connection.stage=LinkStage::Connected;done._connection.eapolPause=true;
+        done._wmiScan.completed=true;const auto saved=done._wmiScan;
+        assert(!done.serviceWMIScan(100) && !memcmp(&saved,&done._wmiScan,sizeof(saved)));
+        Ath10kPCIDevice initial;initial._connection.stage=LinkStage::Scan;initial._connection.eapolPause=true;
+        assert(!initial.serviceWMIScan(100) && !initial._wmiScan.cancelRequested && initial.submissions==1);
     }
     { Ath10kPCIDevice pending;pending._connection.pmfTXPending=true;
       assert(!pending.serviceWMIScan(100) && pending._wmiScan.completed && pending._wmiScan.cancelRequested && !pending.submissions);
@@ -92,6 +178,34 @@ int main(){
         htcWriteLE32(packet+32,scan.id);
         error=parseWMIInitResponse(packet,sizeof(packet),2,credits,init,nullptr,&scan);
         assert(error && !strcmp(error,"scan-event-after-terminal"));
+    }
+    {
+        WMIScanSSID names[16]{};
+        names[0].length=3;memcpy(names[0].bytes,"one",3);
+        names[1].length=32;memset(names[1].bytes,0x7f,32);
+        // A zero-length entry is serialized exactly, without guessing policy.
+        UInt8 frame[1024];memset(frame,0xa5,sizeof(frame));
+        const UInt64 mask=1;const UInt32 bytes=144+3*36;
+        assert(buildWMIScan(frame,bytes,2,0xa123,false,nullptr,110,mask,names,3));
+        assert(htcReadLE16(frame+2)==bytes-8 && wmiReadLE32(frame+88)==3);
+        assert(htcReadLE16(frame+124)==108 && htcReadLE16(frame+126)==19);
+        assert(wmiReadLE32(frame+128)==3 && !memcmp(frame+132,"one",3));
+        for(unsigned i=135;i<164;++i)assert(frame[i]==0);
+        assert(wmiReadLE32(frame+164)==32 && frame[168]==0x7f);
+        assert(wmiReadLE32(frame+200)==0);
+        assert(htcReadLE16(frame+236)==8 && htcReadLE16(frame+238)==19);
+        assert(frame[240]==255 && htcReadLE16(frame+250)==17 && frame[bytes]==0xa5);
+        UInt8 saved[1024];memcpy(saved,frame,sizeof(frame));
+        assert(!buildWMIScan(frame,bytes-1,2,0xa123,false,nullptr,110,mask,names,3));
+        assert(!memcmp(saved,frame,sizeof(frame)));
+        assert(!buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,mask,nullptr,1));
+        assert(!buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,mask,names,17));
+        names[0].length=33;
+        assert(!buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,mask,names,3));
+        assert(!memcmp(saved,frame,sizeof(frame)));
+        names[0].length=3;
+        assert(buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,mask,names,16));
+        assert(htcReadLE16(frame+2)==144+16*36-8);
     }
     // A mixed 2.4 GHz/DFS request, including a duplicate. The native decode
     // and actual firmware builder must agree, not merely filter final results.

@@ -57,7 +57,7 @@ def main():
                'HT_VHT': 1, 'DATA_TX_SLOTS': 64}
     flags += [f'-DATH10K_{k}={v}' for k, v in defines.items()]
     sources = ['native/Ath10kNative.cpp', 'Ath10kUserClient.cpp', 'Ath10kNetwork.cpp',
-               'Ath10kRuntime.cpp', 'Ath10kPower.cpp', 'Ath10kRecovery.cpp', 'Ath10kPCIDevice.cpp', 'kmod_info.c']
+               'Ath10kRuntime.cpp', 'Ath10kPower.cpp', 'Ath10kPowerNotifications.cpp', 'Ath10kRecovery.cpp', 'Ath10kPCIDevice.cpp', 'kmod_info.c']
 
     def compile_source(name):
         source = ROOT / 'src/kext' / name

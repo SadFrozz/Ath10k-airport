@@ -97,6 +97,8 @@ public:
  void blockPowerIOForTermination();void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
  void nativeInterfaceWillStop(Ath10kNativeInterface *object){assert(object==_nativeInterface);++retirements;}
 };
+// Kernel logging is not part of the termination-order model.
+static void IOLog(const char *,...) {}
 #include "native_termination_power.inc"
 #include "native_termination_controller.inc"
 #include "native_termination_notifier.inc"

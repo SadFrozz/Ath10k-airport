@@ -4,6 +4,14 @@
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
 
+// SIOCGIFMEDIA is part of native Wi-Fi discovery: wifip2pd checks
+// IFM_TYPE(ifm_current) before it reads the IO80211 interface role.
+#ifdef ATH10K_NATIVE
+static constexpr IOMediumType kAth10kAutoMedium=kIOMediumIEEE80211Auto;
+#else
+static constexpr IOMediumType kAth10kAutoMedium=kIOMediumEthernetAuto;
+#endif
+
 const OSString *Ath10kPCIDevice::newModelString() const {
     return OSString::withCString("Ath10k WLAN Adapter");
 }
@@ -50,7 +58,7 @@ UInt32 Ath10kPCIDevice::getFeatures() const
 }
 IOReturn Ath10kPCIDevice::selectMedium(const IONetworkMedium *medium)
 {
-    if(!medium || medium->getType()!=kIOMediumEthernetAuto)return kIOReturnUnsupported;
+    if(!medium || medium->getType()!=kAth10kAutoMedium)return kIOReturnUnsupported;
     return setSelectedMedium(medium)?kIOReturnSuccess:kIOReturnError;
 }
 IOReturn Ath10kPCIDevice::setPromiscuousMode(bool active)
@@ -101,7 +109,7 @@ bool Ath10kPCIDevice::prepareNetwork()
         if(!b.payload.allocate(2048,128,_dmaMapper,Ath10kDMABuffer::Role::Payload) ||
            !b.command.allocate(256,128,_dmaMapper) || !b.fragments.allocate(16,16,_dmaMapper))return false;
     auto *dict=OSDictionary::withCapacity(1);
-    auto *medium=IONetworkMedium::medium(kIOMediumEthernetAuto,0);
+    auto *medium=IONetworkMedium::medium(kAth10kAutoMedium,0);
     if(!dict || !medium){if(dict)dict->release();if(medium)medium->release();return false;}
     bool ok=IONetworkMedium::addMedium(dict,medium) && publishMediumDictionary(dict);
     if(ok)setCurrentMedium(medium);

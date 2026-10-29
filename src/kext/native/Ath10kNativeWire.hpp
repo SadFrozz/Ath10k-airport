@@ -2,7 +2,10 @@
 #include "../../shared/Ath10kPSKPassword.hpp"
 #include "../Ath10kBSS.hpp"
 #include "../Ath10kScanPlan.hpp"
+#include "Ath10kNativeTarget.hpp"
 #include <WCL.hpp>
+static_assert(sizeof(AirportWCL::BeaconMetadata)==0x40, "Sequoia beacon ABI must precede WCL declarations");
+static_assert(offsetof(AirportWCL::BeaconMetadata,flags)==0x3c, "Sequoia beacon flags offset");
 #include <string.h>
 // Keep wire decoding separate from implemented authentication. In particular,
 // a 64-byte password slot is not a 32-byte PMK and must never be truncated.
@@ -106,9 +109,19 @@ inline bool nativeExtendedBSS(const NativeExtendedBSSInput &in,void *out,size_t 
 // Shared by the real adapter and sanitizer-backed host tests.
 inline bool nativeScanMatches(const AirportWCL::ScanRequest &scan,const Ath10k::WMIBSS &b) {
     unsigned channel=b.advertisedChannel?b.advertisedChannel:b.rxChannel;
-    if(scan.ssidLength>32 || b.ssidLength>32)return false;
+    if(scan.ssidLength>32 || b.ssidLength>32 || scan.ssids.count>10)return false;
     if(!AirportWCL::scanChannelSelected(scan.channels,scan.channelCount!=0,channel))return false;
     if(scan.ssidLength && (scan.ssidLength!=b.ssidLength || memcmp(scan.ssid,b.ssid,b.ssidLength)))return false;
+    if(scan.ssids.count){
+        bool matched=false;
+        for(unsigned i=0;i<scan.ssids.count;++i){
+            const auto &ssid=scan.ssids.entries[i];
+            if(ssid.length>32 || ssid.version>1)return false;
+            // Empty SSID is the broadcast probe; retain other BSS observations.
+            if(!ssid.length || (ssid.length==b.ssidLength && !memcmp(ssid.bytes,b.ssid,b.ssidLength)))matched=true;
+        }
+        if(!matched)return false;
+    }
     UInt8 any=0,notBroadcast=0;
     for(auto byte:scan.bssid){any|=byte;notBroadcast|=UInt8(byte^0xff);}
     return !any || !notBroadcast || memcmp(scan.bssid,b.bssid,6)==0;

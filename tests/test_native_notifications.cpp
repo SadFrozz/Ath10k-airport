@@ -9,10 +9,12 @@
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
+#include "../vendor/itlwm/Airport/apple80211_ioctl.h"
 #include "../src/kext/Ath10kWMI.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
 using IOReturn=int;using SInt64=int64_t;
-constexpr IOReturn kIOReturnSuccess=0,kIOReturnError=1,kIOReturnAborted=2,kIOReturnNoMemory=3;
+constexpr IOReturn kIOReturnSuccess=0,kIOReturnError=1,kIOReturnAborted=2,kIOReturnNoMemory=3,kIOReturnBadArgument=4;
+enum class N {setWCL_JOIN_ABORT,setWCL_LEAVE_NETWORK,PowerSet};
 class Ath10kPCIDevice {
 public:
     Ath10k::ConnectionState _connection{};
@@ -61,6 +63,16 @@ public:
         Event e{id,{}};if(bytes)e.data.assign(static_cast<UInt8 *>(data),static_cast<UInt8 *>(data)+bytes);
         events.push_back(e);return kIOReturnSuccess;
     }
+    bool _nativeRadioOn=true;
+    void discardNativeSecurity(){security.reset();AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));}
+    IOReturn power(apple80211_power_data *data){auto &s=_connection;switch(N::PowerSet){
+#include "native_radio_power.inc"
+    default:return kIOReturnError;}}
+    unsigned requestedServices=0;
+    void requestNativeService(){++requestedServices;}
+    IOReturn leave(N op){auto &s=_connection;switch(op){
+#include "native_leave.inc"
+    default:return kIOReturnError;}}
     void serviceNativeNotifications(UInt64);
 };
 #include "native_notifications.inc"
@@ -276,6 +288,44 @@ int main(){
         assert(completions==1 && !d->_nativeJoinPending && !d->_connection.portAuthorized);
         const auto delivered=d->events.size();d->serviceNativeNotifications(120);
         assert(d->events.size()==delivered);
+    }
+    { // LEAVE must retire a WCL join even after radio teardown completed.
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);
+        d->_nativeJoinPending=true;
+        Ath10k::resetDisconnected(d->_connection);
+        assert(d->leave(N::setWCL_LEAVE_NETWORK)==kIOReturnSuccess);
+        assert(!d->_connection.cancelRequested && !d->_networkLinkUp);
+        const unsigned resets=d->security.resets;
+        d->failAlways=true;
+        d->serviceNativeNotifications(110);
+        assert(d->_nativeJoinPending && d->events.empty());
+        assert(d->security.resets==resets && !d->_connection.cancelRequested);
+        d->failAlways=false;d->serviceNativeNotifications(120);
+        assert(!d->_nativeJoinPending && d->events.size()==1);
+        assert(d->events[0].id==AirportWCL::ConnectComplete);
+        const auto *event=reinterpret_cast<const AirportWCL::ConnectionEvent *>(d->events[0].data.data());
+        assert(event->status!=0 && event->peers[0].driverStatus==kIOReturnError);
+        assert(event->peers[0].bssid[5]==0x55);
+        d->serviceNativeNotifications(130);assert(d->events.size()==1);
+        assert(d->security.resets==resets && !d->_connection.cancelRequested);
+    }
+    { // Radio-off must survive radio teardown before the notification worker.
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);
+        d->_connection.stage=Ath10k::LinkStage::Scan;d->_nativeJoinPending=true;
+        d->_nativeScanPending=true;d->_wmiScan.completed=false;
+        apple80211_power_data power{};power.num_radios=1;power.power_state[0]=0;
+        assert(d->power(&power)==kIOReturnSuccess);
+        assert(!d->_nativeRadioOn && !d->_connection.portAuthorized && d->_wmiScan.cancelRequested);
+        Ath10k::resetDisconnected(d->_connection);d->_wmiScan.completed=true;
+        d->failAlways=true;d->serviceNativeNotifications(100);
+        assert(d->_nativeJoinPending && d->_nativeScanPending && d->events.empty());
+        d->failAlways=false;d->serviceNativeNotifications(110);
+        assert(!d->_nativeJoinPending && !d->_nativeScanPending);
+        assert((ids(*d)==std::vector<UInt32>{AirportWCL::ScanDone,AirportWCL::ConnectComplete}));
+        assert(Ath10k::wmiReadLE32(d->events[0].data.data())==kIOReturnAborted);
+        const auto *result=reinterpret_cast<const AirportWCL::ConnectionEvent *>(d->events[1].data.data());
+        assert(result->status!=0);
+        d->serviceNativeNotifications(120);assert(d->events.size()==2);
     }
     { // A deadline cannot both announce success and run failure cleanup.
         auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);d->_nativeJoinPending=true;

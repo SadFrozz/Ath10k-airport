@@ -72,6 +72,15 @@ private:
     // Atomic low phase bits plus pending-suspend count; see Ath10kPower.hpp.
     volatile UInt32 _powerIOBlock=0;
     IONotifier *_powerNotifier=nullptr;
+    struct PowerMessage {UInt32 message=0;void *powerRef=nullptr;};
+    static constexpr UInt32 kPowerMessageCapacity=8;
+    PowerMessage _powerMessages[kPowerMessageCapacity]{};
+    UInt32 _powerMessageHead=0,_powerMessageCount=0;
+    IOLock *_powerMessageLock=nullptr;
+    thread_call_t _powerMessageCall=nullptr;
+    bool _powerMessageRunning=false,_powerMessageClosing=false;
+    bool queuePowerNotification(UInt32,void *);
+    static void powerMessageCall(thread_call_param_t,thread_call_param_t);
     // Serializes deferred firmware/attach work with priority sleep quiescence.
     // Never held across controller PM registration or notifier removal.
     IOLock *_probePowerLock=nullptr;
@@ -85,7 +94,7 @@ private:
     bool controllerPowerClosed();
     void drainControllerPowerCalls();
     volatile UInt32 _controllerPowerClosed=0;
-    void requestPowerEvent(Ath10k::PowerEvent);
+    void requestPowerEvent(Ath10k::PowerEvent,bool suspendAlreadyQueued=false);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
     static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);

@@ -1,3 +1,4 @@
+#include "Ath10kNativeScanPlan.hpp"
 // Sequoia WCL adapter for the Ath10k radio core. Experimental, x86_64 only.
 // ABI definitions and message layouts are pinned in vendor/itlwm/SOURCE.json.
 #include "../Ath10kPCIDevice.hpp"
@@ -248,6 +249,8 @@ IOReturn Ath10kPCIDevice::getCARD_CAPABILITIES(IO80211SkywalkInterface *,apple80
     data->capabilities[0]=(1<<APPLE80211_CAP_AES_CCM)|(1<<APPLE80211_CAP_TKIP);
     data->capabilities[1]=(1<<(APPLE80211_CAP_WPA2-8))|(1<<(APPLE80211_CAP_TKIPMIC-8));
     data->capabilities[2]=(1<<(APPLE80211_CAP_WME-16));data->capabilities[5]=0x40;
+    // Capability73 selects the modern SSID-list scan request decoded below.
+    data->capabilities[9]=0x02;
     // Sequoia Apple80211 checks capability 75 before accepting SAE requests.
     // Disabled by default; enabled only with the complete experimental join path.
     if(nativeSAEEnabled()){
@@ -312,6 +315,7 @@ void Ath10kNativeInterface::closePowerAdmission() {
     IOLockLock(_terminationLock);_powerAdmissionClosed=true;IOLockUnlock(_terminationLock);
 }
 IOReturn Ath10kNativeInterface::setPowerState(unsigned long ordinal,IOService *device) {
+    IOLog("Ath10kMac: POWER native-state=%lu phase=callback-entered\n",ordinal);
     if(!_terminationLock)return kIOReturnNotReady;
     IOLockLock(_terminationLock);
     if(_powerAdmissionClosed){IOLockUnlock(_terminationLock);return kIOReturnAborted;}
@@ -319,6 +323,7 @@ IOReturn Ath10kNativeInterface::setPowerState(unsigned long ordinal,IOService *d
     // Preserve the stock body/return value and its WCL ordering. Never hold our
     // short bookkeeping lock across a framework call or a command gate.
     const IOReturn result=IO80211InfraProtocol::setPowerState(ordinal,device);
+    IOLog("Ath10kMac: POWER native-state=%lu phase=super-return result=0x%x\n",ordinal,static_cast<UInt32>(result));
     IOLockLock(_terminationLock);
     --_nativePowerCalls;
     if(!_nativePowerCalls){
@@ -1264,7 +1269,11 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         _nativeReadyRequested=true;requestNativeService();return kIOReturnSuccess;}
     case N::PowerGet:{auto d=static_cast<apple80211_power_data *>(data);bzero(d,sizeof(*d));d->version=1;d->num_radios=1;d->power_state[0]=_nativeRadioOn?1:0;return kIOReturnSuccess;}
     case N::PowerSet:{auto d=static_cast<apple80211_power_data *>(data);if(d->num_radios!=1 || d->power_state[0]>1)return kIOReturnBadArgument;
-        _nativeRadioOn=d->power_state[0];if(!_nativeRadioOn){_wmiScan.cancelRequested=true;s.cancelRequested=true;s.portAuthorized=false;discardNativeSecurity();networkLink(false);}
+        _nativeRadioOn=d->power_state[0];if(!_nativeRadioOn){
+            // Preserve cancellation until WCL completion even if the radio
+            // worker resets ConnectionState before notifications run.
+            if(_nativeJoinPending)_nativeJoinFailed=true;
+            _wmiScan.cancelRequested=true;s.cancelRequested=true;s.portAuthorized=false;discardNativeSecurity();networkLink(false);}
         return kIOReturnSuccess;}
     case N::CountryGet:{auto d=static_cast<apple80211_country_code_data *>(data);bzero(d,sizeof(*d));d->version=1;
         if(_regulatory.country)bcopy(_regulatory.country->alpha2,d->cc,2);return kIOReturnSuccess;}
@@ -1313,7 +1322,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         return (bytes[0] || bytes[1])?kIOReturnUnsupported:kIOReturnSuccess;}
     case N::setWCL_SCAN_REQ:{AirportWCL::ScanRequest scan{};
         // The native ABI owns a fixed request containing at most 400 channels.
-        if(!AirportWCL::decodeScan(data,0x1318,scan))return kIOReturnBadArgument;
+        if(!AirportWCL::decodeModernScan(data,0x1550,scan))return kIOReturnBadArgument;
+        NativeScanPlan plan{};if(!nativeScanPlan(scan,plan))return kIOReturnUnsupported;
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill)return kIOReturnNotReady;
         UInt32 busy=(_nativeScanPending?1u:0u)|(_nativeJoinPending?2u:0u)|(!_wmiScan.completed?4u:0u)|
             (s.wmiOwned?8u:0u)|(s.txOwned?16u:0u)|(_wmi.credits.outstanding?32u:0u)|
@@ -1341,6 +1351,10 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         // Disabled has no worker teardown to consume a cancellation latch.
         // Keep cancellation for live joins and in-progress teardown only.
         s.cancelRequested=s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None;
+        // Radio teardown can finish before WCL consumes ConnectComplete.
+        // Retire that pending attempt even when the radio is already idle;
+        // otherwise LEAVE can leave admission busy until the join deadline.
+        if(_nativeJoinPending)_nativeJoinFailed=true;
         s.portAuthorized=false;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;networkLink(false);
         if(_nativeSecurity)_nativeSecurity->reset();
         if(op==N::setWCL_JOIN_ABORT){

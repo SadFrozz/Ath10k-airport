@@ -28,6 +28,26 @@ static void rules(){
      assert(!countryPower(sta.country,52,20,false,true,true,true));
      sta.high5=5200;assert(!regulatoryPower(sta,52,52,20));}
 
+    {
+        RegulatoryPolicy active;active.country=regulatoryCountry("BR");active.indoor=true;
+        assert(!regulatoryActiveScanChannel(active,6));
+        assert(!configureRegulatory(active,0x64,2412,2472,5180,5825));
+        assert(regulatoryActiveScanChannel(active,6));
+        active.stationDFS=true;assert(!regulatoryActiveScanChannel(active,52));
+        UInt8 channels[kWMIScanChannelsFrameBytes]{};
+        assert(buildWMIScanChannels(channels,sizeof(channels),2,&active,true));
+        const unsigned count=wmiReadLE32(channels+16);
+        for(unsigned i=0;i<count;++i){
+            const auto e=channels+24+i*28;const unsigned freq=wmiReadLE32(e+4);
+            const unsigned ch=freq<3000?(freq-2407)/5:(freq-5000)/5;
+            assert(bool(wmiReadLE32(e+16)&0x80)==!regulatoryActiveScanChannel(active,ch));
+            if(channelNeedsDFS(ch))assert((wmiReadLE32(e+16)&0x480)==0x480);
+        }
+        active.high2=2412;assert(!regulatoryActiveScanChannel(active,6));
+        active.high2=2472;active.boardCountry=regulatoryCountry("US");assert(!regulatoryActiveScanChannel(active,13));
+        assert(buildWMIScanChannels(channels,sizeof(channels),2,nullptr,true));
+        for(unsigned i=0;i<wmiReadLE32(channels+16);++i)assert(wmiReadLE32(channels+40+i*28)&0x80);
+    }
     assert(regulatoryCountry("BR") && !regulatoryCountry("ZZ") && !regulatoryCountry("br") && !regulatoryCountry("BRA"));
     p.country=regulatoryCountry("BR");assert(!configureRegulatory(p,0x64,2412,2472,5180,5825));
     assert(p.firmwareCapsValid && p.domain!=0x64 && p.ctl2!=0xff);

@@ -8,6 +8,20 @@
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
 #include "../src/kext/native/Ath10kNativeMAC.hpp"
 int main(){
+ { AirportWCL::ScanRequest scan{};Ath10k::WMIBSS b{};
+   b.rxChannel=6;b.ssidLength=3;memcpy(b.ssid,"two",3);
+   scan.ssids.count=2;
+   for(auto &entry:scan.ssids.entries){entry.version=1;entry.length=3;}
+   memcpy(scan.ssids.entries[0].bytes,"one",3);memcpy(scan.ssids.entries[1].bytes,"two",3);
+   assert(nativeScanMatches(scan,b));b.ssid[0]='x';assert(!nativeScanMatches(scan,b));
+   scan.ssids.entries[1]={};assert(nativeScanMatches(scan,b));
+   scan.channelCount=1;scan.channels[1]=1;assert(!nativeScanMatches(scan,b));
+   scan.channels[0]=1<<6;assert(nativeScanMatches(scan,b));
+   scan.bssid[0]=2;assert(!nativeScanMatches(scan,b));
+   b.bssid[0]=2;assert(nativeScanMatches(scan,b));
+   scan.ssids.count=11;assert(!nativeScanMatches(scan,b));
+ }
+
  { Ath10k::ConnectionState live{};live.ssidLength=4;memcpy(live.ssid,"test",4);
    Ath10k::WMIBSS ap{};ap.ssidLength=4;memcpy(ap.ssid,"test",4);
    ap.bssid[0]=2;ap.bssid[5]=7;ap.hidden=false;ap.capabilities=1;

@@ -66,6 +66,12 @@ inline UInt8 channelDefinitionPowerHalfDbm(UInt32 primary,UInt32 center,UInt32 w
 inline bool regulatoryScanChannel(const RegulatoryPolicy &p,UInt32 c){
     return wmiScanChannelAllowed(c) && regulatoryPower(p,c,c,20,false)!=0;
 }
+// Active probes initiate radiation; association permission on DFS/NO-IR
+// channels is insufficient. Require firmware bounds and both country rules.
+inline bool regulatoryActiveScanChannel(const RegulatoryPolicy &p,UInt32 c){
+    return p.firmwareCapsValid && wmiScanChannelAllowed(c) && !channelNeedsDFS(c) &&
+        regulatoryPower(p,c,c,20,true,true)!=0;
+}
 // Translate a caller's 256-channel bitmap into physical-plan slots. A null
 // bitmap means an unrestricted scan; unknown channels never expand the plan.
 inline UInt64 wmiRequestedScanMask(const UInt8 *channels,UInt32 bytes){

@@ -1,6 +1,9 @@
 #include "Ath10kPCIDevice.hpp"
 #include "Ath10kPayload.hpp"
 #include "Ath10kDiagnostics.hpp"
+#ifdef ATH10K_NATIVE
+#include "native/Ath10kNativeScanPlan.hpp"
+#endif
 #include <IOKit/IOLib.h>
 #include <mach/kmod.h>
 extern "C" kmod_info_t kmod_info;
@@ -520,6 +523,8 @@ void Ath10kPCIDevice::free()
     _deferredProbeLock=nullptr;
     IOLock *probePowerLock=_probePowerLock;
     _probePowerLock=nullptr;
+    IOLock *powerMessageLock=_powerMessageLock;
+    _powerMessageLock=nullptr;
     IOWorkLoop *networkLoop=_networkWorkLoop;
     _networkWorkLoop=nullptr;
 #ifdef ATH10K_NATIVE
@@ -531,6 +536,7 @@ void Ath10kPCIDevice::free()
     if(nativeQueue)nativeQueue->release();
 #endif
     if(networkLoop)networkLoop->release();
+    if(powerMessageLock)IOLockFree(powerMessageLock);
     if(probePowerLock)IOLockFree(probePowerLock);
     if(deferredProbeLock)IOLockFree(deferredProbeLock);
 }
@@ -1237,9 +1243,13 @@ void Ath10kPCIDevice::endWMIRuntime(const char *reason)
     IOLog("Ath10kMac: RUNTIME STOP context reason=%s stage=%u security=%u disconnect=%u peers=%u cmd=0x%x wmi-owned=%u credit-pending=%u tx-owned=%u first-error=%s\n",
         reason,static_cast<UInt32>(_connection.stage),_connection.securityPhase,static_cast<UInt32>(_connection.disconnect),
         _connection.peerCount,_connection.diagnostics.lastCommand,_connection.wmiOwned,_wmi.credits.outstanding,_connection.txOwned,_connection.error);
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=irq-worker-stop\n");
     stopRuntimeWorkerIRQ();
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=target-wake\n");
     const bool wakeOK=finishRuntimePower();
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=rx-reserve-pause\n");
     pauseRXReserve();
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=link-down\n");
     networkLink(false);
     if(_connection.stage!=Ath10k::LinkStage::Disabled){_connection.stage=Ath10k::LinkStage::Failed;_connection.error=reason;}
     _wmiLive.active=false;
@@ -1251,12 +1261,15 @@ void Ath10kPCIDevice::endWMIRuntime(const char *reason)
     if (_wmiScan.attempted && !_wmiScan.completed) _wmiScan.status=reason;
     if (_wmiEcho.attempted && !_wmiEcho.completed) _wmiEcho.status=reason;
     if (_wmiTimer) { _wmiTimer->cancelTimeout(); _wmiTimer->disable(); }
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=ce-irq-stop\n");
     const bool irqOK=stopRuntimeCEIRQ();
     // Reset is still attempted if interrupt masking fails; DMA release also
     // has the independent bus-master-disable verification as a fallback.
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=dma-reset\n");
     const bool resetOK=quiesceTargetAfterBMI();
     Ath10k::wipeConnectionSecrets(_connection);
 #ifdef ATH10K_NATIVE
+    IOLog("Ath10kMac: RUNTIME RETIRE phase=security-discard\n");
     discardNativeSecurity();
 #endif
     if (resetOK) releaseTargetWake(_runtimeWakeAsserted);
@@ -1302,16 +1315,21 @@ void Ath10kPCIDevice::releaseWMIRuntime()
 IOReturn Ath10kPCIDevice::setPowerState(unsigned long state, IOService *device)
 {
     (void)device;
+    IOLog("Ath10kMac: POWER device-state=%lu phase=callback-entered\n",state);
     requestPowerEvent(state?Ath10k::PowerEvent::DeviceOn:Ath10k::PowerEvent::DeviceOff);
+    IOLog("Ath10kMac: POWER device-state=%lu phase=callback-return\n",state);
     return kIOPMAckImplied;
 }
 
 void Ath10kPCIDevice::systemWillShutdown(IOOptionBits specifier)
 {
+    IOLog("Ath10kMac: SHUTDOWN message=0x%x phase=entered\n",specifier);
     // Shutdown can arrive before deferred firmware initialization finishes.
     // Use the same producer barrier and immediate I/O block as system sleep.
     requestPowerEvent(Ath10k::PowerEvent::DeviceOff);
+    IOLog("Ath10kMac: SHUTDOWN message=0x%x phase=super-enter\n",specifier);
     super::systemWillShutdown(specifier);
+    IOLog("Ath10kMac: SHUTDOWN message=0x%x phase=super-return\n",specifier);
 }
 
 void Ath10kPCIDevice::publishWMIRuntimeProperties()
@@ -2706,7 +2724,11 @@ const char *Ath10kPCIDevice::serviceWMIScanChannels(UInt64 nowMs)
             snap.srcWriteIndex!=_wmiRadio[Ath10k::kWMIPMFQoSIndex].txNext || !_ceSrcRings[3].syncFromDevice()) return state.status;
         state.status="scan-channels-build";
         if (!Ath10k::buildWMIScanChannels(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress()),
-            static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,&_regulatory)) return state.status;
+            static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,&_regulatory
+#ifdef ATH10K_NATIVE
+            ,true
+#endif
+            )) return state.status;
         const UInt32 frameBytes=8+Ath10k::htcReadLE16(static_cast<const UInt8 *>(_wmiTxBuffer.virtualAddress())+2);
         state.txSlot=snap.srcWriteIndex;state.txNext=Ath10k::ceRingNext(state.txSlot,entries);
         auto *ring=static_cast<Ath10k::CEDescriptor32 *>(_ceSrcRings[3].virtualAddress());
@@ -2754,7 +2776,11 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
     if (state.completed) return nullptr;
     // CSA may arrive after native scan admission. Cancel before acquiring
     // firmware ownership; an already submitted scan follows STOP_SCAN below.
-    if(_connection.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || _connection.pmfTXPending)state.cancelRequested=true;
+    // EAPOL and key replacement have bounded peer deadlines. A scan admitted
+    // before they arrived must release the channel/control transport, too.
+    const bool securityBusy=_connection.stage==Ath10k::LinkStage::Connected &&
+        (_connection.eapolPause || _connection.rekeyKind);
+    if(_connection.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || _connection.pmfTXPending || securityBusy)state.cancelRequested=true;
     // An accepted request cancelled before submission owns no DMA or firmware
     // scan. Finish it locally instead of starting a scan merely to stop it.
     if(!state.attempted && state.cancelRequested){
@@ -2776,16 +2802,24 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
             snap.srcWriteIndex>=entries || snap.currentSrcRead!=snap.srcWriteIndex ||
             (!state.generation && snap.srcWriteIndex!=_wmiScanChannels.txNext) || !_ceSrcRings[3].syncFromDevice()) return state.status;
         state.status="scan-build";
+#ifdef ATH10K_NATIVE
+        NativeScanPlan nativePlan{};
+        if(_nativeScanPending && !nativeScanPlan(_nativeScan,nativePlan))return "scan-plan-unsupported";
+#endif
         if (!Ath10k::buildWMIScan(static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress()),
             static_cast<UInt32>(_wmiTxBuffer.length()),_htcWMIControl.endpoint,state.id,_connection.stage==Ath10k::LinkStage::Connected,&_regulatory,
 #ifdef ATH10K_NATIVE
             _nativeScanDwellMs,
-            Ath10k::wmiRequestedScanMask(_nativeScanPending && _nativeScan.channelCount?_nativeScan.channels:nullptr,sizeof(_nativeScan.channels))
+            Ath10k::wmiRequestedScanMask(_nativeScanPending && _nativeScan.channelCount?_nativeScan.channels:nullptr,sizeof(_nativeScan.channels)),
+            nativePlan.ssids,nativePlan.count,nativePlan.active
 #else
             Ath10k::kWMIScanDwellMs
 #endif
             )) return state.status;
         const UInt32 frameBytes=8+Ath10k::htcReadLE16(static_cast<const UInt8 *>(_wmiTxBuffer.virtualAddress())+2);
+        // List scans have a variable payload; validate the encoded size before
+        // publishing a descriptor, not only the old no-SSID upper bound.
+        if(frameBytes<8 || frameBytes-8>_htcWMIControl.maxMessageSize)return "scan-message-too-large";
         state.txSlot=snap.srcWriteIndex;state.txNext=Ath10k::ceRingNext(state.txSlot,entries);
         auto *ring=static_cast<Ath10k::CEDescriptor32 *>(_ceSrcRings[3].virtualAddress());
         auto *desc=&ring[state.txSlot];bzero(desc,sizeof(*desc));

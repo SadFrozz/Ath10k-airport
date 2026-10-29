@@ -76,7 +76,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | P0 | Data path after authorization | 5a5d69c: native WPA2/DHCP and en1-bound IPv4/IPv6 HTTPS passed; sustained traffic remains under observation | DHCP, ARP, IPv4, IPv6 and bound HTTPS pass while worker advances |
 | P1 | Scan request semantics | Candidate passes requested physical channel subset to firmware; rejects empty regulatory intersection; pre-submit cancellation completes locally | Hardware confirms subset timing, SSID matching, cancel and completion ordering |
 | P1 | Autojoin | 5a5d69c: user reports first networks in a few seconds; autojoin after manual power toggle passed; cold-login timing still needs separate measurement | Trace and reduce avoidable retries without router changes |
-| P1 | Visibility | Beacon metadata adjusted; latest airportd autojoin lists zero hidden SSIDs; fresh profile/UI consistency still needs explicit verification | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
+| P1 | Visibility | Beacon metadata corrected; 2026-10-30 autojoin still describes the saved target profile as hidden=yes; fresh profile/UI consistency remains unverified | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
 | P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences, security cleanup and guarded automatic wake rematch are candidates | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
 | P2 | Queries and capabilities | 190 inline callbacks: 32 forward, 158 reject; source-checked inventory in NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |
@@ -991,3 +991,468 @@ This bounded observation does not close long-duration stability, group PMF,
 rekey, sleep/wake, RSNXE userland callback coverage or other macOS versions.
 No additional reboot, commit or push was performed. Hardware evidence and
 installation receipt are copied with SHA-256 verification to SD.
+
+RSNXE transport distinction (2026-10-29, exact 24G90, local follow-up):
+- The exported Apple80211Get implementation belongs to IO80211.framework UUID
+  D6F428E5-23D1-3240-9E20-5D29BD41DC85. Its public operation dispatch rejects
+  457 before issuing kernel I/O. A process-owned synthetic API context confirms
+  result -3903 with the 264-byte sentinel payload unchanged; no live interface
+  was bound by that synthetic test. It is not a hardware callback test.
+- A separate ordinary Apple80211Open/BindToInterface(en1)/Close attempt opens
+  and closes successfully but binding returns -1; Get is consequently not
+  called. No elevated retry or invented BSD forwarding is used. The earlier
+  48-byte socket ioctl returned EOPNOTSUPP independently. None of these results
+  demonstrates a failure inside the driver's getRSN_XE implementation.
+- The actual IO80211Family internal request contract remains distinct: operation
+  457, a 264-byte non-null record, WCL dispatch then the typed protocol callback
+  only when unhandled or returning 0xe082280f. The setter request at
+  0xffffff800221f389 uses command 0x802869c8, typed wrapper 0xffffff80021fff5a
+  and vtable byte offset 0x12b8. Its next-join identity/cancellation semantics
+  remain unresolved; the driver continues to reject the setter explicitly.
+- Raw stock code remains local analysis material, outside the repository and
+  SD evidence packet. Only derived facts and our own probe source/results are
+  retained there. No new kext, installation, reboot, commit or push is made.
+
+Native PMF suspend-boundary regression (2026-10-29, host only):
+The native receive test now executes the real NativeSecurity::reset together
+with the real worker and PMF session at three cancellation boundaries: queued,
+XNU-dispatched before callback entry, and crypto-complete before radio consumption.
+The dispatched job keeps the worker unavailable until its callback retires.
+After reset no old PMF result, key/reply work or protected TX remains attached.
+A fresh PMF owner/generation on the reusable worker accepts a valid protected
+frame without a stale result crossing the reset. Objects/locks/calls drain.
+The native_pmf_receive, native_key_stage and native_sae_radio tests pass with
+assertions and ASAN/UBSAN. Firmware/PM event delivery and fresh key authorization
+are mocked: this does not prove physical PCI suspend/rematch or macOS autojoin.
+No production driver code, installation, reboot, commit or push changed.
+
+
+Physical suspend failure (2026-10-29, image 0E9AA8BE):
+
+The authorized physical sleep request at 20:24:31 local time did not produce
+a verified resume. The last durable sample at 20:25:03 still has the original
+service, zero driver sleep/wake counters and zero kernel sleep/wake timestamps.
+powerd records entering sleep at 20:25:03 and client acknowledgements at
+20:25:05, followed by a new system boot at 20:27:22. The user reports that the
+laptop could not be awakened. This is a FAILED suspend/resume checkpoint;
+normal boot/autojoin and the host crypto tests do not override this failure.
+No captured Ath10k power-entry/retirement stack identifies its cause.
+In particular, actual driver termination/rematch after wake is not established.
+
+The synchronous priority sleep callback previously combined returnValue=0
+with acknowledgeSleepWakeNotification(powerRef). XNU IOServicePM.cpp
+pmTellClientWithResponse itself records acknowledgement after a successful
+callback returns zero returnValue. Remove the redundant asynchronous ack and
+retain quiescence before returning. The power regression rejects the old
+implementation, covering bootstrap barrier, pending retirement and closed
+admission as well as ordinary sleep. This corrects the notification contract;
+it is NOT evidence that the physical failure was caused by duplicate ack.
+Low-frequency power and runtime-retirement phase logs now distinguish producer
+lock, radio gate, IRQ worker, target wake, RX reserve, link-down, CE IRQ, DMA
+reset and security retirement. No per-packet logging or new credentials.
+The next physical test requires a separately approved installation/reboot
+and a fresh sleep approval. No further sleep/reboot is performed by this audit.
+
+User clarification: the visible hang occurred at the end of sleep entry,
+not while returning from sleep. Keep shutdown/sleep retirement as the primary
+investigation target. The current-at-normal-reboot-report image 785EFF7A and
+failed-sleep image 0E9AA8BE have identical Ath10kPower.cpp, Ath10kRecovery.cpp,
+Ath10kRuntime.cpp, Ath10kPCIDevice.cpp and native/Ath10kNative.cpp. Their only
+production changes are association handling in Ath10kConnection.hpp and
+Ath10kNetwork.cpp. The first known-good reboot executable remains unidentified;
+this comparison does not exonerate the common power/lifecycle implementation.
+
+
+Deferred priority power notifications (local source checkpoint, 2026-10-29):
+
+XNU 11417.140.69 IOServicePM.cpp tellClientsWithResponse requires the PM gate
+and calls pmTellClientWithResponse inline. The old Ath10k priority callback
+synchronously waited on _probePowerLock and then the radio workloop. Firmware
+initialization/interface attachment and framework operations can require PM
+progress, making that wait unsafe under the caller's system gate. Moving only
+the duplicate acknowledgement did not remove that wait. This is an identified
+locking hazard, not a captured stack proving the user's late-suspend hang.
+
+Ath10kPowerNotifications.cpp now registers only after preparing a retained
+thread call and a preallocated eight-entry FIFO. A sleep callback raises the
+atomic suspend intent immediately and returns a 30-second microsecond-valued
+ack budget. The worker consumes that exact already-counted suspend, performs
+quiescence outside the root PM gate, releases probe/radio locks, and only then
+sends the single asynchronous acknowledgement. Wake/cancel messages use the
+same FIFO, so they cannot overtake an accepted sleep. Adjacent awake messages
+coalesce because both set rootSleeping=false; sleep records/cookies never do.
+No allocation, crypto, hardware transaction, producer wait or radio wait occurs
+on the normal registered root callback route. Initial resource failure rejects
+registration/start. Defensive malformed/closed/overflow fallback retains the
+previous synchronous quiescence contract; no accepted FIFO record is overwritten.
+Stock root serializes sleep phases behind their cookies, so eight slots exceed
+the normal pending sleep/awake bound. Unsupported notification floods are not
+a hardware reliability certification.
+
+Notifier removal synchronizes producers before queue closure. Stop drains
+accepted messages and their acknowledgements instead of cancelling the call;
+only afterward may controller PMstop and PCI/workloop release proceed. The FIFO
+mutex remains alive until after base controller free. One retained controller
+reference covers each scheduled/active worker, including new jobs arriving at
+its tail. Windows builds include the same translation unit.
+
+Host tests execute the real notification FIFO/worker/callback with an unavailable
+radio, explicit blocked worker, concurrent stop, wake cancellation, an awake
+storm and startup allocation/registration failures. Real power-action tests
+verify an already-counted root suspend is consumed once and subsequently permits
+recovery. These remain host tests; physical sleep/restart on the revised image
+requires explicit user authorization and is not reported as fixed yet.
+
+Shutdown contract checked separately against Apple's exact-tag
+IOPMrootDomain.cpp PMHaltWorker::work: systemWillShutdown is invoked by a halt
+worker after releasing gPMHaltLock and the per-worker bookkeeping lock. It is
+not the same root-PM-gated priority notification route. The controller continues
+to quiesce synchronously before its superclass shutdown acknowledgement; do not
+move that acknowledgement ahead of IRQ/DMA stop or assume the sleep callback
+change proves shutdown stability.
+
+Sources: https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/iokit/Kernel/IOServicePM.cpp
+and https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/iokit/Kernel/IOPMrootDomain.cpp
+
+Final host coverage for this checkpoint includes executing the production
+systemWillShutdown body with the production power dispatcher/action. An owned
+producer mutex prevents superclass acknowledgement; releasing it permits one
+quiescence followed by acknowledgement outside both driver locks. Repeated
+shutdown after PCI is marked off does not reset/read DMA again. Shutdown before
+firmware initialization does not queue a new probe or touch hardware.
+These model tests do not emulate the platform's final S3/reset transition.
+
+Validation: the 60-test ASAN/UBSAN development run completed successfully.
+After its extraction began, a final retired-notifier admission guard and
+the explicit production shutdown regression were added; power and
+power_notifications are rerun against those final sources separately.
+The native build and exact-UUID offline collection check are repeated after
+the final production guard. No new image is installed by these checks.
+
+
+### Failed sleep follow-up: Intel reference and phase interpretation
+
+The 2026-10-29 physical sleep test with image
+`0B8800CC-9497-39B6-B367-F4ADA9593CF0` did not complete. The local observer
+stopped and the next observation belongs to another boot. Deferred root
+notification handling therefore does not establish successful sleep entry.
+The persisted kernel window does not contain enough driver phase records to
+identify the blocking instruction; absent records do not prove an uncalled callback.
+
+Reference: OpenIntelWireless/itlwm at
+`53c51c2cdd6e4b69beb91f310d74c53422b0f8bd`,
+`AirportItlwm/AirportItlwmV2.cpp` (setPowerState, disableAdapter, stop,
+releaseAll), and `itlwm/hal_iwx/ItlIwx.cpp` (iwx_stop, device stop).
+Intel queues power work, disables the adapter before acknowledging its power
+policy maker, and closes task admission before hardware/ring teardown.
+Its Intel register sequences are not a QCA9377 implementation. Its unsupported
+Skywalk setPOWERSAVE handler also means our level-7 rejection alone is not
+proof of the sleep failure.
+
+The exact XNU tag cited above dispatches the controlling driver's setPowerState
+through pmDriverCallout before reacquiring the PM workloop for completion.
+This differs from root priority notifications. Adding another thread to
+setPowerState is not, by itself, a demonstrated fix for a PM-gate deadlock.
+The production shutdown host test substitutes the superclass: it verifies our
+quiescence ordering, not real IONetworkController messageClients, interface
+output-thread retirement, or platform sleep/reset.
+
+Diagnostic image `07227EA9-E719-3ADF-87C4-523350164FB0` adds callback boundary
+records without changing power ordering. Interpret the records as intervals,
+not stack traces or proof that the last printed operation caused a hang:
+
+| Last visible record | Interval requiring investigation |
+| --- | --- |
+| POWER request, producer-wait | Producer mutex acquisition and closed-state check |
+| POWER request, radio-wait | Workloop action dispatch/gate acquisition |
+| POWER event, radio-entered | Power-state action; early initial-power path can return without the normal summary |
+| RUNTIME RETIRE phase | Named operation and following code up to the next emitted record |
+| POWER native-state, callback-entered | Admission mutex, early rejection, or superclass body; this record alone cannot distinguish them |
+| POWER native-state, super-return | Superclass returned; bookkeeping mutex and completion remain |
+| SHUTDOWN super-enter | Framework shutdown, including client notification and its inherited acknowledgement |
+| SHUTDOWN super-return | Framework call returned; platform shutdown is still unverified |
+| POWER notification, worker-quiesced-ack | Quiescence finished; record precedes the actual acknowledgement call |
+
+RUNTIME STOP records are skipped when runtime is already inactive. Different
+power sources can interleave. A local journal may lose its last records during
+a hard freeze; no external observer is attached. Do not infer a completed
+sleep from pmset success or a completed reset from shutdown cause alone.
+Require advancing kernel sleep/wake timestamps, same boot, native reattach/
+authorized port and traffic for sleep/wake evidence. Keep the physical failure
+open until those observations succeed. The candidate is not installed by
+its build, signature, or offline collection checks.
+
+
+### Normal boot-settings checkpoint (2026-10-29)
+
+OpenCore was already a RELEASE binary. Its diagnostic output and macOS boot
+arguments `-v`, `keepsyms=1`, `debug=0x100` were disabled in the local EFI
+configuration with a verified SD rollback; driver image stayed
+`07227EA9-E719-3ADF-87C4-523350164FB0`. The user confirms working sleep and
+hibernation and one reboot without holding the power button. Boot UUID changed
+from `625930A7-2232-4D96-BAB8-76AC441072E0` to
+`84FEBCC7-27A4-4831-965F-FA84C3EEB22C`. The latter boot used the expected normal
+arguments. This correlation does not isolate which setting mattered or prove
+the kext's entire power contract correct.
+
+After that reboot native en1 established SAE with PMF port readiness, completed
+IPv4 HTTPS (200, TLS verification 0) and received 20/20 ICMP replies. Driver
+disconnect and TX watchdog counters stayed zero in the short observation.
+Physical sleep/wake timestamps and post-resume traffic are still not jointly
+verified by the observer; preserve the user's successful sleep/hibernation
+report separately rather than declaring an observed boot change a sleep failure.
+Long-term stability, automatic connection latency and repeated power cycles
+remain open. No additional reboot/sleep is authorized by this checkpoint.
+
+
+### Native network medium correction (2026-10-29)
+
+The installed driver reports SIOCGIFMEDIA current/active 0x20 (Ethernet)
+for en1. Local inspection of the installed wifip2pd shows a media-type
+check `(ifm_current & 0xe0) == 0x80` before its IO80211InterfaceRole read.
+The current-boot log explicitly rejects en1 as not a Wi-Fi interface;
+airportd later reports a 60.588324-second attach event. This establishes
+an interface-description defect, but its contribution to overall autojoin
+latency still needs an on-device comparison.
+
+Native prepareNetwork and selectMedium now share kIOMediumIEEE80211Auto;
+the non-native diagnostic mode keeps kIOMediumEthernetAuto. This does not
+implement AWDL or AirDrop. Candidate UUID
+7574844D-F635-35C4-A631-3BE923A3F98C passed a native SAE build, symbol checks,
+strict ad-hoc signature verification and isolated auxiliary collection
+creation with exact UUID inclusion. Normal and validation-probe program
+sections match. No system kernel collection or EFI was changed by these
+checks, and the candidate has not been loaded. Verify SIOCGIFMEDIA 0x80,
+wifip2pd acceptance, autojoin duration, WPA3 traffic and power behavior on
+the next explicitly authorized installation and reboot.
+
+Focused regression checkpoint: production selectMedium was exercised for native
+and diagnostic personalities, including null/wrong media rejection and failed
+selection propagation. network_medium, native_scan, native_wire and
+native_link_state passed with the development runner. These host tests do not
+replace live SIOCGIFMEDIA and wifip2pd discovery checks.
+
+### Native medium hardware checkpoint (2026-10-29)
+
+Candidate 7574844D-F635-35C4-A631-3BE923A3F98C loaded on boot
+04BC0B4F-0709-4EE3-ABD6-79EE4677E992. The user confirms another reboot
+without the power button. Live SIOCGIFMEDIA current and active are 0x80;
+wifip2pd discovers en1 as Infrastructure and creates its IO80211Driver.
+The airportd interface-attach handler reports 0.674213 s versus 60.588324 s
+before the medium correction. This measures that handler, not total boot
+or full autojoin latency. SAE/PMF port authorization and IPv4 HTTPS through
+en1 succeeded (HTTP 200, TLS verification 0). Early Apple80211Scan calls
+still return -3903; do not claim that all scanning or autojoin delay is fixed.
+Long-term stability and AWDL support remain unverified/unimplemented.
+
+### Early scan refusal audit (2026-10-29)
+
+Read-only inspection of IO80211.framework UUID
+D6F428E5-23D1-3240-9E20-5D29BD41DC85 locates an explicit -3903
+return in Apple80211Scan at entry+0xdb4. The incoming SSID/BSSID-list
+representation, for non-FAST scans, requires context[0x5a] bit 0x40
+(entry+0x254 branch). BindToInterfaceWithService fills capabilities at
+context+0x58, so this is capability bit 22. The current driver's byte2
+is WME only (0x02). This is a strong candidate for the early refusal,
+not yet a trace proving which branch each live request takes.
+
+Do not simply advertise list scanning: the current WCL ScanRequest holds
+one SSID and one BSSID. Reconstruct the system's list-to-WCL transport
+and support/filter all requested entries before enabling the capability.
+Validate cancellation, passive DFS, and directed multi-network scanning.
+No runtime edit or additional reboot was made during this audit.
+
+### Scan transport reconstruction checkpoint (2026-10-29)
+
+In the inspected IO80211Family, apple80211setSCAN_REQ_MULTIPLE at
+0xffffff80021fc120 returns 0xe082280e unconditionally. Therefore enabling
+the userland list capability alone does not establish a working list path;
+the IOUC/WCL routing must be checked separately.
+
+IO80211ScanRequest::getScanRequestForDriver at 0xffffff80022c29d4 writes
+beyond our decoder's supplied 0x1318 length: a four-byte field at 0x1318,
+a 0x230-byte block at 0x131c, and a four-byte field at 0x154c. The mapped
+sources are internal+0x131c, +0x1320 and +0x1550 respectively. The minimum
+written extent is thus 0x1550. Tail semantics are not yet established;
+do not label the block an SSID list or expand reads on that assumption.
+Trace the serializer and WCL dispatcher before changing the parser.
+
+### Modern list-format selection (2026-10-29)
+
+Further exact-library inspection refines the bit22 finding: context[0x61]
+mask 0x02 (capability73) selects the modern scan-data representation for
+list keys. That representation bypasses the legacy list/bit22 rejection.
+Do not use bit22 alone as the intended fix.
+
+The SSID-list parser writes entries at user buffer+0x1318, stride 56,
+with version at +0, length +4 and SSID bytes +8. It accepts at most nine
+input entries and writes input count+1 at +0x1314. The additional slot's
+semantics remain to be established. IO80211ScanRequest initialization
+copies 0x1598 bytes into internal storage+8, explaining the driver
+encoder's count at +0x1318 and entries at +0x131c (560-byte block).
+Modern BSSID-list handling and result/cancellation semantics remain open.
+No additional capability is advertised yet.
+
+### Process-owned scan serializer experiment (2026-10-29)
+
+Called only the exact-UUID library dictionary encoder at Apple80211Scan
++0xe43, with private buffers and synthetic names; no Open/Bind/Scan entry,
+socket, interface, or kernel request was used. Modern SSID-list inputs
+of 0, 1, 2 and 9 entries succeed and encode count N+1. The extra final
+entry is all zero (version0, length0); named entries are version1 with
+length and bytes, stride56. Ten names fail with -3900. A modern
+BSSID-list input fails with -3900. Single SSID input succeeds without
+a tail list. These observations establish serialization, not radio
+behavior or the semantic purpose of the empty entry.
+
+The production WMI builder currently forces passive scans, emits zero
+SSID entries and one broadcast BSSID. Thus parser/capability changes
+alone cannot supply directed probes for hidden SSIDs. Required work
+includes bounded WMI SSID encoding, active/passive channel policy,
+result matching, cancellation and completion, followed by on-device
+validation. Do not claim list support based on passive visible-network
+results or merely removing the userland capability rejection.
+
+### Modern SSID-tail decoder implementation (2026-10-29)
+
+Added decodeScanSSIDList in WCL.hpp as a separate decoder, not yet called
+by the runtime prefix decoder. It bounds count to10 and SSID length to32,
+validates each accessed byte range, preserves the 16 opaque metadata bytes,
+accepts the observed all-zero version0 extra entry, rejects unknown versions
+and commits output only after full validation. Tests exercise the observed
+two-name-plus-zero fixture, every truncated length, count overflow, invalid
+length/version, nonzero version0 content, maximum count and zero count.
+Focused native_scan and native_wire tests passed. Runtime capability73 and
+directed firmware scan integration remain disabled/pending; this isolated
+parser is a prerequisite, not a claim of completed list scanning.
+
+### WMI SSID-array encoder (2026-10-29)
+
+Added optional bounded WMIScanSSID array arguments to buildWMIScan, using
+the inspected ath10k WMI-TLV layout: num_ssids at frame+88, 36 bytes per
+SSID (LE32 length plus32 bytes), tag19 array between channel and BSSID
+arrays. Maximum16 entries matches the reference. Invalid count, length,
+null array or insufficient capacity fails before touching the output.
+Zero-length entries are preserved; existing callers still supply no list
+and retain byte-identical passive behavior. native_scan and wmi_radio
+focused tests passed, including exact capacities, tail TLV offsets,
+maximum count, padding and output preservation on invalid inputs.
+
+Runtime integration remains pending. buildWMIScanChannels currently marks
+all channels passive; active probing needs channel-policy changes as well
+as command flags. Before integration, validate regulatory no-IR/DFS rules,
+firmware message-size admission for the larger frame, native result
+matching and cancellation/completion. No capability or EFI update yet.
+
+### Active-scan channel policy preparation (2026-10-29)
+
+Added regulatoryActiveScanChannel, requiring validated firmware bounds,
+a supported physical channel, non-DFS and initiation permission under both
+host and board country rules. regulatoryPower now forwards an optional
+initiate parameter to countryPower; old callers retain their prior behavior.
+buildWMIScanChannels has an opt-in allowActive argument and sets passive
+per channel accordingly, keeping DFS passive and null-policy scans passive.
+No runtime caller opts in yet. Tests cover pre-configuration rejection,
+allowed channel6, DFS even with stationDFS, firmware bounds, US board
+intersection for channel13 and all emitted flags. Focused regulatory and
+native_scan tests passed; regulatory was repeated after the runtime edit.
+
+serviceWMIScan now rejects the actual encoded payload if it exceeds the
+negotiated WMI endpoint maximum before any TX descriptor publication.
+Active command flags, SSID-list runtime wiring and capability advertisement
+remain pending, as do hardware validation and full lifecycle verification.
+
+### Modern scan integration candidate (2026-10-29)
+
+Native requests now decode the complete known Sequoia prefix and SSID tail
+transactionally. NativeScanPlan converts up to10 entries to bounded WMI
+SSIDs, preserves empty probes, rejects mixed primary/list SSIDs and unknown
+nonzero metadata, and chooses active only for active/background requests.
+Result matching applies the list alongside channel/BSSID constraints; an
+empty SSID keeps broadcast observations. The native channel table opts into
+per-channel active permission; the scan command preserves global passive
+mode when requested and sets num_probes3 for active mode. Existing scan
+generation and cancel/completion paths are retained. Capability73 now
+selects this modern serializer in userland. Legacy bit22 remains clear.
+
+Candidate UUID 0455C43D-CB8E-389D-9698-A785194849A1 built successfully,
+passed symbol/signature checks and exact-UUID isolated kernel collection
+validation. Focused regulatory/native_join/native_scan/native_wire tests
+passed before the capability change; a full development suite is currently
+running against the final candidate sources. Do not treat that running
+suite as passed. No EFI install or physical scan verification yet. Modern
+BSSID-list input remains rejected by the stock serializer, not silently
+implemented by this driver.
+
+### Full-suite continuation (2026-10-29)
+
+The full run stopped compiling native_termination because its kernel model
+lacked IOLog after the earlier power-phase diagnostic additions. Added a
+no-op log stub to that test only; the focused native_termination run now
+passes. Completed tests are retained as evidence; the remaining39 tests
+are running separately. The full61-test set is not yet claimed passed.
+This repair does not change candidate0455C43D executable or EFI contents.
+
+Final local checkpoint: all61 development C++ tests passed across the
+initial batch, repaired native_termination run and remaining batch. Common
+Python checks also passed. Signed candidate0455C43D remains unchanged.
+Current installed7574844D and normal EFI configuration were copied and
+verified for rollback. Hardware behavior of this candidate is unverified.
+
+### Modern scan hardware follow-up (2026-10-30)
+
+Loaded UUID 0455C43D-CB8E-389D-9698-A785194849A1; user confirms automatic reboot. Modern auto-join scans now return results (first observed 4285 ms / 14 results; later 692 ms / 15). Early scans still return -536870187. Association was not started in the captured interval: port unauthorized, no WMI association commands. Airportd classifies returned protected networks as WEP, including channel 52. This is an unresolved result/security transport observation, not proof of its root cause. Inspect result IE decoding before declaring modern scanning or WPA3 regression validation complete. Evidence: NATIVE-modern-scan-hardware-20261030, mirrored and byte-verified on SD.
+
+### Beacon wire-layout regression identified (2026-10-30)
+
+The modern-scan addition put Ath10kNativeScanPlan.hpp before Ath10kPCIDevice.hpp in Ath10kNative.cpp. ScanPlan included WCL.hpp before Ath10kNativeABI selected the Sequoia target. WCL therefore declared BeaconMetadata as 68 bytes with flags at 64; the exact stock Sequoia setBeaconDataFromMsg reads flags at 60 and expects the 64-byte message header. A standalone compiler probe confirms 68/64 without target selection versus 64/60 with it. The new build consequently displaced both flags and IE payload by four bytes. Hardware sees RSN in the radio BSS table while airportd reports WEP; the previous build reports WPA2/WPA3 correctly. This explains the observed regression; restoration still requires hardware verification.
+
+Target selection now lives in Ath10kNativeTarget.hpp, included before WCL by every production inclusion site (ABI, Wire, ScanPlan). Wire and ScanPlan assert the exact Sequoia metadata size/flags offset. The scan regression test deliberately includes ScanPlan first without predefined target macros, matching the failing production order. Three focused tests passed and the native kext builds; full-suite and isolated collection validation are tracked in native-beacon-abi logs. No live loading, EFI installation, or new reboot performed for this fix yet.
+
+### Beacon ABI hardware verification (2026-10-30)
+
+UUID 3985CFF9-BA88-336B-817E-A82B913CD131 loaded through OpenCore. User confirmed automatic reboot without holding power. On boot 2F7D711F-5B9A-45E8-A684-B34F5E9A4D84, airportd again parsed the target as WPA3 transition with PSK/SHA256-PSK/SAE and completed automatic association at 00:32:53.739, about 18.7 seconds after boot; association itself took 1444 ms. Driver reports connected-sae, AKM8, authorized port and PMF ready. Interface-bound IPv4 and IPv6 HTTPS returned HTTP 200 with successful TLS verification. Initial five ICMP packets had no loss, with one 171 ms outlier; this is not a long-term latency or stability certification. Desktop appearance was not timed. Saved-profile hidden=yes remains an independent unresolved observation, not evidence that the over-air SSID is hidden. Hardware packet: NATIVE-beacon-abi-hardware-20261030, verified on SD.
+
+### Accepted short sleep test (2026-10-30)
+
+User requested sleep and accepted the result, declining a repeat. pmset records sleep at 00:38:52 and full wake at 00:38:53 due to HID activity, with sleep duration rounded to zero seconds. Same boot and driver registry ID; driver sleep/wake/notification counters remain zero. WPA3 stayed connected and interface-bound IPv4 HTTPS succeeded after wake. This proves only the observed short OS cycle and post-cycle traffic, not a full radio suspend/reinitialization path. Preserve that limitation; do not schedule another sleep without new authorization. Evidence: NATIVE-sleep-short-cycle-20261030, verified SD mirror.
+
+### Sleep status and resumed Wi-Fi audit (2026-10-30)
+
+User-selected driver sleep status: **Possibly working / Возможно рабочий**.
+This is provisional: the implementation follows the inspected XNU power
+contract, but successful full radio suspend/resume and traffic restoration
+have not been demonstrated. The short accepted test did not exercise a full
+radio power cycle. Laptop-level wake still reboots; disabling NVMe APST
+prevented the reported SSD disappearance but did not fix wake. Do not assign
+that platform failure to Ath10kMac without causal evidence. Platform sleep
+investigation and additional sleep tests are deferred at the user's request.
+
+Wi-Fi development has resumed in native-sequoia-development. Callback
+inventory check passes (190 total, 32 forwarded, 158 unsupported); unsupported
+entries are not thereby proven optional. Focused native_join, native_scan and
+native_wire tests plus the runner's common checks passed on the current
+worktree. These portable tests do not certify complete hardware lifecycle
+coverage or macOS 11–26 support. No publication or EFI change in this audit.
+
+Resumed hardware sample: 61.02 s, 14 snapshots, connected-sae and authorized throughout; zero disconnect/watchdog deltas. en1-bound ICMP: 20/20 replies, mean34.488 ms, max241.658 ms. This is a short baseline, not long-term stability proof. Evidence: NATIVE-resumed-stability-20261030.
+
+### Leave after radio teardown (2026-10-30)
+
+When WCL still owns a pending join after radio state reaches Disabled, LEAVE previously set no cancellation latch and could retain admission until the join deadline. Mark the pending native join failed independently of radio teardown; retain it until ConnectComplete delivery, while JOIN_ABORT retains its separate completion path. The new extracted-production regression fails without the fix (assertion, exit -6) and passes with it. native_leave, native_request_admission and native_join plus common runner checks passed. Not installed or published; notification-delivery hardware validation remains pending. Evidence: NATIVE-leave-retired-join-20261030.
+
+Follow-up extracted-production integration test executes LEAVE then serviceNativeNotifications after radio teardown, forces enqueue failure, and verifies one failed ConnectComplete with retained BSSID, no duplicate delivery, no repeated security reset and no stale radio cancellation. native_notifications and native_leave passed with common checks. Full development suite launched separately; not yet claimed passed.
+
+### Grouped radio-off/scan/join cancellation audit (2026-10-30)
+
+Radio-off had the same lost-cancellation window as LEAVE: ConnectionState could reset before native completion. Preserve _nativeJoinFailed before discard. The extracted production PowerSet -> radio reset -> notification integration initially failed with a pending join; now passes, including allocation failure and retry, aborted ScanDone before failed ConnectComplete, and no duplicates. Grouped native_leave/native_notifications/native_scan/native_pmf_receive/native_key_stage tests and common checks passed. Prior full61 suite predates this production change and does not certify it. Candidate AA9BECC8 is superseded; no installation/publication. Final batch build/full-suite deferred until remaining group review.
+
+### Scan versus key maintenance (2026-10-30)
+
+An accepted scan previously kept running when Connected EAPOL pause or group/pair rekey began, while key install waits for scan completion. serviceWMIScan now requests cancellation for those states, locally retiring only unsubmitted scans and retaining in-flight transport ownership. Extracted pre-submission regression failed before the fix; grouped native_scan/native_notifications/native_key_stage/native_pmf_receive/wmi_radio passed. Boundary checks for completed scans and initial association scans are tracked separately. No hardware timing improvement claimed.
+
+### Lifecycle batch validation checkpoint (2026-10-30)
+
+All61 development tests and common runner checks passed after the LEAVE/radio-off/scan-versus-rekey fixes. Native candidate F8381BA2-42A1-3E8B-A3C0-828900E8E662 built, signed and included with matching UUID in an isolated auxiliary kernel collection; file-backed program sections match validation variants. No live loading or EFI installation. Focused ASAN/UBSAN lifecycle/key tests are running separately and are not yet counted passed. Platform sleep deferred, driver sleep possibly working; wider OS and AWDL stages remain incomplete.
+
+Focused ASAN/UBSAN native_leave, native_notifications, native_scan, native_pmf_receive and native_key_stage all passed on the final batch source. This complements, not replaces, the full ordinary61-test run.

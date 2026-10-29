@@ -200,7 +200,7 @@ public:
     unsigned firstProbes=0,wakeRecoveries=0;
     void queueDeferredProbe(){++firstProbes;}
     void queueWakeRecovery(){++wakeRecoveries;}
-    void requestPowerEvent(Ath10k::PowerEvent);
+    void requestPowerEvent(Ath10k::PowerEvent,bool suspendAlreadyQueued=false);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
     const char *serviceRuntime();

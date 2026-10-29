@@ -1,0 +1,38 @@
+{
+  "branch": "native-sequoia-development",
+  "policy": "Group related lifecycle gaps; one reviewed publication and hardware candidate per batch, no per-fix reboot",
+  "batch": {
+    "name": "Infrastructure lifecycle and WPA3 continuity",
+    "groups": [
+      {
+        "area": "Cancel/reconnect",
+        "status": "LEAVE and radio-off retirement fixed; extracted production integration covers reset-before-notification, enqueue failures and one completion"
+      },
+      {
+        "area": "Scan completion",
+        "status": "Added accepted-scan cancellation on EAPOL/group/pair rekey; queued/firmware-owned paths tested; late-event and completion retry existing tests passed"
+      },
+      {
+        "area": "WPA3/PMF key updates",
+        "status": "Grouped key-stage and PMF receive checks passed; GTK/IGTK replay and firmware barriers covered by portable fixtures, AP-triggered rekey hardware validation pending"
+      },
+      {
+        "area": "Native notifications",
+        "status": "Extracted-production cancellation, scan completion, generation retirement and enqueue retry regressions passed; hardware validation pending"
+      }
+    ],
+    "gates": [
+      "Focused regressions per affected group",
+      "Full suite after final production edits",
+      "One native build and signature/dependency validation",
+      "Verified rollback and explicit reboot authorization",
+      "Hardware scan/join/reconnect/traffic validation"
+    ]
+  },
+  "deferred": {
+    "sleep": "Possibly working; platform sleep testing deferred by user",
+    "macOS11-26": "Versioned adapter stages; not claimed supported",
+    "AWDL_AirDrop": "Separate feature stage; not implemented"
+  },
+  "current_candidate": "F8381BA2-42A1-3E8B-A3C0-828900E8E662; full 61-test suite and five focused ASAN/UBSAN tests passed; hardware pending"
+}

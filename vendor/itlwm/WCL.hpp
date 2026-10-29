@@ -428,6 +428,18 @@ inline bool probeChannel(bool active, bool passiveOnly, bool dfs) {
     return active && !passiveOnly && !dfs;
 }
 
+// Sequoia modern scan tail, reconstructed from the stock serializer and
+// IO80211ScanRequest::getScanRequestForDriver.
+struct ScanSSIDEntry {
+    uint32_t version;
+    uint32_t length;
+    uint8_t bytes[32];
+    uint8_t metadata[16]; // Preserve opaque fields; do not infer their meaning.
+};
+struct ScanSSIDList {
+    uint32_t count;
+    ScanSSIDEntry entries[10];
+};
 struct ScanRequest {
     uint32_t identifier;
     uint32_t type;
@@ -436,6 +448,7 @@ struct ScanRequest {
     uint8_t bssid[6];
     uint32_t channelCount;
     uint8_t channels[32];
+    ScanSSIDList ssids;
 };
 
 inline bool scanChannelSelected(const uint8_t *channels, bool restricted, unsigned channel) {
@@ -470,6 +483,40 @@ inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
         out.channels[channel / 8] |= 1U << (channel % 8);
     }
     return true;
+}
+
+inline bool decodeScanSSIDList(const void *buffer, size_t length, ScanSSIDList &out) {
+    constexpr size_t countOffset=0x1318, entriesOffset=0x131c, stride=56;
+    if (!buffer || length<countOffset+4) return false;
+    const auto p=static_cast<const uint8_t *>(buffer);
+    const uint32_t count=read32(p+countOffset);
+    if (count>10 || length<entriesOffset+size_t(count)*stride) return false;
+    ScanSSIDList decoded{};
+    decoded.count=count;
+    for (uint32_t i=0;i<count;++i) {
+        const auto entry=p+entriesOffset+size_t(i)*stride;
+        auto &ssid=decoded.entries[i];
+        ssid.version=read32(entry);ssid.length=read32(entry+4);
+        if (ssid.version>1 || ssid.length>32) return false;
+        // The serializer includes a zero-filled extra entry. Keep it intact;
+        // its eventual probe/filter policy belongs to the scan coordinator.
+        if (!ssid.version) {
+            for (size_t j=0;j<stride;++j) if (entry[j]) return false;
+        }
+        memcpy(ssid.bytes,entry+8,ssid.length);
+        memcpy(ssid.metadata,entry+40,sizeof(ssid.metadata));
+    }
+    out=decoded;
+    return true;
+}
+
+// Decode the complete Sequoia request transactionally; malformed tail data
+// must not leave a usable prefix behind.
+inline bool decodeModernScan(const void *buffer,size_t length,ScanRequest &out) {
+    if(length<0x1550)return false;
+    ScanRequest decoded{};
+    if(!decodeScan(buffer,length,decoded) || !decodeScanSSIDList(buffer,length,decoded.ssids))return false;
+    out=decoded;return true;
 }
 
 struct JoinRequest {

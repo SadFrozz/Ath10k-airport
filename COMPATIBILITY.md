@@ -19,7 +19,10 @@ MaxKernel; each build also validates the kernel ABI before opening PCI. Multiple
 kexts may eventually ship in one package; this does not promise one universal
 binary or automatic compatibility with an untested macOS update.
 
-First complete Sequoia stability, key-update and sleep/wake validation. Initial
+First complete Sequoia stability and key-update validation. Platform sleep testing
+is deferred at the user's request; driver sleep is provisionally **Possibly working
+/ Возможно рабочий**, not hardware-validated. Full sleep/wake validation remains
+a release requirement. Initial
 WPA2 association and IPv4/IPv6 traffic passed on 15.6.1 with 5a5d69c. Next implement Tahoe,
 then work backward through the older systems. Gate support on cold boot,
 scan/association, DHCP/data transfer, disconnect, sleep/wake and update tests on

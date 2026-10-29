@@ -22,7 +22,7 @@ static void capabilities(){
  for(bool enabled:{false,true}){d.enabled=enabled;memset(&out.caps,0xa5,sizeof(out.caps));
   assert(d.getCARD_CAPABILITIES(nullptr,&out.caps)==kIOReturnSuccess && out.caps.version==1 && out.end==0x123456789abcdef0ull);
   for(size_t i=0;i<sizeof(out.caps.capabilities);++i){
-   const unsigned expected=i==0?0x0a:i==1?0x50:i==2?2:i==5?0x40:i==6 && enabled?1:i==9 && enabled?8:0;
+   const unsigned expected=i==0?0x0a:i==1?0x50:i==2?2:i==5?0x40:i==6 && enabled?1:i==9?(enabled?10:2):0;
    assert(out.caps.capabilities[i]==expected);
   }
  }

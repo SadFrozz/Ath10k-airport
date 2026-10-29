@@ -50,9 +50,13 @@ def main():
         (include/'IOKit/IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
         run('extract-production', [sys.executable, 'tests/extract-production.py', str(include/'driver_methods.inc')])
         power=(ROOT/'src/kext/Ath10kPower.cpp').read_text()
-        (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
+        (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::powerIOBlocked('):])
+        notifications=(ROOT/'src/kext/Ath10kPowerNotifications.cpp').read_text()
+        (include/'power_notification_methods.inc').write_text(notifications[notifications.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
+        (include/'power_notification_callback.inc').write_text(power[power.index('IOReturn Ath10kPCIDevice::powerNotification('):])
         native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
         driver=(ROOT/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        (include/'controller_shutdown.inc').write_text(driver[driver.index('void Ath10kPCIDevice::systemWillShutdown('):driver.index('void Ath10kPCIDevice::publishWMIRuntimeProperties(')])
         scan_service=driver[driver.index('const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)'):]
         scan_service=scan_service[:scan_service.index('    if (!state.attempted && (_connection.stats.step')]
         (include/'native_scan_start.inc').write_text(scan_service+'    (void)nowMs;++submissions;return nullptr;\n}\n')
@@ -68,6 +72,9 @@ def main():
         terminal=native[native.index('    if(sec && (sec->ready ||'):native.index('    // Crypto/radio progress must not wait')]
         (include/'native_security_terminal_cleanup.inc').write_text('void Ath10kPCIDevice::discardIfStopped(){auto sec=_nativeSecurity;auto &s=_connection;\n'+terminal+'}\n')
         network_source=(ROOT/'src/kext/Ath10kNetwork.cpp').read_text()
+        medium_constants=network_source[network_source.index('#ifdef ATH10K_NATIVE'):network_source.index('const OSString *')]
+        medium_select=network_source[network_source.index('IOReturn Ath10kPCIDevice::selectMedium('):network_source.index('IOReturn Ath10kPCIDevice::setPromiscuousMode(')]
+        (include/'network_medium.inc').write_text(medium_constants+medium_select)
         sae_stage=network_source[network_source.index('    if(s.stage==LinkStage::Auth && s.secure && (s.securityAKM==2 || s.securityAKM==6)){'):]
         sae_stage=sae_stage[:sae_stage.index('#endif')]
         (include/'native_sae_stage.inc').write_text('bool Ath10kPCIDevice::advanceSAEAuth(UInt64 nowMs){using Ath10k::LinkStage;auto &s=_connection;bool advanced=false;auto stage=[&]()->const char *{\n'+sae_stage+'\nadvanced=true;return nullptr;};stage();return advanced;}\n')
@@ -80,6 +87,7 @@ def main():
         (include/'native_security_discard.inc').write_text(native[native.index('void Ath10kPCIDevice::discardNativeSecurity()'):native.index('IOReturn Ath10kPCIDevice::nativeStopAction(')])
         leave=native[native.index('    case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:'):native.index('    case N::setCLEAR_PMKSA_CACHE:')]
         (include/'native_leave.inc').write_text(leave)
+        (include/'native_radio_power.inc').write_text(native[native.index('    case N::PowerSet:'):native.index('    case N::CountryGet:')])
         request=native[native.index('IOReturn Ath10kPCIDevice::nativeRequest('):native.index('IOReturn Ath10kPCIDevice::nativeCurrentAPInfo(')]
         prefix=native[native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('):native.index('    auto &s=_connection;using N=AthNativeOp;',native.index('IOReturn Ath10kPCIDevice::nativeRequestGated('))]
         (include/'native_request_admission.inc').write_text(request+prefix+'    (void)op;(void)data;++accepted;return kIOReturnSuccess;\n}\n')
@@ -143,7 +151,7 @@ def main():
         pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'pmf_session.inc').write_text(pmf+'\n')
-        names=['transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
+        names=['network_medium', 'transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'power_notifications', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.extend(['psk_password','p256_backend','sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session','native_pmf_receive','native_key_stage','native_sae_radio','native_rsnxe_query'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
@@ -153,7 +161,7 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-pthread'] if name in ['p256_backend','sae_session','pmf_session','native_pmf_receive','sae_worker','power','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
+            run(name + '-compile', compiler + flags + (['-DATH10K_TEST_SHUTDOWN=1'] if name == 'power' else []) + (['-pthread'] if name in ['p256_backend','sae_session','pmf_session','native_pmf_receive','sae_worker','power','power_notifications','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
                 'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({
