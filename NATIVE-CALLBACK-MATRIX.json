@@ -446,8 +446,17 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "stock debug-gated PMK export; retain unsupported, no PMK exposure added",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::getCUR_PMK",
+          "address": "0xffffff800163e294",
+          "semantics": "Stock getter requires development/internal CSR and allowWiFiDebug gates before exporting PMK; rejection is normal outside these gates. Not an ordinary association prerequisite."
+        }
+      ]
     },
     {
       "callback": "getDYNSAR_DETAIL",
@@ -719,8 +728,40 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "external key installation ownership unresolved; keep explicitly unsupported",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "setCIPHER_KEY ioctl handler",
+          "address": "0xffffff8002218330",
+          "record_bytes": 148,
+          "internal_command": "0x802869c8",
+          "operation": 3,
+          "validation": "Requires exact record size and nonnull pointer. Interface-kind 1 first gets auth type; cipher mask 0x340 admits 6/8/9 with auth-dependent length clamp 32 or 48, mask 0x6 admits 1/2; other ciphers rejected on this path.",
+          "dispatch": "WCL dispatch, falling back to typed protocol only if unhandled or 0xe082280f",
+          "limitation": "Other interface kinds bypass that cipher filter. This is not proof that the current personal SAE path requires this callback."
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setCIPHER_KEY",
+          "address": "0xffffff800160dc76",
+          "semantics": "Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. Native external-key ownership and caller requirements remain unresolved.",
+          "join_adapter_dispatch": {
+            "jump_table": "0xffffff8001586ad4",
+            "selector_offset": 8,
+            "none_0": "returns success without key installation",
+            "pmk_6_msk_9": "programPMK path; nonempty input with core flag true enables supplicant events and 6000 ms timeout",
+            "pmksa_7": "feature/logging branch returns success without programPMK or data-key installation in this exact build",
+            "password_10": "separate credential path, not a data-key install",
+            "other_types": "mapAppleKeyToBcomKey then firmware programming; mapping may reject unsupported types",
+            "limitation": "Producer dispatch reconstructed; caller state ownership and host-supplicant interoperability remain pending"
+          }
+        }
+      ]
     },
     {
       "callback": "setCHANNEL",
@@ -800,8 +841,17 @@
       "implementation": "forwarded",
       "operation": "setCLEAR_PMKSA_CACHE",
       "queue_contract": "WCL caller -> gated radio dispatcher",
-      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
-      "stock_consumer_evidence": []
+      "requirement_audit": "no cross-association PMKSA cache implemented; successful no-op does not claim stock address side effects",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setCLEAR_PMKSA_CACHE",
+          "address": "0xffffff80015ec6e4",
+          "semantics": "Core and infrastructure wrapper obtain an address through vtable offset 0xcf0 and call setCurEtheraddr. Downstream cache and address lifetime must be traced; function name alone does not prove active PTK destruction."
+        }
+      ]
     },
     {
       "callback": "setVIRTUAL_IF_CREATE",

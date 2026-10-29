@@ -33,6 +33,36 @@ def inventory():
                    queue_contract='WCL caller -> gated radio dispatcher' if forward else 'inline rejection; no radio access',
                    requirement_audit='implemented contract; kernel/hardware behavior unverified' if forward else 'caller evidence required; do not classify as optional',
                    stock_consumer_evidence=[])
+        if name in ('getCUR_PMK', 'setCIPHER_KEY', 'setCLEAR_PMKSA_CACHE'):
+            evidence = {
+                'getCUR_PMK': ('0xffffff800163e294', 'Stock getter requires development/internal CSR and allowWiFiDebug gates before exporting PMK; rejection is normal outside these gates. Not an ordinary association prerequisite.'),
+                'setCIPHER_KEY': ('0xffffff800160dc76', 'Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. Native external-key ownership and caller requirements remain unresolved.'),
+                'setCLEAR_PMKSA_CACHE': ('0xffffff80015ec6e4', 'Core and infrastructure wrapper obtain an address through vtable offset 0xcf0 and call setCurEtheraddr. Downstream cache and address lifetime must be traced; function name alone does not prove active PTK destruction.')
+            }[name]
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANCore::'+name, address=evidence[0], semantics=evidence[1])]
+            if name == 'setCIPHER_KEY':
+                row['stock_consumer_evidence'] = [dict(
+                    module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                    consumer='setCIPHER_KEY ioctl handler', address='0xffffff8002218330',
+                    record_bytes=148, internal_command='0x802869c8', operation=3,
+                    validation='Requires exact record size and nonnull pointer. Interface-kind 1 first gets auth type; cipher mask 0x340 admits 6/8/9 with auth-dependent length clamp 32 or 48, mask 0x6 admits 1/2; other ciphers rejected on this path.',
+                    dispatch='WCL dispatch, falling back to typed protocol only if unhandled or 0xe082280f',
+                    limitation='Other interface kinds bypass that cipher filter. This is not proof that the current personal SAE path requires this callback.')]
+                row['stock_producer_evidence'][0]['join_adapter_dispatch'] = {
+                    'jump_table': '0xffffff8001586ad4',
+                    'selector_offset': 8,
+                    'none_0': 'returns success without key installation',
+                    'pmk_6_msk_9': 'programPMK path; nonempty input with core flag true enables supplicant events and 6000 ms timeout',
+                    'pmksa_7': 'feature/logging branch returns success without programPMK or data-key installation in this exact build',
+                    'password_10': 'separate credential path, not a data-key install',
+                    'other_types': 'mapAppleKeyToBcomKey then firmware programming; mapping may reject unsupported types',
+                    'limitation': 'Producer dispatch reconstructed; caller state ownership and host-supplicant interoperability remain pending'}
+            row['requirement_audit'] = (
+                'stock debug-gated PMK export; retain unsupported, no PMK exposure added' if name == 'getCUR_PMK' else
+                'external key installation ownership unresolved; keep explicitly unsupported' if name == 'setCIPHER_KEY' else
+                'no cross-association PMKSA cache implemented; successful no-op does not claim stock address side effects')
         if name in ('getHT_CAPABILITY', 'getVHT_CAPABILITY'):
             row['stock_consumer_evidence'] = [dict(
                 module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',

@@ -2866,8 +2866,11 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
     if(state.stopSubmitted && !state.stopConsumed){
         if(!_regs.read32(Ath10k::ceBaseAddress(3)+Ath10k::kCECurrentSrcRead,read))return "scan-stop-index";
         state.stopConsumed=read==state.stopNext;
-        if(state.stopConsumed && !_wmi.credits.outstanding)state.txOwned=false;
     }
+    // CE completion and HTC credit return are independent events. Recheck
+    // both on every tick: a credit arriving after stopConsumed must release
+    // the shared scan buffer before completion is published.
+    if(state.stopSubmitted && state.stopConsumed && state.creditReturned)state.txOwned=false;
     if (state.failed) {state.status="scan-firmware-failed";return state.status;}
     if (state.elapsedMs>=Ath10k::kWMIScanHostMs) {
         state.status=!state.txConsumed?"scan-tx-timeout":

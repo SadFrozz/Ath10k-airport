@@ -34,5 +34,51 @@
     "macOS11-26": "Versioned adapter stages; not claimed supported",
     "AWDL_AirDrop": "Separate feature stage; not implemented"
   },
-  "current_candidate": "F8381BA2-42A1-3E8B-A3C0-828900E8E662; full 61-test suite and five focused ASAN/UBSAN tests passed; hardware pending"
+  "current_candidate": "F8381BA2-42A1-3E8B-A3C0-828900E8E662 installed and loaded; SAE traffic and native scan observed; long-duration stability pending",
+  "regression_policy": {
+    "single_entrypoint": "python3 tests/run-development-tests.py --cxx clang++",
+    "scope": "Full local regression suite for completed implementation stages; no --only for batch acceptance",
+    "cadence": "Once after final changes in a related batch; rerun only for new code, failures or specific unresolved evidence",
+    "manual_hardware": "Do not repeat already accepted checks without a regression or a changed affected path",
+    "not_proven_by_local_suite": [
+      "AP-triggered GTK/IGTK rekey",
+      "long-duration stability",
+      "macOS adapters other than the validated Sequoia build",
+      "AWDL/AirDrop",
+      "platform sleep"
+    ]
+  },
+  "open_local_work": [
+    "External key ownership and AP-triggered GTK/IGTK validation remain unresolved"
+  ],
+  "next_priority": [
+    "Complete remaining WPA3/PMF and external-key ownership contracts as a group",
+    "AP-triggered rekey hardware evidence; no repeated scan benchmarks"
+  ],
+  "security_profile_audit": {
+    "capability_advertisement": "SAE and MFP jointly enabled only by experimental property and exact kernel guard",
+    "admission": "Further requires available P256 providers, ready firmware PMF transport and empty generation-bound owners",
+    "password_modes": "AP RSNXE chooses H2E or legacy SAE; preparation failure does not downgrade mode",
+    "implemented_cipher_scope": "Group19 P256, pairwise CCMP-128, BIP-CMAC-128; broader WPA3 cipher/group support not claimed",
+    "unsupported_profiles": [
+      "SAE-PK",
+      "FT-SAE",
+      "enterprise external-key ownership",
+      "native password-identifier transport"
+    ],
+    "hardware_evidence": "SAE traffic and one protected SA Query observed; AP-triggered GTK/IGTK rekey and both password-mode interoperability still require distinct evidence",
+    "regression_checkpoint": "62 tests passed; offline candidate 9BD3D9C0-8CEC-36CD-A4FC-9B73563C21F8 signed and dependency-verified; not installed"
+  },
+  "validated_security_batch": {
+    "candidate": "9BD3D9C0-8CEC-36CD-A4FC-9B73563C21F8",
+    "checks": "62 tests, strict signature, exact UUID offline dependency collection passed",
+    "changes": [
+      "Release STOP_SCAN ownership after delayed credit return",
+      "Include scan ownership regression in consolidated runner",
+      "PMF TX retirement across four rekey boundaries",
+      "Secret cleanup and stale key-ack rejection at five install phases",
+      "Stock key callback and capability evidence"
+    ],
+    "installed": false
+  }
 }

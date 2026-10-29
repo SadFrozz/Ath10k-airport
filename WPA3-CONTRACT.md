@@ -2601,3 +2601,23 @@ without output or pending key work. The test explicitly models completion of
 the firmware/port barrier; this is not a real AP rekey observation. The focused
 native_key_stage run passes with ASAN/UBSAN and assertions. No production code
 change, new driver installation, reboot, commit or push accompanies this test.
+
+### Grouped profile/capability boundary review (2026-10-30)
+
+The experimental SAE and MFP advertisements share the exact-kernel guard in
+nativeSAEEnabled. Admission additionally checks P256 provider availability and
+nativePMFFirmwareReady before reserving a fresh PMF/password owner. AP RSNXE
+selects H2E versus legacy derivation; an unsuccessful derivation does not fall
+back to PSK or switch password modes. Password identifiers are supported by some
+shared crypto fixtures but are not transported by the native JoinRequest path
+(which supplies a null identifier); native identifier support must not be claimed.
+SAE-PK and FT-SAE are rejected. The implemented crypto profile is group19,
+CCMP-128 and BIP-CMAC-128, not every WPA3 cipher or group.
+
+This source review is distinct from hardware validation. The current AP has
+provided SAE traffic evidence, but AP-triggered GTK/IGTK replacement, separate
+legacy/H2E interoperability and credential-failure recovery remain hardware
+checks. External setCIPHER_KEY acceptance remains unimplemented while ownership
+with the host supplicant is unresolved. The new local cancellation cases and
+STOP_SCAN late-credit fix passed the consolidated 62-test suite; offline
+candidate 9BD3D9C0-8CEC-36CD-A4FC-9B73563C21F8 is not installed.

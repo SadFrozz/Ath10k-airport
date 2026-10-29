@@ -32,6 +32,26 @@ static void initial(Ath10kPCIDevice *d){
  clearReply(d);s.securityPhase=5;s.portAuthorized=true;
 }
 int main(){
+ // Cancellation at every key-install barrier must erase staged secrets and
+ // make delayed firmware acknowledgements unable to reopen the PMF port.
+ for(unsigned phase: {0u,1u,2u,3u,5u}){
+  auto d=keyDevice();auto sec=d->_nativeSecurity;auto &state=d->_connection;
+  assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply && accept(d,S::Reply));clearReply(d);
+  assert(sec->supplicant.receive(w_m3,sizeof(w_m3))==S::Keys && accept(d,S::Keys));
+  state.securityPhase=phase;state.pairInstalled=phase>=2;
+  if(phase>=2)assert(d->nativePMFPairwiseAcknowledged(sec->keys));
+  if(phase>=3)assert(d->nativePMFPortReady());
+  state.cancelRequested=true;state.portAuthorized=false;
+  ownerGate=true;sec->reset();ownerGate=false;
+  assert(!sec->ready && !sec->managementPending && !sec->keysPending && !sec->replyPending);
+  assert(!sec->pmfSession && !sec->replyLength && !sec->managementGeneration);
+  for(auto byte:sec->keys)assert(!byte);
+  for(auto byte:sec->reply)assert(!byte);
+  for(auto byte:sec->pendingManagement.key)assert(!byte);
+  assert(!accept(d,S::Keys) && !accept(d,S::ManagementKeys));
+  assert(!d->nativePMFPairwiseAcknowledged(w_ptk+32) && !d->nativePMFPortReady());
+  stop(d);
+ }
  // The native SHA256-PSK path still uses its original data-key transaction
  // and never allocates or publishes a PMF owner/management key.
  {auto d=keyDevice();auto sec=d->_nativeSecurity;d->_connection.pmfRequired=false;

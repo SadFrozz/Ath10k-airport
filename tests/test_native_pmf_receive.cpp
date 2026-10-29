@@ -318,6 +318,23 @@ void queryTests(){
  {auto d=create();auto sec=d->_nativeSecurity;trigger(d);service(d);
   uint8_t next[16];memcpy(next,c_key,16);next[0]^=1;assert(sec->pmfSession->acknowledgePairwise(next,c_sta,c_ap));assert(sec->pmfSession->authorize());
   run(latest);service(d,1);assert(d->transmitted.empty() && !sec->pmfPendingTX && !sec->pmfTXInFlight && !d->_connection.pmfTXPending);stop(d);}
+ // Rekey closes the port before replacing firmware keys. Retire both
+ // unfinished crypto and retained PMF TX, so the reservation cannot stall
+ // security progression. Cover group and pairwise updates at both boundaries.
+ for(unsigned kind=1;kind<=2;++kind)for(unsigned retained=0;retained<2;++retained){
+  auto d=create();auto sec=d->_nativeSecurity;trigger(d);service(d);
+  assert(sec->pmfTXInFlight && d->_connection.pmfTXPending);
+  if(retained){run(latest);d->_wmi.credits.outstanding=1;service(d);
+   assert(sec->pmfPendingTX && !sec->pmfTXInFlight);}
+  d->_connection.rekeyKind=kind;d->_connection.portAuthorized=false;
+  d->_connection.securityPhase=kind==2?1:2;
+  if(!retained)run(latest);
+  service(d,1);
+  assert(d->transmitted.empty() && !sec->pmfPendingTX && !sec->pmfTXInFlight);
+  assert(!d->_connection.pmfTXPending && d->_connection.txWakePending);
+  assert(!d->_connection.cancelRequested && !sec->pmfReplyCount);
+  stop(d);
+ }
  // Scan ownership goes through normal cancellation; TX cannot race its credit
  // barrier. A held response has a finite lifetime and cancellation releases it.
  {auto d=create();auto sec=d->_nativeSecurity;sec->pmfLayoutVerified=true;d->_wmiScan.completed=false;
