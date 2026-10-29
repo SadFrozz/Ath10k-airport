@@ -16,6 +16,14 @@ inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join){
     // complete authentication/protection paths exist. Never downgrade an AKM.
     return NativeJoinAuth::Unsupported;
 }
+// A bounded password-shaped request, not implemented native SAE admission.
+// Sequoia ciphertype2str maps 10 to CIPHER_PWD, distinct from PMK (6).
+inline bool nativeSAEPasswordEnvelope(const AirportWCL::JoinRequest &join){
+    if(join.lowerAuth!=1 || join.upperAuth!=(1u<<12) || join.keyCipher!=10 ||
+       !join.keyLength || join.keyLength>sizeof(join.key) || !join.ssidLength ||
+       join.ssidLength>sizeof(join.ssid) || join.rsnLength>sizeof(join.rsn) || (join.bssid[0]&1))return false;
+    UInt8 any=0;for(auto value:join.bssid)any|=value;return any!=0;
+}
 // Confirmed against Sequoia channelFlagsFromIEEEOperatingClass: 83=0x20c,
 // 84=0x0c, 116=0x214, 117=0x14, 119=0x314, 120=0x114, 128=0x410.
 // Add known DFS for the actual primary channel; an 80MHz operating class alone

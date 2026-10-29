@@ -24,6 +24,8 @@ static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *d
  assert(!ownerGate && !heldLocks);CCHmac(kCCHmacAlgSHA256,key,kl,data,n,out);
 }
 #include "sae_session.inc"
+#include "../src/kext/native/Ath10kNativeSAEJoin.hpp"
+#include "native_sae_preparation.inc"
 #else
 struct Ath10kSAESession {bool usingH2E() const{return false;}void cancel(){}void release(){delete this;}};
 #include "mock_native_sae_radio.hpp"

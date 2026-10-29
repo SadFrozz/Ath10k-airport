@@ -58,6 +58,21 @@ int main(){
     for(UInt32 n:{65u,0xffffffffu}){
         Ath10k::htcWriteLE32(p.data()+0x44,n);assert(!AirportWCL::decodeJoin(p.data(),p.size(),out.join));
     }
+    // Match stock WCL's 8/16/16 limits before any output/key copy.
+    for(const auto &field:std::array<std::pair<size_t,UInt32>,3>{{{0x90,8},{0xa4,16},{0xb8,16}}}){
+        for(UInt32 count:{0u,field.second,field.second+1,0xffffffffu}){
+            p=request();Ath10k::htcWriteLE32(p.data()+field.first,count);memset(&out.join,0xcc,sizeof(out.join));
+            assert(AirportWCL::decodeJoin(p.data(),p.size(),out.join)==(count<=field.second));
+            if(count>field.second)for(auto b:reinterpret_cast<const UInt8 (&)[sizeof(out.join)]>(out.join))assert(b==0xcc);
+        }
+    }
+    p=request();Ath10k::htcWriteLE32(p.data()+0x14,1u<<12);Ath10k::htcWriteLE32(p.data()+0x48,10);
+    for(UInt32 length:{0u,1u,32u,64u}){
+        Ath10k::htcWriteLE32(p.data()+0x44,length);assert(AirportWCL::decodeJoin(p.data(),p.size(),out.join));
+        assert(nativeSAEPasswordEnvelope(out.join)==(length!=0));assert(nativeJoinAuth(out.join)==NativeJoinAuth::Unsupported);
+    }
+    out.join.keyCipher=6;assert(!nativeSAEPasswordEnvelope(out.join));out.join.keyCipher=10;
+    out.join.upperAuth|=8;assert(!nativeSAEPasswordEnvelope(out.join));out.join.upperAuth=1u<<13;assert(!nativeSAEPasswordEnvelope(out.join));
     auto reject=[](std::array<UInt8,0x2cc> bad){AirportWCL::JoinRequest j{};assert(!AirportWCL::decodeJoin(bad.data(),bad.size(),j));};
     p=request();p[0x21c]=1;reject(p);p=request();memset(p.data()+0x21c,0,6);reject(p);
     p=request();Ath10k::htcWriteLE32(p.data()+0x214,0);reject(p);Ath10k::htcWriteLE32(p.data()+0x214,11);reject(p);

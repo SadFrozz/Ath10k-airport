@@ -4,6 +4,8 @@
 #include "sae_eapol_vectors.inc"
 #include "rsnxe_eapol_vectors.inc"
 #include "p256_corecrypto_fixtures.hpp"
+#include "h2e_password_vectors.inc"
+#include "legacy_password_vectors.inc"
 #include <dlfcn.h>
 #include <cstdio>
 using API=AthSecurity::P256CoreCryptoAPI;
@@ -32,6 +34,71 @@ static Ath10kPCIDevice *device(){
 }
 static const char *tick(Ath10kPCIDevice *d,uint64_t now){nativeSAEClockMS=now;ownerGate=true;const auto e=d->serviceNativeSAE(now);ownerGate=false;return e;}
 static void retired(Ath10kPCIDevice *d){d->_connection.txOwned=false;d->_connection.txComplete=true;d->_connection.txStatus=0;}
+static unsigned passwordRandomCalls=0;
+static bool passwordRandom(uint8_t *out,size_t n){
+ assert(!ownerGate && !heldLocks && n && n<=64);memset(out,0,n);out[n-1]=uint8_t(passwordRandomCalls++%2?3:7);return true;
+}
+static std::vector<uint8_t> unhex(const char *text){
+ std::vector<uint8_t> out(strlen(text)/2);for(size_t i=0;i<out.size();++i){unsigned v=0;assert(sscanf(text+2*i,"%2x",&v)==1);out[i]=uint8_t(v);}return out;
+}
+static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
+ for(bool h2e:{false,true}){
+  const auto &hv=H2EPasswordVectors::vectors[2];const auto &lv=LegacyPasswordVectors::vectors[1];
+  auto name=h2e?unhex(hv.ssid):unhex("746573742d73736964");auto password=unhex(h2e?hv.password:lv.password);
+  auto expectedPWE=unhex(h2e?hv.pwe:lv.pwe),expectedCommit=unhex(h2e?hv.commit:lv.commit);
+  for(unsigned scenario=0;scenario<9;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+   // An admitted join has PMF/worker ownership, but no radio or prepared session yet.
+   sec->saeRadio->cancel();delete sec->saeRadio;sec->saeRadio=nullptr;sec->saeSession->release();sec->saeSession=nullptr;
+   s.ssidLength=s.ap.ssidLength=uint8_t(name.size());memcpy(s.ssid,name.data(),name.size());memcpy(s.ap.ssid,name.data(),name.size());
+   if(h2e){memcpy(s.ap.rsnxe,x_rsnxe,sizeof(x_rsnxe));s.ap.rsnxeLength=sizeof(x_rsnxe);}
+   AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=1u<<12;join.keyCipher=10;
+   join.ssidLength=s.ssidLength;memcpy(join.ssid,s.ssid,s.ssidLength);memcpy(join.bssid,s.bssid,6);
+   join.keyLength=uint32_t(password.size());memcpy(join.key,password.data(),password.size());passwordRandomCalls=0;
+   ownerGate=true;assert(sec->saePreparation.begin(sec->saeWorker,join,s.ap,api,field,passwordRandom,s.local,301,0));ownerGate=false;
+   memset(&join,0,sizeof(join)); // Native progress must not retain the caller's request.
+   ownerGate=true;assert(!d->advanceSAEAuth(0));ownerGate=false;
+   assert(sec->saePreparation.active() && !sec->saeRadio && !sec->saeSession && d->transmitted.empty() && !s.authReply);
+   if(scenario){
+    if(scenario==1)s.ap.rsn[20]^=1;
+    if(scenario==2)s.cancelRequested=true;
+    if(scenario==3)d->_nativeRadioOn=false;
+    if(scenario==4)s.bssid[5]^=1;
+    if(scenario==5){sec->pmfSession->cancel();sec->pmfSession->release();sec->pmfSession=new Ath10kPMFSession;assert(sec->pmfSession->initConnection(w_sta,w_ap,302));}
+    if(scenario==6)d->blocked=true;
+    if(scenario==7){run(latest);s.ssid[0]^=1;} // Completed work cannot bypass current-profile validation.
+    // Fail through the real common Auth caller, which resets retained owners.
+    ownerGate=true;assert(!d->advanceSAEAuth(scenario==8?5000:1));ownerGate=false;assert(s.cancelRequested && d->saeDiscards==1);
+    assert(!sec->saePreparation.active() && !sec->saeRadio && !sec->saeSession && d->transmitted.empty());stop(d);continue;
+   }
+   run(latest);assert(!tick(d,1));assert(!sec->saePreparation.active() && sec->saeRadio && sec->saeSession);
+   assert(sec->saeSession->usingH2E()==h2e && d->transmitted.size()==1 && !s.authReply && !sec->ready);
+   AthSecurity::SAEGroup19AuthMessage localCommit;auto &wire=d->transmitted[0];
+   assert(AthSecurity::decodeSAEGroup19AuthBody(wire.data()+24,wire.size()-24,h2e,0,localCommit)==AthSecurity::SAEWireResult::Valid);
+   assert(!memcmp(localCommit.commit,expectedCommit.data(),96));
+   AthSecurity::P256CoreCryptoCandidate engine(api);AthSecurity::P256CoreCryptoWorkspace workspace;
+   uint8_t peerRandom[32]{},peerMask[32]{};peerRandom[31]=11;peerMask[31]=5;auto remote=localCommit;
+   assert(AthSecurity::saeGroup19Commit(engine,peerRandom,peerMask,32,expectedPWE.data(),64,remote.commit,96,workspace));
+   AthSecurity::SAEGroup19Keys peerKeys{};
+   assert(AthSecurity::saeGroup19ExchangeCandidate<HMAC>(engine,peerRandom,32,remote.commit,96,localCommit.commit,96,expectedPWE.data(),64,h2e,w_ap,w_sta,nullptr,0,nullptr,0,peerKeys,workspace));
+   retired(d);nativeSAEClockMS=2;const auto peerWire=apFrame(remote);assert(deliver(d,peerWire.data(),peerWire.size()));
+   assert(!tick(d,2));run(latest);assert(!tick(d,3));run(latest);assert(!tick(d,4) && d->transmitted.size()==2);
+   AthSecurity::SAEGroup19AuthMessage remoteConfirm{};remoteConfirm.kind=AthSecurity::SAEAuthKind::Confirm;remoteConfirm.h2e=h2e;remoteConfirm.confirm[0]=1;
+   assert(AthSecurity::saeGroup19Confirm<HMAC>(peerKeys.kck,32,1,remote.commit,96,localCommit.commit,96,remoteConfirm.confirm+2,32));
+   const auto confirmWire=apFrame(remoteConfirm);nativeSAEClockMS=5;assert(deliver(d,confirmWire.data(),confirmWire.size()));
+   assert(!tick(d,5));run(latest);assert(!tick(d,6) && !sec->ready && !s.authReply);retired(d);
+   assert(!tick(d,7) && sec->ready && s.authReply);using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+   assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply);
+   // The M2 MIC must use this freshly authenticated peer PMK, not the old fixture PMK.
+   uint8_t context[76]{},ptk[48]{},mic[16]{};memcpy(context,w_sta,6);memcpy(context+6,w_ap,6);
+   const uint8_t *nonce=sec->supplicant.output+31,*anonce=w_m1+31;
+   const bool first=memcmp(nonce,anonce,32)<0;memcpy(context+12,first?nonce:anonce,32);memcpy(context+44,first?anonce:nonce,32);
+   assert(AthSecurity::SHA256Personal<PersonalTestCrypto>::derive(peerKeys.pmk,context,ptk));
+   auto eapol=std::vector<uint8_t>(sec->supplicant.output+14,sec->supplicant.output+sec->supplicant.outputLength);
+   memset(eapol.data()+81,0,16);assert(AthSecurity::SHA256Personal<PersonalTestCrypto>::mic(ptk,eapol.data(),eapol.size(),mic));
+   assert(!memcmp(mic,sec->supplicant.output+95,16));AthSecurity::wipe(ptk,sizeof(ptk));AthSecurity::wipe(&peerKeys,sizeof(peerKeys));stop(d);
+  }
+ }
+}
 int main(){
  void *lib=dlopen("/usr/lib/system/libcorecrypto.dylib",RTLD_NOW|RTLD_LOCAL);assert(lib);
 #define LOAD(field,name) api.field=reinterpret_cast<decltype(api.field)>(dlsym(lib,name));assert(api.field)
@@ -137,5 +204,10 @@ int main(){
   stop(d);
  }
  request.h2e=false;
+ AthSecurity::P256FieldAPI field{};field.curve=api.curve;
+#define FIELD(member,name) field.member=reinterpret_cast<decltype(field.member)>(dlsym(lib,name));assert(field.member)
+ FIELD(units,"cczp_n");FIELD(prime,"cczp_prime");FIELD(multiply,"cczp_mul");FIELD(inverse,"cczp_inv");FIELD(add,"cczp_add");FIELD(subtract,"cczp_sub");
+#undef FIELD
+ passwordPreparationTests(field);
  AthSecurity::wipe(&keys,sizeof(keys));dlclose(lib);
 }

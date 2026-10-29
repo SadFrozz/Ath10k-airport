@@ -8,6 +8,7 @@
 #include "../../src/shared/Ath10kPMFCCMP.hpp"
 #include "../../src/shared/Ath10kPMFTransport.hpp"
 #include "../../src/kext/native/Ath10kSAESession.hpp"
+#include "../../src/kext/native/Ath10kNativeSAEJoin.hpp"
 // Preserve both layouts and arbitrary acknowledged key epochs in kernel code.
 struct CompileOnlyPMFAES {
  using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);
@@ -277,4 +278,12 @@ extern "C" __attribute__((used,noinline)) bool ath10k_sae_eapol_handoff_compile_
     size_t bytes,uint32_t generation,uint64_t now)
 {
     return owner && eapol && owner->beginEAPOL(*eapol,nonce,station,ap,rsn,bytes,generation,now);
+}
+
+extern "C" __attribute__((used,noinline)) unsigned ath10k_native_sae_password_prepare_compile_check(
+    Ath10kSAEPrepareJob *job,const AirportWCL::JoinRequest *join,const Ath10k::WMIBSS *bss,
+    const AthSecurity::P256CoreCryptoAPI *point,const AthSecurity::P256FieldAPI *field,
+    bool (*rng)(uint8_t *,size_t),const uint8_t *station,uint32_t generation,uint64_t now){
+    if(!job || !join || !bss || !point || !field)return unsigned(NativeSAEPasswordMode::Unsupported);
+    return unsigned(initNativeSAEPasswordCandidate(*job,*join,*bss,*point,*field,rng,station,generation,now));
 }

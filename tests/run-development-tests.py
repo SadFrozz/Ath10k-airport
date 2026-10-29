@@ -114,6 +114,10 @@ def main():
         session='\n'.join(line for source in session_sources for line in source.read_text().splitlines()
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
+        preparation_sources=[ROOT/'src/kext/native/Ath10kNativeSAEPreparation.hpp',ROOT/'src/kext/native/Ath10kNativeSAEPreparation.cpp']
+        preparation='\n'.join(line for source in preparation_sources for line in source.read_text().splitlines()
+                               if not line.startswith('#include') and line!='#pragma once')
+        (include/'native_sae_preparation.inc').write_text(preparation+'\n')
         p256_sources=[ROOT/'src/kext/native/Ath10kP256CheckJob.hpp',ROOT/'src/kext/native/Ath10kP256CheckJob.cpp']
         p256='\n'.join(line for source in p256_sources for line in source.read_text().splitlines()
                        if not line.startswith('#include') and line!='#pragma once')

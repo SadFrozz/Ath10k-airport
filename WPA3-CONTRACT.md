@@ -1754,7 +1754,7 @@ is distinct from native request admission and physical validation.
 
 | Boundary | Current source evidence | Still required |
 | --- | --- | --- |
-| Password preparation | Retained H2E and legacy jobs, exact SSID/MAC/generation/deadline binding, exclusive worker, terminal errors and wiping; independent commit and authenticated PMK/PMKID tests | Decode/validate actual native password request and connect preparation ownership to native join cancellation |
+| Password preparation | Retained H2E/legacy jobs plus native request-candidate/BSS preparation policy described below; exact SSID/MAC/generation/deadline binding and independent crypto vectors | Verify actual native PWD delivery/flags/identifier semantics and connect preparation ownership to native join cancellation |
 | P-256 provider | Userland real-provider tests; kernel compilation; eighteen-export offline link and static Sequoia ABI evidence; local typed diagnostic binding/public worker self-test described below | Validate kernel provider/context execution and timing, connect the validated provider to admission; repeat ABI work for other supported macOS versions |
 | Authentication TX/RX | Ath10kSAERadio routes algorithm 3, retained compute/confirm jobs, generation checks and actual management TX reservation; open-auth builder refuses AKM8 | Physical frames/firmware validation, plus accepted-state behavior audit for the station role |
 | Authentication to association | Verified local/peer confirmations precede PMK handoff; exact AKM8 RSNE/PMKID and negotiated H2E RSNXE; no PSK fallback | Native entry path and physical association |
@@ -1933,3 +1933,127 @@ and this validation record are build bookkeeping/documentation only. Existing
 focused ThreadSanitizer results cover unchanged worker/reporter source. Actual
 kernel diagnostic execution, firmware PMF/RX/PN proof and native SAE admission
 remain unverified/disabled. No installation or reboot was performed.
+
+
+### Native password request candidate and WCL key bounds (local follow-up)
+
+Static inspection of IO80211Family image UUID
+0D5AC570-04D4-38B6-8577-9F21350CDD50 confirms ciphertype2str maps 10 to CIPHER_PWD
+and 6 to CIPHER_PMK. The table at 0xffffff80023c2278 was decoded by matching
+normalized chained-pointer targets to the unique CIPHER_* literal-pool mapping
+and cross-checking its unknown entry against the function's RIP-relative
+fallback. These are addresses in the extracted analysis image, not addresses
+used by the driver. Cipher 7's unknown log label is not an authentication
+acceptance table and does not justify changing the existing PMKSA path.
+Raw Apple code/disassembly remains outside the repository and SD package.
+
+Stock WCLJoinRequest::checkValidationForApple80211Key compares key length against
+65, RSC length against 9 and both WoW sequence lengths against 17. decodeJoin
+now mirrors all four bounds before writing output: key <=64, RSC <=8 and
+WoW lengths <=16. The three additional lengths are at request offsets 0x90,
+0xa4 and 0xb8, based on the already verified key envelope offset 0x40. Host
+tests cover exact maxima, overflows and untouched output after rejection.
+
+nativeSAEPasswordEnvelope recognizes only an exact SAE request (lower auth 1,
+upper bit 12 alone), cipher 10, 1..64 password octets, a named 1..32-octet SSID
+and a valid unicast BSSID. This is a bounded candidate, not native admission.
+The native handler publishes cipher/length/flags/index and candidate status
+only, never credential bytes; NativeJoinAuth still returns Unsupported for SAE.
+
+Ath10kNativeSAEJoin.hpp validates that the selected BSS matches the requested
+BSSID and visible SSID (an empty hidden advertisement uses the explicit request
+SSID), has privacy and a valid SAE/CCMP/PMF personal RSNE, and carries a valid
+optional RSNXE. A supplied request RSNE must also support that SAE profile.
+Advertised H2E selects initH2E; otherwise initLegacyPassword is selected. The
+factory never reinterprets a PMK as a password, downgrades to PSK, or changes
+mode after a derivation error. It copies through the existing retained job and
+runs no crypto under the caller's gate. The caller must freeze the selected
+BSS/security snapshot in that connection generation and separately prove
+regulatory/backend/PMF readiness. Native flags/password-identifier transport
+and actual live PWD delivery are still unverified; this factory is not called
+by native admission yet.
+
+The retained-session test decodes synthetic 0x2cc requests into the real helper,
+then executes real userland CoreCrypto preparation on the worker. It compares
+serialized commits against independent H2E and legacy vectors, including NUL,
+64-octet passwords, UTF-8 and a hidden H2E advertisement. Caller buffers and
+advertised mode are mutated after initialization to check owned copies.
+Negative cases cover mismatched identities/name, PMK/mixed/FT requests, missing
+privacy, wrong AKM, malformed RSNXE and a contradictory request RSNE. Existing
+stale/cancel/deadline and mutual-confirm tests still pass. Focused ASan/UBSan
+passes for native_join, sae_session and native_sae_radio; sae_session
+ThreadSanitizer passes. Native build and kernel compile-only factory
+instantiation pass (72-byte static preparation entry frame). No new full-suite,
+signature, offline driver link, native password capture or hardware WPA3 result
+is claimed for this local follow-up. No installation or reboot is performed.
+
+## Local native preparation ownership follow-up (not installed)
+
+Ath10kNativeSAEPreparation owns a retained password job and a credential-free,
+bounded snapshot of the selected SSID, station/BSSID, connection generation and
+exact AP RSNE/RSNXE. begin runs no crypto. A busy shared worker leaves the new
+request waiting with its original five-second deadline; it never consumes or
+cancels another owner's completion. collect validates the current identities,
+security snapshot and monotonic time before taking only its own job. A prepared
+session transfers once, with the originally selected H2E/legacy mode and original
+authentication deadline. Changes, expiry or backwards time cancel preparation.
+
+Cancellation releases the owner reference without discarding buffers still used
+by an executing callback. NativeSecurity reset now cancels this owner first;
+terminal connection teardown includes pending preparation. Queue shutdown still
+runs outside all driver gates. Native admission does not yet call begin, and SAE
+remains disabled pending native credential, kernel backend and firmware PMF
+validation. There is no installation or reboot in this follow-up.
+
+The real worker/session harness checks both password modes, hidden SSID handling,
+changed RSNE/RSNXE/SSID/MAC/generation, expiry and backwards time, queued/external
+cancellation, foreign completion isolation and replacement during a paused real
+crypto call. These exercise source ownership and do not establish kernel ABI or
+hardware WPA3 support.
+
+Validation of this owner follow-up: all 56 development C++ tests pass with
+ASan/UBSan; the real retained-session/worker test also passes ThreadSanitizer.
+Native build and kernel compile-only checks pass. The new owner functions have
+24/72/88-byte static cancel/begin/collect frames; this is not a proof of total
+kernel stack usage. Normal driver imports are unchanged from published .104.
+The callback inventory remains 190 entries (31 forwarded, 159 unsupported);
+this inventory does not certify those unsupported operations as optional.
+The rebuilt binary is not signed/archived as a deployment candidate here.
+
+
+## Native password preparation to radio handoff (development 0.0.105)
+
+The Auth service now collects pending native password preparation before
+requiring an existing SAE session/radio. It rechecks the current connection,
+SSID, station/BSSID, PMF generation, exact AP security snapshot and original
+deadline. A pending job neither transmits open authentication nor falls through
+the common Auth state machine. A ready session is adopted once into an empty
+radio owner; binding/allocation failure cancels and releases it. Conflicting
+old owners, changed profiles, cancelled/expired attempts and power blocking
+fail through common Auth cleanup. No crypto executes on this service gate.
+
+The real native-radio harness now begins from retained password preparation
+instead of injecting an already prepared session. Both legacy and H2E modes
+match independent password/PWE/commit vectors, then complete mutual SAE
+confirmation and enter the real supplicant. The M2 MIC is checked against the
+peer-derived PMK. Negative cases cover changed RSNE/SSID/BSSID/generation,
+radio off, power blocking, cancellation and expiry, including stale completed
+work. Six affected ASan/UBSan tests pass (native_security_lifecycle,
+native_join, sae_session, native_pmf_receive, native_key_stage,
+native_sae_radio). The earlier full 56-test and ThreadSanitizer evidence applies
+to the prior preparation-owner snapshot; it is not a full-suite result for
+this later handoff change.
+
+The combined development batch includes stock cipher-name/key-bound evidence,
+the candidate-only native password factory, retained preparation ownership and
+its integration into Auth. NativeJoinAuth still rejects SAE: live password
+format/flags, the kernel P-256 backend and firmware PMF must be validated before
+admission. This source integration is not hardware WPA3 support. No installed
+EFI or system collection is modified, and no reboot is performed.
+
+The normal 0.0.105 candidate additionally passes strict ad-hoc signature
+validation and exact-UUID offline AuxKC inclusion against the current stock
+BootKC, with no new imports versus published 0.0.104. Native and legacy builds
+and the kernel compile-only preparation target pass. These checks do not
+execute the candidate, enable native SAE or prove runtime stability. Raw Apple
+collections remain work-local; only the inclusion report is backed up.

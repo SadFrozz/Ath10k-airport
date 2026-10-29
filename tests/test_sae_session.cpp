@@ -28,6 +28,8 @@ static void cchmac(const void *,size_t kl,const void *key,size_t n,const void *d
     CCHmac(kCCHmacAlgSHA256,key,kl,data,n,out);
 }
 #include "sae_session.inc"
+#include "../src/kext/native/Ath10kNativeSAEJoin.hpp"
+#include "native_sae_preparation.inc"
 using Session=Ath10kSAESession;using Action=Session::Action;using Kind=Session::Kind;using Submission=Session::Submission;
 using API=AthSecurity::P256CoreCryptoAPI;
 static API real;
@@ -238,6 +240,122 @@ int main(){
         const size_t count=strlen(hex)/2;std::vector<uint8_t> out(count);
         for(size_t i=0;i<count;++i){unsigned value=0;assert(sscanf(hex+2*i,"%2x",&value)==1);out[i]=uint8_t(value);}return out;
       };
+      // Synthetic native wire request -> selected BSS policy -> retained job
+      // -> serialized commit. NativeJoinAuth remains Unsupported throughout.
+      auto nativePrepare=[&](const std::vector<uint8_t> &ssid,const std::vector<uint8_t> &password,bool h2e,const char *commit,bool hidden=false){
+        std::array<uint8_t,0x2cc> raw{};Ath10k::htcWriteLE32(raw.data()+0x10,1);Ath10k::htcWriteLE32(raw.data()+0x14,1u<<12);
+        Ath10k::htcWriteLE32(raw.data()+0x1c,uint32_t(ssid.size()));memcpy(raw.data()+0x20,ssid.data(),ssid.size());
+        Ath10k::htcWriteLE32(raw.data()+0x44,uint32_t(password.size()));Ath10k::htcWriteLE32(raw.data()+0x48,10);memcpy(raw.data()+0x50,password.data(),password.size());
+        Ath10k::htcWriteLE32(raw.data()+0x214,1);memcpy(raw.data()+0x21c,ap,6);
+        AirportWCL::JoinRequest native{};assert(AirportWCL::decodeJoin(raw.data(),raw.size(),native));
+        assert(nativeSAEPasswordEnvelope(native) && nativeJoinAuth(native)==NativeJoinAuth::Unsupported);
+        Ath10k::WMIBSS selected{};selected.privacy=selected.rsnPresent=true;selected.ssidLength=uint8_t(ssid.size());
+        memcpy(selected.ssid,ssid.data(),ssid.size());memcpy(selected.bssid,ap,6);
+        selected.hidden=hidden;if(hidden)selected.ssidLength=0;
+        size_t rsnBytes=0;assert(AthSecurity::buildSAEStationRSN(nullptr,0,selected.rsn,sizeof(selected.rsn),rsnBytes));selected.rsnLength=uint16_t(rsnBytes);
+        if(h2e){selected.rsnxe[0]=244;selected.rsnxe[1]=1;selected.rsnxe[2]=0x20;selected.rsnxeLength=3;}
+        auto job=new Ath10kSAEPrepareJob;legacyRandomCalls=prepareRandomCalls=0;prepareRandomMode=3;legacyRandomMode=0;
+        const auto before=curveCalls;ownerGate=true;
+        assert(initNativeSAEPasswordCandidate(*job,native,selected,api,field,h2e?prepareRandom:legacyRandom,local,601,200000)==
+          (h2e?NativeSAEPasswordMode::H2E:NativeSAEPasswordMode::Legacy));
+        ownerGate=false;assert(curveCalls==before);
+        memset(&native,0,sizeof(native));memset(raw.data(),0,raw.size());selected.rsnxeLength=0; // No borrowed caller storage/mode.
+        assert(worker->submit(job));job->release();run(call);assert(worker->takeCompletedFor(job)==job);
+        auto session=job->takePreparedPassword(ssid.data(),ssid.size(),local,ap,601,200001);assert(session && session->usingH2E()==h2e);
+        AthSecurity::SAEGroup19CommitTx tx;assert(session->snapshotCommit(tx,1,601,200001));AthSecurity::SAEGroup19AuthMessage parsed;
+        assert(AthSecurity::decodeSAEGroup19AuthBody(tx.data()+24,tx.size()-24,h2e,0,parsed)==AthSecurity::SAEWireResult::Valid);
+        const auto expectedCommit=decode<96>(commit);assert(!memcmp(parsed.commit,expectedCommit.data(),96) && !parsed.identifierPresent);
+        session->release();job->release();assert(objects==1);
+      };
+      for(const auto &v:H2EPasswordVectors::vectors)if(!*v.identifier)nativePrepare(octets(v.ssid),octets(v.password),true,v.commit);
+      {const auto &v=H2EPasswordVectors::vectors[2];nativePrepare(octets(v.ssid),octets(v.password),true,v.commit,true);}
+      for(const auto &v:LegacyPasswordVectors::vectors)nativePrepare(std::vector<uint8_t>(name,name+9),octets(v.password),false,v.commit);
+      {AirportWCL::JoinRequest native{};native.lowerAuth=1;native.upperAuth=1u<<12;native.keyCipher=10;native.keyLength=13;
+       native.ssidLength=9;memcpy(native.ssid,name,9);memcpy(native.key,secret,13);memcpy(native.bssid,ap,6);
+       Ath10k::WMIBSS selected{};selected.privacy=selected.rsnPresent=true;selected.ssidLength=9;memcpy(selected.ssid,name,9);memcpy(selected.bssid,ap,6);
+       size_t n=0;assert(AthSecurity::buildSAEStationRSN(nullptr,0,selected.rsn,sizeof(selected.rsn),n));selected.rsnLength=uint16_t(n);
+       assert(nativeSAEPasswordMode(native,selected)==NativeSAEPasswordMode::Legacy);
+       auto hidden=selected;hidden.hidden=true;hidden.ssidLength=0;assert(nativeSAEPasswordMode(native,hidden)==NativeSAEPasswordMode::Legacy);
+       hidden.hidden=false;assert(nativeSAEPasswordMode(native,hidden)==NativeSAEPasswordMode::Unsupported);
+       for(unsigned bad=0;bad<8;++bad){auto request=native;auto bss=selected;
+        if(bad==0)request.keyCipher=6;if(bad==1)request.upperAuth|=8;if(bad==2)bss.ssid[8]^=1;if(bad==3)bss.bssid[5]^=1;
+        if(bad==4)bss.privacy=false;if(bad==5)bss.rsn[19]=2;if(bad==6){bss.rsnxeLength=3;bss.rsnxe[0]=244;bss.rsnxe[1]=2;}
+        if(bad==7){request.rsnLength=sizeof(AthSecurity::stationRSN);memcpy(request.rsn,AthSecurity::stationRSN,request.rsnLength);}
+        auto job=new Ath10kSAEPrepareJob;const auto before=curveCalls;prepareRandomCalls=0;ownerGate=true;
+        assert(initNativeSAEPasswordCandidate(*job,request,bss,api,field,prepareRandom,local,602,200000)==NativeSAEPasswordMode::Unsupported);
+        ownerGate=false;job->execute();assert(curveCalls==before && !prepareRandomCalls);job->release();assert(objects==1);
+       }
+      }
+      // Native owner: exact AP security snapshot, original deadline, typed job
+      // ownership and cancellation while the worker still owns secret buffers.
+      {
+        using Preparation=Ath10kNativeSAEPreparation;using State=Preparation::State;
+        AirportWCL::JoinRequest request{};request.lowerAuth=1;request.upperAuth=1u<<12;request.keyCipher=10;
+        request.keyLength=13;memcpy(request.key,secret,13);request.ssidLength=9;memcpy(request.ssid,name,9);memcpy(request.bssid,ap,6);
+        Ath10k::WMIBSS selected{};selected.privacy=selected.rsnPresent=true;selected.ssidLength=9;
+        memcpy(selected.ssid,name,9);memcpy(selected.bssid,ap,6);size_t n=0;
+        assert(AthSecurity::buildSAEStationRSN(nullptr,0,selected.rsn,sizeof(selected.rsn),n));selected.rsnLength=uint16_t(n);
+        selected.rsnxeLength=3;selected.rsnxe[0]=244;selected.rsnxe[1]=1;selected.rsnxe[2]=0x20;
+        auto begin=[&](Preparation &owner,uint32_t gen=701){
+          prepareRandomMode=3;prepareRandomCalls=0;legacyRandomMode=0;legacyRandomCalls=0;
+          ownerGate=true;const auto before=curveCalls;
+          assert(owner.begin(worker,request,selected,api,field,selected.rsnxeLength?prepareRandom:legacyRandom,local,gen,300000));
+          assert(owner.active() && before==curveCalls);ownerGate=false;
+        };
+        auto collect=[&](Preparation &owner,uint64_t now=300001){
+          ownerGate=true;auto result=owner.collect(name,9,selected,local,701,now);ownerGate=false;return result;
+        };
+        for(unsigned mode=0;mode<3;++mode){
+          if(mode==1)selected.rsnxeLength=0;
+          if(mode==2){selected.rsnxeLength=3;selected.hidden=true;selected.ssidLength=0;}
+          Preparation owner;begin(owner);assert(!owner.begin(worker,request,selected,api,field,prepareRandom,local,702,300000));
+          assert(collect(owner).state==State::Pending);run(call);
+          auto result=collect(owner,300002);assert(result.state==State::Ready && result.session);
+          assert(result.session->usingH2E()==(mode!=1));AthSecurity::SAEGroup19CommitTx tx;
+          assert(result.session->snapshotCommit(tx,1,701,300002));result.session->release();
+          assert(!owner.active() && collect(owner,300003).state==State::Idle && objects==1);
+        }
+        selected.hidden=false;selected.ssidLength=9;
+        for(unsigned change=0;change<11;++change){
+          Preparation owner;begin(owner);run(call);auto current=selected;uint8_t station[6];memcpy(station,local,6);
+          auto ssid=std::vector<uint8_t>(name,name+9);uint32_t gen=701;uint64_t now=300002;
+          if(change==0)current.rsn[19]^=1;if(change==1)current.rsnxe[2]^=0x20;
+          if(change==2)current.bssid[5]^=1;if(change==3)station[5]^=1;if(change==4)ssid.back()^=1;
+          if(change==5)++gen;if(change==6)current.privacy=false;if(change==7)current.rsnxeLength=0;
+          if(change==8)current.ssidLength=255;if(change==9)now=305000;if(change==10)now=299999;
+          ownerGate=true;auto result=owner.collect(ssid.data(),ssid.size(),current,station,gen,now);ownerGate=false;
+          assert(!result.session && result.state==(change==9?State::Expired:(change==10?State::ClockError:State::Changed)));
+          assert(!owner.active() && worker->available() && objects==1);
+        }
+        {Preparation owner;begin(owner);assert(collect(owner,300010).state==State::Pending);
+         assert(collect(owner,300009).state==State::ClockError && worker->available() && objects==1);}
+        // Waiting behind another owner neither consumes nor cancels its result.
+        {auto foreign=new Ath10kSAEPrepareJob;
+         assert(foreign->initH2E(api,field,prepareRandom,name,9,secret,13,nullptr,0,local,ap,700,300000));
+         assert(worker->submit(foreign));Preparation owner;begin(owner);run(call);
+         assert(collect(owner).state==State::Pending);owner.cancel();
+         assert(worker->takeCompletedFor(foreign)==foreign);foreign->release();foreign->release();assert(objects==1);}
+        {auto foreign=new Ath10kSAEPrepareJob;
+         assert(foreign->initH2E(api,field,prepareRandom,name,9,secret,13,nullptr,0,local,ap,700,300000));
+         assert(worker->submit(foreign));Preparation owner;begin(owner);run(call);
+         assert(collect(owner,304999).state==State::Pending);
+         assert(worker->takeCompletedFor(foreign)==foreign);foreign->release();foreign->release();
+         assert(collect(owner,305000).state==State::Expired && worker->available() && objects==1);}
+        {Preparation owner;begin(owner);ownerGate=true;owner.cancel();ownerGate=false;
+         assert(worker->available() && !owner.active() && objects==1);}
+        {Preparation owner;begin(owner);worker->cancel();assert(collect(owner).state==State::Failed && objects==1);}
+        // Cancellation/replacement while a real crypto call is paused: the old
+        // job remains retained and the replacement cannot consume its output.
+        {Preparation owner;begin(owner);Pause pause;pauseHMAC=&pause;
+         std::thread callback([&]{run(call);});pause.wait();
+         ownerGate=true;owner.cancel();assert(!owner.active());ownerGate=false;
+         // Do not reset the deterministic RNG while the old callback runs.
+         ownerGate=true;assert(owner.begin(worker,request,selected,api,field,prepareRandom,local,701,300010));ownerGate=false;
+         assert(collect(owner,300011).state==State::Pending);
+         pause.resume();callback.join();pauseHMAC=nullptr;
+         prepareRandomCalls=0;assert(collect(owner,300012).state==State::Pending);run(call);
+         auto result=collect(owner,300013);assert(result.state==State::Ready && result.session);result.session->release();assert(objects==1);}
+      }
       for(const auto &vector:H2EPasswordVectors::vectors){
         const auto boundName=octets(vector.ssid),boundSecret=octets(vector.password),boundID=octets(vector.identifier);
         const auto pt=decode<64>(vector.pt);const auto expectedCommit=decode<96>(vector.commit);

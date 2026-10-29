@@ -516,7 +516,11 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     uint32_t keyLength = read32(p + 0x44);
     uint16_t rsnLength = read16(p + 0xd4);
     if (!count || count > 10 || !ssidLength || ssidLength > 32 ||
-        keyLength > sizeof(out.key) || rsnLength > 257 || length < 0x218 + size_t(count) * 18)
+        keyLength > sizeof(out.key) || rsnLength > 257 ||
+        // Sequoia WCLJoinRequest validates the full apple80211_key envelope,
+        // even when these RSC/WoW fields are not used by our authentication.
+        read32(p + 0x90) > 8 || read32(p + 0xa4) > 16 || read32(p + 0xb8) > 16 ||
+        length < 0x218 + size_t(count) * 18)
         return false;
     if (p[0x21c] & 1)
         return false;

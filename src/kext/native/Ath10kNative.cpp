@@ -8,6 +8,7 @@
 #include "Ath10kNativeMAC.hpp"
 #include "Ath10kSAEWorker.hpp"
 #include "Ath10kSAESession.hpp"
+#include "Ath10kNativeSAEPreparation.hpp"
 #include "Ath10kPMFSession.hpp"
 #include "Ath10kKernelCrypto.hpp"
 #include "Ath10kNativePMFInbox.hpp"
@@ -76,6 +77,7 @@ OSDefineMetaClassAndStructors(Ath10kBSDInterface,IOEthernetInterface)
 class Ath10kPCIDevice::NativeSecurity {
 public:
     Ath10kSAEWorker *saeWorker=nullptr;
+    Ath10kNativeSAEPreparation saePreparation;
     Ath10kSAESession *saeSession=nullptr;
     Ath10kSAERadio *saeRadio=nullptr;
     Ath10kPMFSession *pmfSession=nullptr;
@@ -108,7 +110,8 @@ public:
     void popQueryReply(){if(pmfReplyCount){AthSecurity::wipe(&pmfReplies[pmfReplyRead],sizeof(QueryReply));pmfReplyRead=(pmfReplyRead+1)%4;--pmfReplyCount;}}
     Ath10kSAEWorkItem *saePendingTX=nullptr;
     // SAE crypto is available to a future admitted join; native request
-    // policy/capabilities still reject SAE until the radio exchange is wired.
+    // policy/capabilities still reject SAE until credentials, kernel crypto and
+    // firmware PMF are validated together.
     AthSecurity::Supplicant<Ath10kKernelCrypto,true,true> supplicant;
     AthSecurity::IGTKCMAC128 pendingManagement{};
     // Borrowed only beneath the radio gate from this NativeSecurity's owned
@@ -138,6 +141,7 @@ public:
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
     void reset(){
+        saePreparation.cancel();
         if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
         clearManagement();
         pmfSpectrumGeneration=pmfSpectrumEpoch=pmfSpectrumDeadlineUS=0;
@@ -726,12 +730,27 @@ UInt32 Ath10kPCIDevice::buildNativeSAEAssociation(UInt8 *frame,UInt32 capacity){
 // until native credentials/backend/firmware PMF are validated together.
 const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
     auto sec=_nativeSecurity;auto &s=_connection;
-    if(!sec || !sec->saeRadio || !sec->saeSession || !sec->pmfSession || !_nativeJoinPending ||
+    if(!sec || !sec->saeWorker || !sec->pmfSession || !_nativeJoinPending ||
        !_nativeRadioOn || !_networkEnabled || s.securityAKM!=8 || !s.secure || !s.pmfRequired ||
        s.groupCipher!=AthSecurity::cipherCCMP || !nativePMFFirmwareReady())return "native-sae-profile-not-ready";
     const UInt64 generation=sec->pmfSession->activeGeneration();
-    if(!generation || generation>0xffffffffu || !sec->saeRadio->boundTo(sec->saeSession,static_cast<UInt32>(generation)))return "native-sae-owner-mismatch";
+    if(!generation || generation>0xffffffffu || memcmp(s.bssid,s.ap.bssid,6))return "native-sae-owner-mismatch";
     if(s.stage!=Ath10k::LinkStage::Auth || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None || powerIOBlocked())return "native-sae-cancelled";
+    if(sec->saePreparation.active()){
+        // Adopt only into an empty exchange and only while this exact admitted
+        // profile still owns Auth. No password crypto or queue drain runs here.
+        if(sec->saeRadio || sec->saeSession || sec->ready)return "native-sae-preparation-owner-conflict";
+        const auto prepared=sec->saePreparation.collect(s.ssid,s.ssidLength,s.ap,s.local,static_cast<UInt32>(generation),now);
+        if(prepared.state==Ath10kNativeSAEPreparation::State::Pending)return nullptr;
+        if(prepared.state!=Ath10kNativeSAEPreparation::State::Ready || !prepared.session)return "native-sae-preparation-failed";
+        auto radio=new Ath10kSAERadio;
+        if(!radio || !radio->bind(prepared.session,sec->saeWorker,static_cast<UInt32>(generation),now)){
+            if(radio)delete radio;
+            prepared.session->cancel();prepared.session->release();return "native-sae-preparation-bind-failed";
+        }
+        sec->saeSession=prepared.session;sec->saeRadio=radio;
+    }
+    if(!sec->saeRadio || !sec->saeSession || !sec->saeRadio->boundTo(sec->saeSession,static_cast<UInt32>(generation)))return "native-sae-owner-mismatch";
     if(sec->saeSession->usingH2E() && !AthSecurity::rsnxeHasH2E(s.ap.rsnxe,s.ap.rsnxeLength))return "native-sae-h2e-not-advertised";
     const auto state=sec->saeRadio->service(now);
     if(state==Ath10kSAERadio::State::Failed || state==Ath10kSAERadio::State::Idle)return "native-sae-exchange-failed";
@@ -1167,6 +1186,12 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         if(!AirportWCL::decodeJoin(data,0x2cc,join))return kIOReturnBadArgument;
         setProperty("Ath10kNativeJoinAuth",UInt64(join.upperAuth),32);
         setProperty("Ath10kNativeJoinChannel",UInt64(join.channelSpec&0xff),32);
+        // Public envelope metadata only; never publish password octets.
+        setProperty("Ath10kNativeJoinKeyCipher",UInt64(join.keyCipher),32);
+        setProperty("Ath10kNativeJoinKeyLength",UInt64(join.keyLength),32);
+        setProperty("Ath10kNativeSAEPasswordEnvelopeCandidate",nativeSAEPasswordEnvelope(join));
+        setProperty("Ath10kNativeJoinKeyFlags",UInt64(join.keyFlags),16);
+        setProperty("Ath10kNativeJoinKeyIndex",UInt64(join.keyIndex),16);
         const auto auth=nativeJoinAuth(join);
         const UInt8 selectedAKM=auth==NativeJoinAuth::PSKSHA256?6:2;
         const bool personal=auth==NativeJoinAuth::PSK || auth==NativeJoinAuth::PSKSHA256;
@@ -1284,7 +1309,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
     if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
-               sec->saeSession || sec->saeRadio || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
+               sec->saePreparation.active() || sec->saeSession || sec->saeRadio || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.
