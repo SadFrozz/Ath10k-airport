@@ -51,7 +51,7 @@ OUT_BIN   := $(OUT_KEXT)/Contents/MacOS/Ath10kMac
 
 SDK   = $(shell xcrun --show-sdk-path)
 PYTHON ?= python3
-MKSDK := $(PROJ_ROOT)/MacKernelSDK
+MKSDK := $(PROJ_ROOT)/vendor/MacKernelSDK
 ARCH  := -arch x86_64
 MINOS := -mmacosx-version-min=11.0
 CC    := xcrun clang
@@ -84,7 +84,7 @@ LDFLAGS = $(ARCH) -static -nostdlib -Xlinker -kext \
            -F$(SDK)/System/Library/Frameworks
 
 ifeq ($(NATIVE),1)
-CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/vendor/itlwm
+CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/build/generated/itlwm
 NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kNativeSAEPreparation.o $(BUILD_DIR)/Ath10kNativePSKPreparation.o $(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
 endif
 
@@ -94,53 +94,53 @@ OBJS := $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD
 else
 OBJS := $(NATIVE_OBJECT) $(BUILD_DIR)/Ath10kUserClient.o $(BUILD_DIR)/Ath10kNetwork.o $(BUILD_DIR)/Ath10kRuntime.o $(BUILD_DIR)/Ath10kPower.o $(BUILD_DIR)/Ath10kPowerNotifications.o $(BUILD_DIR)/Ath10kRecovery.o $(BUILD_DIR)/Ath10kPCIDevice.o $(BUILD_DIR)/kmod_info.o
 endif
-$(OBJS): $(wildcard src/shared/*.hpp)
+$(OBJS): $(wildcard src/security/*.hpp)
 ifeq ($(NATIVE),1)
-$(OBJS): $(wildcard src/kext/native/*)
+$(OBJS): $(wildcard src/macos/native/*)
 endif
 
-$(BUILD_DIR)/Ath10kNative.o: src/kext/native/Ath10kNative.cpp $(wildcard src/kext/native/*) $(wildcard src/kext/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kNative.o: src/macos/native/Ath10kNative.cpp $(wildcard src/macos/native/*) $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kSAEWorker.o: src/kext/native/Ath10kSAEWorker.cpp src/kext/native/Ath10kSAEWorker.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kSAEWorker.o: src/macos/native/Ath10kSAEWorker.cpp src/macos/native/Ath10kSAEWorker.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kSAESession.o: src/kext/native/Ath10kSAESession.cpp src/kext/native/Ath10kSAESession.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kSAESession.o: src/macos/native/Ath10kSAESession.cpp src/macos/native/Ath10kSAESession.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kNativeSAEPreparation.o: src/kext/native/Ath10kNativeSAEPreparation.cpp src/kext/native/Ath10kNativeSAEPreparation.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kNativeSAEPreparation.o: src/macos/native/Ath10kNativeSAEPreparation.cpp src/macos/native/Ath10kNativeSAEPreparation.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kNativePSKPreparation.o: src/kext/native/Ath10kNativePSKPreparation.cpp src/kext/native/Ath10kNativePSKPreparation.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kNativePSKPreparation.o: src/macos/native/Ath10kNativePSKPreparation.cpp src/macos/native/Ath10kNativePSKPreparation.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o: src/kext/native/Ath10kNativeSAEKernelBackend.cpp src/kext/native/Ath10kNativeSAEKernelBackend.hpp src/kext/native/Ath10kP256KernelBinding.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o: src/macos/native/Ath10kNativeSAEKernelBackend.cpp src/macos/native/Ath10kNativeSAEKernelBackend.hpp src/macos/native/Ath10kP256KernelBinding.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kP256CheckJob.o: src/kext/native/Ath10kP256CheckJob.cpp src/kext/native/Ath10kP256CheckJob.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kP256CheckJob.o: src/macos/native/Ath10kP256CheckJob.cpp src/macos/native/Ath10kP256CheckJob.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kP256RegistryJob.o: src/kext/native/Ath10kP256RegistryJob.cpp src/kext/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kP256RegistryJob.o: src/macos/native/Ath10kP256RegistryJob.cpp src/macos/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kP256DiagnosticService.o: src/kext/native/Ath10kP256DiagnosticService.cpp src/kext/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kP256DiagnosticService.o: src/macos/native/Ath10kP256DiagnosticService.cpp src/macos/native/Ath10kP256RegistryJob.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kPMFSession.o: src/kext/native/Ath10kPMFSession.cpp src/kext/native/Ath10kPMFSession.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kPMFSession.o: src/macos/native/Ath10kPMFSession.cpp src/macos/native/Ath10kPMFSession.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 .PHONY: all kext clean check-sdk prepare-firmware
 all: kext
 kext: check-sdk $(OUT_BIN)
-	$(PYTHON) scripts/check-kext-symbols.py "$(OUT_BIN)"
+	$(PYTHON) scripts/validation/check-kext-symbols.py "$(OUT_BIN)"
 	@echo "Built and symbol-checked: $(OUT_KEXT)"
 
 # Always validate source containers, even when a generated header exists.
 # The header dependency serializes preparation before compiling with make -j.
 prepare-firmware:
-	$(PYTHON) scripts/prepare-firmware.py
+	$(PYTHON) scripts/build/prepare-firmware.py
 
-src/kext/Ath10kPayload.hpp: prepare-firmware
+src/core/Ath10kPayload.hpp: prepare-firmware
 	@test -f "$@"
 
 check-sdk:
@@ -150,28 +150,28 @@ check-sdk:
 $(BUILD_DIR):
 	@mkdir -p $@
 
-$(BUILD_DIR)/Ath10kPCIDevice.o: src/kext/Ath10kPCIDevice.cpp src/kext/Ath10kPCIDevice.hpp src/kext/Ath10kHw.hpp src/kext/Ath10kRegisterIO.hpp src/kext/Ath10kTarget.hpp src/kext/Ath10kCE.hpp src/kext/Ath10kCERing.hpp src/kext/Ath10kDMA.hpp src/kext/Ath10kBMI.hpp src/kext/Ath10kPLL.hpp src/kext/Ath10kBoot.hpp src/kext/Ath10kHTC.hpp src/kext/Ath10kWMI.hpp src/kext/Ath10kRxSetup.hpp src/kext/Ath10kScanPlan.hpp src/kext/Ath10kRegulatory.hpp src/kext/Ath10kRegulatoryData.hpp src/kext/Ath10kBSS.hpp src/kext/Ath10kConnection.hpp src/kext/Ath10kRX.hpp src/kext/Ath10kPerformance.hpp src/kext/Ath10kRXRate.hpp src/kext/Ath10kPayload.hpp src/kext/Ath10kPayloadProfile.hpp src/kext/Ath10kInPlace.hpp src/kext/Ath10kPower.hpp | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kPCIDevice.o: src/macos/controller/Ath10kPCIDevice.cpp src/macos/controller/Ath10kPCIDevice.hpp src/core/Ath10kHw.hpp src/core/Ath10kRegisterIO.hpp src/core/Ath10kTarget.hpp src/core/Ath10kCE.hpp src/core/Ath10kCERing.hpp src/core/Ath10kDMA.hpp src/core/Ath10kBMI.hpp src/core/Ath10kPLL.hpp src/core/Ath10kBoot.hpp src/core/Ath10kHTC.hpp src/core/Ath10kWMI.hpp src/core/Ath10kRxSetup.hpp src/core/Ath10kScanPlan.hpp src/core/Ath10kRegulatory.hpp src/core/Ath10kRegulatoryData.hpp src/core/Ath10kBSS.hpp src/core/Ath10kConnection.hpp src/core/Ath10kRX.hpp src/core/Ath10kPerformance.hpp src/core/Ath10kRXRate.hpp src/core/Ath10kPayload.hpp src/core/Ath10kPayloadProfile.hpp src/core/Ath10kInPlace.hpp src/macos/controller/Ath10kPower.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kNetwork.o: src/kext/Ath10kNetwork.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kNetwork.o: src/macos/controller/Ath10kNetwork.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kRuntime.o: src/kext/Ath10kRuntime.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kRuntime.o: src/macos/controller/Ath10kRuntime.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kRecovery.o: src/kext/Ath10kRecovery.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kRecovery.o: src/macos/controller/Ath10kRecovery.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kPower.o: src/kext/Ath10kPower.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kPower.o: src/macos/controller/Ath10kPower.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kPowerNotifications.o: src/kext/Ath10kPowerNotifications.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kPowerNotifications.o: src/macos/controller/Ath10kPowerNotifications.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/Ath10kUserClient.o: src/kext/Ath10kUserClient.cpp $(wildcard src/kext/*.hpp src/shared/*.hpp) | $(BUILD_DIR)
+$(BUILD_DIR)/Ath10kUserClient.o: src/macos/controller/Ath10kUserClient.cpp $(wildcard src/core/*.hpp src/macos/controller/*.hpp src/macos/abi/*.hpp src/security/*.hpp) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/kmod_info.o: src/kext/kmod_info.c | $(BUILD_DIR)
+$(BUILD_DIR)/kmod_info.o: src/macos/controller/kmod_info.c | $(BUILD_DIR)
 	$(CC) $(KFLAGS) -c $< -o $@
 
 # Rebuild all objects when experiment flags change, even without make clean.
@@ -183,30 +183,30 @@ $(BUILD_DIR)/experiment-config: FORCE | $(BUILD_DIR)
 	@rm -f "$@.tmp"
 
 $(OBJS): Makefile $(BUILD_DIR)/experiment-config
-$(OBJS): src/kext/Ath10kMulticast.hpp src/kext/Ath10kConnection.hpp src/shared/Ath10kControl.hpp
-$(OBJS): src/kext/Ath10kRuntimePower.hpp src/kext/Ath10kFirmwareStats.hpp
-$(OBJS): $(wildcard src/shared/*.hpp)
+$(OBJS): src/core/Ath10kMulticast.hpp src/core/Ath10kConnection.hpp src/core/Ath10kControl.hpp
+$(OBJS): src/core/Ath10kRuntimePower.hpp src/core/Ath10kFirmwareStats.hpp
+$(OBJS): $(wildcard src/security/*.hpp)
 
 .PHONY: test-development native-preflight
 test-development:
 	$(PYTHON) tests/run-development-tests.py
 
 native-preflight:
-	$(PYTHON) scripts/collect-native-preflight.py
+	$(PYTHON) scripts/diagnostics/collect-native-preflight.py
 
-$(OUT_BIN): Makefile $(OBJS) Ath10kMac.kext/Contents/Info.plist scripts/prepare-kext-info.py
+$(OUT_BIN): Makefile $(OBJS) packaging/Ath10kMac.kext/Contents/Info.plist scripts/build/prepare-kext-info.py
 	@mkdir -p "$(OUT_KEXT)/Contents/MacOS"
-	$(PYTHON) scripts/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE) $(if $(filter 1,$(P256_DIAGNOSTIC)),--p256-diagnostic,) $(if $(filter 1,$(NATIVE_SAE_EXPERIMENTAL)),--native-sae-experimental,) $(if $(filter 1,$(NATIVE_PMF_PROBE)),--native-pmf-probe,)
+	$(PYTHON) scripts/build/prepare-kext-info.py $(NATIVE) "$(OUT_KEXT)/Contents/Info.plist" --diagnostic-stage $(DIAGNOSTIC_STAGE) $(if $(filter 1,$(P256_DIAGNOSTIC)),--p256-diagnostic,) $(if $(filter 1,$(NATIVE_SAE_EXPERIMENTAL)),--native-sae-experimental,) $(if $(filter 1,$(NATIVE_PMF_PROBE)),--native-pmf-probe,)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 clean:
 	rm -rf $(BUILD_DIR)
 
 ifeq ($(NATIVE),1)
-$(OBJS): $(wildcard src/kext/native/*)
+$(OBJS): $(wildcard src/macos/native/*)
 endif
 
-$(OBJS): src/kext/Ath10kDiagnostics.hpp
+$(OBJS): src/macos/controller/Ath10kDiagnostics.hpp
 
 # Follow actual transitive project/vendor includes, including ABI-only changes.
 -include $(OBJS:.o=.d)
@@ -218,7 +218,7 @@ CRYPTO_PROBE_KEXT := $(CRYPTO_PROBE_DIR)/Ath10kCryptoLinkProbe.kext
 CRYPTO_PROBE_BIN := $(CRYPTO_PROBE_KEXT)/Contents/MacOS/Ath10kCryptoLinkProbe
 .PHONY: sae-crypto-link-probe
 sae-crypto-link-probe: check-sdk $(CRYPTO_PROBE_BIN)
-	$(PYTHON) scripts/check-kext-symbols.py "$(CRYPTO_PROBE_BIN)"
+	$(PYTHON) scripts/validation/check-kext-symbols.py "$(CRYPTO_PROBE_BIN)"
 
 $(CRYPTO_PROBE_DIR):
 	@mkdir -p $@
@@ -240,13 +240,13 @@ P256_CHECK_BIN := $(CRYPTO_PROBE_DIR)/p256-userland-check
 sae-p256-userland-check: $(P256_CHECK_BIN)
 	$(P256_CHECK_BIN)
 
-$(P256_CHECK_BIN): tools/sae/p256-userland-check.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSAE.hpp src/shared/Ath10kSAEWire.hpp src/shared/Ath10kSAEExchange.hpp src/shared/Ath10kSHA256.hpp src/shared/Ath10kSecurity.hpp src/shared/Ath10kRSN.hpp tests/p256_corecrypto_fixtures.hpp Makefile | $(CRYPTO_PROBE_DIR)
+$(P256_CHECK_BIN): tools/sae/p256-userland-check.cpp src/security/Ath10kP256CoreCrypto.hpp src/security/Ath10kSAE.hpp src/security/Ath10kSAEWire.hpp src/security/Ath10kSAEExchange.hpp src/security/Ath10kSHA256.hpp src/security/Ath10kSecurity.hpp src/security/Ath10kRSN.hpp tests/fixtures/p256_corecrypto_fixtures.hpp Makefile | $(CRYPTO_PROBE_DIR)
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $< -o $@
 
 sae-p256-kernel-compile: $(CRYPTO_PROBE_DIR)/p256-kernel-compile.o
-	$(PYTHON) scripts/check-kext-symbols.py "$<"
+	$(PYTHON) scripts/validation/check-kext-symbols.py "$<"
 
-$(CRYPTO_PROBE_DIR)/p256-kernel-compile.o: tools/sae/p256-kernel-compile.cpp src/shared/Ath10kP256CoreCrypto.hpp src/shared/Ath10kSecurity.hpp Makefile | $(CRYPTO_PROBE_DIR)
+$(CRYPTO_PROBE_DIR)/p256-kernel-compile.o: tools/sae/p256-kernel-compile.cpp src/security/Ath10kP256CoreCrypto.hpp src/security/Ath10kSecurity.hpp Makefile | $(CRYPTO_PROBE_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 -include $(CRYPTO_PROBE_DIR)/p256-kernel-compile.d
@@ -256,9 +256,9 @@ TYPED_PROBE_KEXT := $(CRYPTO_PROBE_DIR)/Ath10kCryptoTypedProbe.kext
 TYPED_PROBE_BIN := $(TYPED_PROBE_KEXT)/Contents/MacOS/Ath10kCryptoTypedProbe
 .PHONY: sae-crypto-typed-link-probe
 sae-crypto-typed-link-probe: check-sdk $(TYPED_PROBE_BIN)
-	$(PYTHON) scripts/check-kext-symbols.py "$(TYPED_PROBE_BIN)"
+	$(PYTHON) scripts/validation/check-kext-symbols.py "$(TYPED_PROBE_BIN)"
 
-$(CRYPTO_PROBE_DIR)/typed-probe.o: tools/sae/corecrypto-typed-link-probe.cpp src/kext/native/Ath10kP256KernelBinding.hpp src/shared/Ath10kP256BackendCheck.hpp src/shared/Ath10kP256CoreCrypto.hpp Makefile | $(CRYPTO_PROBE_DIR)
+$(CRYPTO_PROBE_DIR)/typed-probe.o: tools/sae/corecrypto-typed-link-probe.cpp src/macos/native/Ath10kP256KernelBinding.hpp src/security/Ath10kP256BackendCheck.hpp src/security/Ath10kP256CoreCrypto.hpp Makefile | $(CRYPTO_PROBE_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(TYPED_PROBE_BIN): $(CRYPTO_PROBE_DIR)/typed-probe.o tools/sae/CoreCryptoTypedProbe.plist
@@ -267,3 +267,8 @@ $(TYPED_PROBE_BIN): $(CRYPTO_PROBE_DIR)/typed-probe.o tools/sae/CoreCryptoTypedP
 	$(LD) $(LDFLAGS) -o $@ $(CRYPTO_PROBE_DIR)/typed-probe.o
 
 -include $(CRYPTO_PROBE_DIR)/typed-probe.d
+
+.PHONY: prepare-native-headers
+prepare-native-headers:
+	$(PYTHON) scripts/build/prepare-native-headers.py
+$(OBJS): | prepare-native-headers

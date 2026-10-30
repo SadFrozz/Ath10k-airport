@@ -733,7 +733,7 @@ is implemented and validated. Existing SHA256-PSK support is WPA2, not WPA3.
 | Stage | Required work | Evidence needed |
 | --- | --- | --- |
 | Credential transport | Correct 64-byte Sequoia envelope and no truncation/downgrade | Implemented host decoding/policy tests and native ABI assertions; live SAE credential delivery still unverified |
-| SAE backend | P-256 symbol subset binds on the inspected Sequoia CoreCrypto; actual ABI/backend and scalar/point behavior still need validation (SAE-CRYPTO-BACKEND.md) | Independent cryptographic vectors and runtime ABI/lifetime proof; symbol binding alone is insufficient |
+| SAE backend | P-256 symbol subset binds on the inspected Sequoia CoreCrypto; actual ABI/backend and scalar/point behavior still need validation (docs/contracts/SAE-CRYPTO-BACKEND.md) | Independent cryptographic vectors and runtime ABI/lifetime proof; symbol binding alone is insufficient |
 | SAE exchange | Password element derivation (including H2E), commit/confirm, peer validation, anti-clogging/group handling, retransmission/timeouts and PMK output | Independent SAE fixtures and management-frame state tests; no open-system auth substituted for SAE |
 | Queue/lifetime integration | Crypto work outside radio/WCL gates, cancellation/generation checks, retained context and secret retirement across sleep/stop | Production-method race/failure tests and real sleep/stop without deadlock or stale publication |
 | AKM 8 four-way | SAE-derived PMK, correct AKM-specific KDF, descriptor and MIC semantics, replay/reinstall handling | Independent AKM 8 fixtures; do not reuse AKM 6 behavior merely by changing its number |
@@ -756,7 +756,7 @@ Primary implementation/testing references for subsequent work:
 These references are not proof of this driver's behavior. No third-party SAE
 implementation or Apple binary/assembly is copied into this document.
 
-P-256 operation candidate: see SAE-CRYPTO-BACKEND.md for real userland vectors and kernel compile-only checks. This is unwired and does not complete SAE, PMF or kernel ABI validation.
+P-256 operation candidate: see docs/contracts/SAE-CRYPTO-BACKEND.md for real userland vectors and kernel compile-only checks. This is unwired and does not complete SAE, PMF or kernel ABI validation.
 
 ## Local PMF key parsing progress
 
@@ -2580,7 +2580,7 @@ spectrum response reservation awaits its radio wake/drain/retirement path.
 A failing-before/passing-after production predicate test verifies each flag
 separately and permits ordinary idle after retirement. This closes an offline
 queue-to-power admission gap; it does not establish a cause for earlier hardware
-hangs or replace real sleep/wake validation. See NATIVE-CONTRACT.md.
+hangs or replace real sleep/wake validation. See docs/contracts/NATIVE-CONTRACT.md.
 
 SAE IPv6 data-path checkpoint (2026-10-29, loaded A3E38378):
 An en1-bound IPv6 HTTPS transfer completes with HTTP 200 and successful TLS

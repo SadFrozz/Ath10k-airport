@@ -4,5 +4,5 @@ __pycache__/
 /build/
 /usb-backup/
 /.cache/
-/src/kext/Ath10kPayload.hpp
+/src/core/Ath10kPayload.hpp
 /firmware/prepared/

@@ -1,0 +1,39 @@
+Native networking contract — Lunnen QCA9377
+
+Use the system IO80211Family, IOSkywalkFamily, corecapture and corecrypto of the
+installed macOS. Do not inject Ventura-era replacements, bypass this contract by
+changing dependency version strings, or install OpenCore Legacy Patcher root
+patches. OpenCore supplies the hardware driver and selects its Darwin version.
+
+Shared hardware core: exact QCA9377 168c:0042 / 1a3b:2b51 profile, firmware,
+board calibration, DMA/HTC/WMI/HTT, scans, association and WPA2 state machine.
+OS adapter: src/kext/native, private WCL/IO80211 declarations pinned to
+laobamac/itlwm 738d4c61b5a64433b27c1ab09dba94916ab77d8d.
+
+Current adapter: Sequoia 15.2+, Darwin 24.2.0–24.99.99, x86_64 only.
+The compile-time ABI check, early PCI/OS probe and OpenCore version limits must
+agree. The package must not load this adapter on Darwin 25 (Tahoe).
+
+Tahoe migration: keep the radio/security core; implement and validate a distinct
+macOS 26 adapter/build using that system's actual vtables, structures and event
+payloads. In particular, the Sequoia 0x1e0 extended-BSS layout and 0x150 RSSI LQM
+snapshot differ from the reference Tahoe 0x214/0x1dc layouts. A new macOS version
+requires ABI validation and hardware tests. It does not require restoring old
+macOS network components. A Tahoe adapter is not implemented in this package.
+
+Validation order: build and run relevant production-method tests and sanitizers,
+verify inherited dispatch slots/imports and the signature, then link offline with
+the installed stock kernel. Save verified SD backups and validate the existing
+OpenCore config before a boot test. Inject the candidate through OpenCore only;
+do not manually load the experimental native kext. Reboot only after explicit
+user authorization. Hardware enumeration, scan, association, traffic, reconnect,
+teardown and sleep/wake remain required evidence; offline checks do not prove
+stability. Current candidates are not installed merely by building them.
+
+Registration metadata: use the stock Ethernet copyRegistrationInfo factory so
+the framework owns its typed 0x130 allocation. The bridge borrows its 0x108
+Network prefix only until stop/free/deregisterLogicalLink detach that loan.
+Network and Ethernet registration declarations are distinct, and local vendor
+header adjustments are recorded in scripts/build/native-headers.json. This ownership path
+and its inherited vtable slots were checked against the installed Sequoia images;
+other OS/module builds still require their own validation.

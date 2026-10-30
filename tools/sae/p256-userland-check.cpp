@@ -1,9 +1,9 @@
 // Executes only in an ordinary user process. Does not load or call a kernel module.
-#include "../../src/shared/Ath10kP256CoreCrypto.hpp"
-#include "../../src/shared/Ath10kSAE.hpp"
-#include "../../src/shared/Ath10kSAEWire.hpp"
-#include "../../src/shared/Ath10kSAEExchange.hpp"
-#include "../../tests/p256_corecrypto_fixtures.hpp"
+#include "../../src/security/Ath10kP256CoreCrypto.hpp"
+#include "../../src/security/Ath10kSAE.hpp"
+#include "../../src/security/Ath10kSAEWire.hpp"
+#include "../../src/security/Ath10kSAEExchange.hpp"
+#include "../../tests/fixtures/p256_corecrypto_fixtures.hpp"
 #include <dlfcn.h>
 #include <CommonCrypto/CommonHMAC.h>
 #include <mach-o/loader.h>

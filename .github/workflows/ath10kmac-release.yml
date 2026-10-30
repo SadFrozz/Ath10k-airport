@@ -50,13 +50,10 @@ jobs:
           xcrun --show-sdk-path
           python3 --version
 
-          # Also support source uploads that omit the SDK submodule.
-          if [[ ! -d MacKernelSDK ]]; then
-            git clone --depth 1 https://github.com/acidanthera/MacKernelSDK.git MacKernelSDK
-          fi
-          test -f MacKernelSDK/Headers/Availability.h
-          test -f MacKernelSDK/Library/x86_64/libkmod.a
-          test -f MacKernelSDK/Library/universal/libkmodc++.a
+          git submodule update --init --recursive
+          test -f vendor/MacKernelSDK/Headers/Availability.h
+          test -f vendor/MacKernelSDK/Library/x86_64/libkmod.a
+          test -f vendor/MacKernelSDK/Library/universal/libkmodc++.a
 
       - name: Validate version and release tag
         id: metadata
@@ -68,13 +65,13 @@ jobs:
           import re
           from pathlib import Path
 
-          info = plistlib.loads(Path("Ath10kMac.kext/Contents/Info.plist").read_bytes())
+          info = plistlib.loads(Path("packaging/Ath10kMac.kext/Contents/Info.plist").read_bytes())
           version = info["CFBundleVersion"]
           if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
               raise SystemExit("CFBundleVersion must use the major.minor.patch format.")
           if info.get("CFBundleShortVersionString") != version:
               raise SystemExit("The two Info.plist version fields must match.")
-          source = Path("src/kext/kmod_info.c").read_text()
+          source = Path("src/macos/controller/kmod_info.c").read_text()
           module = re.search(r'KMOD_EXPLICIT_DECL\([^,]+,\s*"([^"]+)"', source)
           if not module or module.group(1) != version:
               raise SystemExit("The kmod_info.c version must match Info.plist.")
@@ -103,7 +100,7 @@ jobs:
           set -euo pipefail
           make clean
           make NATIVE=1 DIAGNOSTIC_STAGE=0 -j"$(sysctl -n hw.logicalcpu)" kext
-          plutil -lint build/native/out/Ath10kMac.kext/Contents/Info.plist
+          plutil -lint build/native/out/packaging/Ath10kMac.kext/Contents/Info.plist
           xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
           test "$(xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
           xcrun dwarfdump --uuid build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac
@@ -122,13 +119,15 @@ jobs:
           if [[ -f README.md ]]; then
             cp README.md "$stage/README.md"
           fi
+          ditto docs "$stage/docs"
+          cp CHANGELOG.md "$stage/CHANGELOG.md"
           for license in LICENSE LICENSE.txt LICENSE.md COPYING; do
             if [[ -f "$license" ]]; then
               cp "$license" "$stage/$license"
             fi
           done
-          cp MacKernelSDK/LICENSE.txt "$stage/Licenses/MacKernelSDK.txt"
-          cp vendor/itlwm/LICENSE "$stage/Licenses/itlwm.txt"
+          cp vendor/MacKernelSDK/LICENSE.txt "$stage/Licenses/MacKernelSDK.txt"
+          cp build/generated/itlwm/LICENSE "$stage/Licenses/itlwm.txt"
           cp firmware/LICENSE.QualcommAtheros_ath10k "$stage/Licenses/"
           cp firmware/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA6174-firmware-notice.txt"
           cp firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA9377-firmware-notice.txt"
@@ -175,7 +174,7 @@ jobs:
           make NATIVE=1 DIAGNOSTIC_STAGE=3 -j2 kext
           codesign --force --sign - build/native/out/Ath10kMac.kext
           codesign --verify --strict --verbose=2 build/native/out/Ath10kMac.kext
-          python3 scripts/windows/validate.py build/native/out/Ath10kMac.kext
+          python3 scripts/build/windows/validate.py build/native/out/Ath10kMac.kext
       - name: Package stage-3 candidate
         run: |
           set -euo pipefail

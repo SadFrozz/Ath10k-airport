@@ -1,0 +1,230 @@
+{
+  "branch": "native-sequoia-development",
+  "policy": "Group related lifecycle gaps; one reviewed publication and hardware candidate per batch, no per-fix reboot",
+  "batch": {
+    "name": "Infrastructure lifecycle and WPA3 continuity",
+    "groups": [
+      {
+        "area": "Cancel/reconnect",
+        "status": "LEAVE and radio-off retirement fixed; extracted production integration covers reset-before-notification, enqueue failures and one completion"
+      },
+      {
+        "area": "Scan completion",
+        "status": "Added accepted-scan cancellation on EAPOL/group/pair rekey; queued/firmware-owned paths tested; late-event and completion retry existing tests passed"
+      },
+      {
+        "area": "WPA3/PMF key updates",
+        "status": "Grouped key-stage and PMF receive checks passed; GTK/IGTK replay and firmware barriers covered by portable fixtures, AP-triggered rekey hardware validation pending"
+      },
+      {
+        "area": "Native notifications",
+        "status": "Extracted-production cancellation, scan completion, generation retirement and enqueue retry regressions passed; hardware validation pending"
+      }
+    ],
+    "gates": [
+      "Focused regressions per affected group",
+      "Full suite after final production edits",
+      "One native build and signature/dependency validation",
+      "Verified rollback and explicit reboot authorization",
+      "Hardware scan/join/reconnect/traffic validation"
+    ]
+  },
+  "deferred": {
+    "sleep": "Possibly working; platform sleep testing deferred by user",
+    "macOS11-26": "Versioned adapter stages; not claimed supported",
+    "AWDL_AirDrop": "Separate feature stage; not implemented"
+  },
+  "current_candidate": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD installed and loaded through OpenCore; boot 87DD2905-4A4F-4305-B72B-40B525B9A789. Single-router SAE traffic observed; prolonged stability and AP-triggered rekey not yet verified.",
+  "regression_policy": {
+    "single_entrypoint": "python3 tests/run-development-tests.py --cxx clang++",
+    "scope": "Full local regression suite for completed implementation stages; no --only for batch acceptance",
+    "cadence": "Once after final changes in a related batch; rerun only for new code, failures or specific unresolved evidence",
+    "manual_hardware": "Do not repeat already accepted checks without a regression or a changed affected path",
+    "not_proven_by_local_suite": [
+      "AP-triggered GTK/IGTK rekey",
+      "long-duration stability",
+      "macOS adapters other than the validated Sequoia build",
+      "AWDL/AirDrop",
+      "platform sleep"
+    ]
+  },
+  "open_local_work": [
+    "External key ownership and AP-triggered GTK/IGTK validation remain unresolved"
+  ],
+  "next_priority": [
+    "Audit WPA3 key-update, PMF and cancellation as one group; distinguish portable coverage from AP-triggered hardware evidence",
+    "Complete external key ownership contracts before advertising enterprise support",
+    "Versioned macOS adapters and AWDL/AirDrop remain separate unfinished implementation stages"
+  ],
+  "security_profile_audit": {
+    "capability_advertisement": "SAE and MFP jointly enabled only by experimental property and exact kernel guard",
+    "admission": "Further requires available P256 providers, ready firmware PMF transport and empty generation-bound owners",
+    "password_modes": "AP RSNXE chooses H2E or legacy SAE; preparation failure does not downgrade mode",
+    "implemented_cipher_scope": "Group19 P256, pairwise CCMP-128, BIP-CMAC-128; broader WPA3 cipher/group support not claimed",
+    "unsupported_profiles": [
+      "SAE-PK",
+      "FT-SAE",
+      "enterprise external-key ownership",
+      "native password-identifier transport"
+    ],
+    "hardware_evidence": "SAE traffic and one protected SA Query observed; AP-triggered GTK/IGTK rekey and both password-mode interoperability still require distinct evidence",
+    "regression_checkpoint": "62 tests passed; offline candidate 9BD3D9C0-8CEC-36CD-A4FC-9B73563C21F8 signed and dependency-verified; not installed"
+  },
+  "validated_security_batch": {
+    "candidate": "9BD3D9C0-8CEC-36CD-A4FC-9B73563C21F8",
+    "checks": "62 tests, strict signature, exact UUID offline dependency collection passed",
+    "changes": [
+      "Release STOP_SCAN ownership after delayed credit return",
+      "Include scan ownership regression in consolidated runner",
+      "PMF TX retirement across four rekey boundaries",
+      "Secret cleanup and stale key-ack rejection at five install phases",
+      "Stock key callback and capability evidence"
+    ],
+    "installed": false
+  },
+  "execution_policy": {
+    "unit_of_work": "A complete related contract group, not one callback or one failing check",
+    "active_group": [
+      "Reconcile requirements, feature evidence, chronological audit and changelog",
+      "Maintain implemented functionality through consolidated regression",
+      "Audit unresolved external-key ownership and AP-triggered rekey evidence without reimplementing PMF"
+    ],
+    "acceptance": "Review the entire group, run affected regressions during development, then one consolidated full regression and one candidate build after final edits",
+    "publication": "Keep intermediate edits local; publish one reviewed batch without per-fix pushes or Actions runs",
+    "hardware_gate": "Request explicit reboot authorization through the input form only when a meaningful integrated candidate is ready; reboot delay 10 seconds",
+    "closed_stages": "Use make test-development; no repeated manual scan timing or reboot-success questions without new regression evidence",
+    "truthfulness": "Report source integration, local production-path tests and offline build separately from physical inter-AP roaming; no physical handoff is available on this setup"
+  },
+  "pending_roam_group": {
+    "implemented_local": [
+      "Seven-target request decoding and candidate filtering",
+      "Noncopyable credential owner with monotonic generation and secret wiping",
+      "Atomic new-AP request preparation for Open/PSK/PSK-SHA256/SAE",
+      "Monotonic transition-disable restrictions retire prepared requests; unsupported policy clears credentials",
+      "Shared nativeBeginJoin used by ordinary macOS joins and tested with prepared roam requests; consumes credential copy on all exits",
+      "NativeSecurity profile retention at successful admission; terminal reset/MAC replacement invalidation and authenticated transition-disable propagation",
+      "Generation-checked software association retirement preserves only the admitted profile; full terminal reset always clears credentials",
+      "One-shot PreparedRoam owner binds profile object/generation and station identity, preserves original scan age, wipes on failed/consumed/cancelled transfer",
+      "Typed Start/Prep/Reassoc/Complete wire encoders; golden-layout checks passed",
+      "Bounded 128-byte user roam-cache decoder and transactional channel/override state; invalid updates preserve prior state",
+      "Atomic user roam-cache readback with zeroed unused records, known-band/width validation and regulatory intersection",
+      "Controller-owned PreparedRoam wiped on terminal reset, admitted replacement, MAC change and authenticated policy generation change; actual SAE admission fixture uses that owner and tests cancellation",
+      "Production disconnect drain waits for scan TX ownership; final reset independently checks expected ECHO cookie, RX MPDUs, scan completion/TX, serial/data/PMF TX, WMI credits and peer retirement",
+      "Production nativeContinueRoam validates live prepared owner before shared transport admission, retains it while busy and consumes it once into nativeBeginJoin; common admission additionally checks RX MPDUs and unretired vdev/peer creation",
+      "Noncopyable roam event Delivery progress enforces Start/Prep/Reassoc/Complete queue ordering, failed-enqueue retries, single accepted completion and new-BSS prerequisite for success; live dispatcher bound below",
+      "Roam event delivery requires matching monotonically increasing transaction generation on every transition; old callbacks cannot advance a reused delivery owner",
+      "NativeSecurity binds prepared-profile preservation to accepted Start/Prep delivery generation; production terminal cleanup preserves only valid intentional retirement and wipes on cancel/failure/age/MAC/profile invalidation; common continuation clears retirement marker",
+      "Controller nativeDisconnectForRoam admits existing firmware Drain only after accepted Prep and idle transport; ordinary LinkDown suppressed during valid retirement; continuation preserves old publication until new join admission and restores it on admission failure",
+      "Live setWCL_REASSOC dispatch: request admission, ordered Start/Prep, asynchronous firmware retirement, shared join, Reassoc/new-BSS/Complete, cancellation and retry handling",
+      "Deferred BSD carrier-down during valid handoff with explicit failure release; late authenticated transition-disable policy invalidates prepared work before teardown",
+      "Mandatory post-success roam-cache clear/disable and empty-state readback; autonomous firmware cache enable/nonempty requests explicitly rejected"
+    ],
+    "verified": "63-test consolidated suite, callback matrix, native build, strict ad-hoc signature and exact UUID offline dependency inclusion passed. Installed with explicit authorization; loaded UUID verified. Initial single-router SAE traffic passed; physical inter-AP handoff unavailable.",
+    "remaining": [
+      "Physical inter-AP roaming unavailable on the single-router setup; no interoperability or seamless-IP claim until separate evidence",
+      "Autonomous firmware roam channel cache/override enable remains unsupported; recovered local parser is not proof of firmware scheduling semantics"
+    ],
+    "runtime_enabled": true,
+    "resolved_delivery_contract": "Stock Infra/PeerManager forwards IDs 0x49,0x50,0x89,0x8a,0x8b; no filter bypass needed. FIFO copies do not acknowledge WCL consumption; Glue allocation failure is fatal.",
+    "scan_end_contract": "76-byte writable telemetry, candidate count clamped to 3; all WCL FSM states preserved. Do not use as completion or retirement acknowledgement.",
+    "network_fsm": "All 77 transitions decoded; LINK_UP + LINK_UP runs linkUp/updateBss while retaining LINK_UP. No synthetic LinkDown needed for new-BSS publication.",
+    "roam_cache_remaining": "Bind completed local cache exchange to controller lifetime and verified roam-only scheduling semantics before enabling WCL_ROAM_USER_CACHE; ordinary scans retain their requested scope",
+    "full_local_regression": {
+      "passed": true,
+      "cpp_test_count": 63,
+      "entrypoint": "python3 tests/run-development-tests.py --cxx clang++",
+      "hardware_validation": false
+    },
+    "runtime_scope": "Installed and loaded; ordinary SAE traffic observed. Host-requested physical inter-AP handoff remains unverified.",
+    "candidate_uuid": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD",
+    "publication": {
+      "remote_commit": "a3ab0b5a08ba3d085e75b45ee936891f53941ae2",
+      "tree": "373e552399ed81016ba04b6af8e73848ebfdff60",
+      "single_batch": true
+    }
+  },
+  "roaming_validation_policy": {
+    "hardware_constraint": "User confirms only one router; physical handoff between APs cannot be tested on this setup",
+    "implementation_goal": "Complete native reassociation against recovered stock macOS contract, without waiting for a second AP",
+    "required_local_evidence": [
+      "Stock producer/consumer message identities, sizes and ordering",
+      "Queue ordering and payload ownership including enqueue failures",
+      "Prepared profile through common join admission and WPA3 preparation",
+      "Old PTK/GTK/IGTK and transport retirement before next association",
+      "Cancellation, profile replacement, transition-disable policy and stale generations",
+      "Success/failure completion with new-BSS publication and retry behavior"
+    ],
+    "single_ap_hardware_scope": "Regression of ordinary association, WPA3, reconnect and traffic only when relevant; do not treat as inter-AP handoff evidence",
+    "reporting": "Distinguish implemented and locally verified roaming from unavailable multi-AP hardware validation; do not claim physical roaming passed",
+    "reboots": "Explicit authorization, 10-second delay; no request for unavailable multi-AP test",
+    "acceptance_levels": {
+      "contract": "Recovered macOS ABI, queue ownership and FSM behavior for the examined OS build only",
+      "local_integration": "Production handoff dispatcher exercised with controlled firmware completions, errors and cancellation; helper-only tests are insufficient",
+      "single_router": "Ordinary join/reconnect/traffic regression; same-AP reassociation is not inter-AP roaming",
+      "physical_handoff": "Unavailable on this setup; retain an explicit unverified label without blocking implementation"
+    }
+  },
+  "postboot_evidence": {
+    "directory": "outputs/NATIVE-roam-postboot-20261030 (workspace and SD)",
+    "connection": "connected-sae",
+    "router_probe": {
+      "interface": "en1",
+      "sent": 30,
+      "received": 30,
+      "mean_ms": 3.932
+    },
+    "disconnects": 0,
+    "tx_watchdog_timeouts": 0,
+    "limitations": [
+      "Short observation only",
+      "No AP-triggered rekey captured",
+      "No physical inter-AP test"
+    ]
+  },
+  "status_map": "docs/development/NATIVE-STATUS.md",
+  "requirements": [
+    "docs/contracts/NATIVE-CONTRACT.md",
+    "docs/contracts/WPA3-CONTRACT.md"
+  ],
+  "external_key_contract": {
+    "recovered": [
+      "Discriminated selector dispatch",
+      "PMKSA selector is no-op success in examined branch",
+      "Password branch programs wsec_pmk with passphrase flag",
+      "Async key completion logs errors only; no WCL link/port publication",
+      "Firmware-supplicant status/reason completion reaches sendConnectComplete independently of key command callback; does not establish external 802.1X port ownership",
+      "STA_AUTHORIZE ioctl fallback requires IO80211SapProtocol; not infrastructure authorization. Current secure RX consumes EAPOL internally and TX admission has no external bypass.",
+      "Installed eapolclient FAC5670D: Apple80211Set selector 3, 148-byte version-1 key record; MSK cipher9 length0/64, preauth cipher7 + BSSID",
+      "IO80211Family clamps MSK to32/48 by auth before WCL cmd3; Infra handleKeyDone emits property-change on link state2 or rekey event0x4c/reason0xe0822c15",
+      "Existing native LinkUp uses enum2 and stock handleKeyDone initial completion route; no duplicate property-change needed",
+      "BCM handlePSKEvent produces existing ID76/40-byte SupplicantEvent; reason21 reaches rekey key-done, reason0 policy event does not",
+      "Broadcom WLC_E_SUP_PTK_UPDATE=21 identifies pairwise update, not GTK/IGTK; local Infra reason21 notification route matches"
+    ],
+    "remaining": [
+      "Implement EAP versus EAPOL-Key routing, MSK profile/generation admission and cancellation together",
+      "Validate enterprise profile before advertising",
+      "Validate auth profiles for external MSK and enterprise completion separately; local PTK-update notification is implemented"
+    ],
+    "implemented": false,
+    "architecture": "OS EAP + MSK handoff with existing internal four-way/PMF is the source-supported target; wholly external PTK/GTK ownership is not assumed",
+    "pairwise_completion_batch": {
+      "status": "implemented locally; candidate D2D48A34-9F25-327E-A916-7C7D4C297822 not installed",
+      "evidence": [
+        "serviceNative sets authorizePending only at securityPhase 3; rekey replies are sent at phase 5",
+        "serviceConnection records EAPOL failure in a sticky flag; the native phase-5 reply path does not consume that failure",
+        "serviceConnection may submit another serial management packet before asynchronous serviceNative runs; shared txStatus/txId are not a durable EAPOL completion record",
+        "serviceNativePMF runs before native reply-completion processing and can also reuse the serial packet slot"
+      ],
+      "requirements": [
+        "Capture EAPOL completion at the serial DMA retirement point, before another submission can overwrite status",
+        "Bind completion to the accepted reply, association lifetime and pairwise update; initial, group and duplicate replies must not emit a new PTK-update event",
+        "Handle failure for every native EAPOL reply, not only initial M4; do not authorize or publish success on failed completion",
+        "Publish ID76 reason0xe0822c15 only after pairwise firmware/PMF/ECHO barriers and successful matching M4 transport completion",
+        "Preserve policy fields, retry rejected enqueue with the same ticket, retire ticket on leave/radio-off/roam/stop",
+        "Add production-path regression for overwritten serial status, TX failure, duplicate M3, cancellation, GTK/IGTK exclusion and notification retry"
+      ],
+      "validation": "Run the consolidated development suite after the complete implementation batch; do not claim AP-triggered hardware rekey from local tests",
+      "local_validation": "64-test consolidated suite passed; signature, structure and exact-UUID auxiliary inclusion passed"
+    }
+  }
+}

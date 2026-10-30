@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — repository organization
+
+- Separate radio/security/macOS sources, test groups, packaging and developer documentation.
+- Replace copied MacKernelSDK and Airport headers with pinned submodules and four reviewed ABI overrides; generated headers are hash-verified.
+- Update Make, Xcode, Windows tooling, diagnostics and CI paths; rewrite README for users and contributors.
+- Driver declarations and executable statements are unchanged across all 90 relocated source files; on-machine acceptance is required before merging this branch.
+
 ## Unreleased — EAPOL completion and native PTK-update notification
 
 - Preserve EAPOL transport results at serial DMA retirement independently of
@@ -38,6 +45,6 @@ Published as `a3ab0b5a08ba3d085e75b45ee936891f53941ae2`.
 ## Earlier development
 
 Historical SAE/PMF implementation and radio checkpoints, lifecycle fixes and
-other experiments are preserved in [NATIVE-CONNECTION-AUDIT.md](NATIVE-CONNECTION-AUDIT.md)
+other experiments are preserved in [docs/development/NATIVE-CONNECTION-AUDIT.md](docs/development/NATIVE-CONNECTION-AUDIT.md)
 and [contract research](docs/history/NATIVE-CONTRACT.md). This changelog does not
 invent release boundaries or claim every historical experiment was installed.

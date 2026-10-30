@@ -1,14 +1,14 @@
 // Compile-only: no kmod entrypoint, no direct crypto imports, no runtime execution.
-#include "../../src/shared/Ath10kP256CoreCrypto.hpp"
-#include "../../src/shared/Ath10kSAE.hpp"
-#include "../../src/shared/Ath10kSAEWire.hpp"
-#include "../../src/shared/Ath10kSAEExchange.hpp"
-#include "../../src/shared/Ath10kSupplicant.hpp"
-#include "../../src/shared/Ath10kSAQuery.hpp"
-#include "../../src/shared/Ath10kPMFCCMP.hpp"
-#include "../../src/shared/Ath10kPMFTransport.hpp"
-#include "../../src/kext/native/Ath10kSAESession.hpp"
-#include "../../src/kext/native/Ath10kNativeSAEJoin.hpp"
+#include "../../src/security/Ath10kP256CoreCrypto.hpp"
+#include "../../src/security/Ath10kSAE.hpp"
+#include "../../src/security/Ath10kSAEWire.hpp"
+#include "../../src/security/Ath10kSAEExchange.hpp"
+#include "../../src/security/Ath10kSupplicant.hpp"
+#include "../../src/security/Ath10kSAQuery.hpp"
+#include "../../src/security/Ath10kPMFCCMP.hpp"
+#include "../../src/security/Ath10kPMFTransport.hpp"
+#include "../../src/macos/native/Ath10kSAESession.hpp"
+#include "../../src/macos/native/Ath10kNativeSAEJoin.hpp"
 // Preserve both layouts and arbitrary acknowledged key epochs in kernel code.
 struct CompileOnlyPMFAES {
  using Block=bool (*)(const uint8_t *,const uint8_t *,uint8_t *);

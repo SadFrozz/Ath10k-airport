@@ -84,6 +84,6 @@ for case in cases:
     values = (*case, *derive(*case))
     lines.append('  {' + ','.join('"'+v.hex()+'"' for v in values) + '},')
 lines += ['};', '}']
-output = Path(__file__).resolve().parents[2]/'tests/h2e_password_vectors.inc'
+output = Path(__file__).resolve().parents[2]/'tests/fixtures/h2e_password_vectors.inc'
 output.write_text('\n'.join(lines)+'\n')
 print('Generated 3 independent H2E credential vectors')

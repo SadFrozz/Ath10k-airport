@@ -36,5 +36,5 @@ for password in (b'\x00', b'test-password', bytes((37*i) % 256 for i in range(64
     else:
         raise AssertionError('no PWE within protocol counter bound')
 lines += ['};', '}']
-(Path(__file__).resolve().parents[2]/'tests/legacy_password_vectors.inc').write_text('\n'.join(lines)+'\n')
+(Path(__file__).resolve().parents[2]/'tests/fixtures/legacy_password_vectors.inc').write_text('\n'.join(lines)+'\n')
 print('Generated 3 independent legacy SAE password vectors')
