@@ -12,14 +12,20 @@
       "macOS adapters other than the validated Sequoia build",
       "AWDL/AirDrop",
       "platform sleep"
-    ]
+    ],
+    "latency_acceptance": {
+      "user_policy": "Occasional latency spikes affecting at most 1% of samples are acceptable measurement variation",
+      "evaluation": "Use a sufficiently sized sample and report count/denominator; a maximum alone does not establish frequency",
+      "spike_threshold_ms": null,
+      "threshold_note": "No numeric latency threshold was specified; do not invent one as a user requirement"
+    }
   },
   "execution_policy": {
     "unit_of_work": "A complete related contract group, not one callback or one failing check",
     "active_group": [
-      "Drain pending key notifications, EAP queue/TX and replacement authentication before roam retirement",
-      "Recover system EAP cache/session transitions across BSSID changes before enabling Enterprise roam",
-      "Preserve accepted Personal roaming behavior and distinguish local ownership fixtures from multi-AP evidence"
+      "Recover macOS address/traffic/keepalive callback group and caller failure handling",
+      "Distinguish host address notification from firmware ARP/NDP and sleep offload contracts",
+      "Implement only confirmed ownership, cancellation and capability semantics together"
     ],
     "acceptance": "Review the entire group, run affected regressions during development, then one consolidated full regression and one candidate build after final edits",
     "publication": "Keep intermediate edits local; publish one reviewed batch without per-fix pushes or Actions runs",
@@ -29,18 +35,18 @@
     "version": "Advance build number only after successful push and verified remote head; local edits/unpushed commits keep previous number"
   },
   "current_candidate": {
-    "version": "1.0.106",
-    "uuid": "316E8378-1379-35B5-BCC9-BB4B99D59C0E",
-    "source_commit": "826c310abf1c1e1888679a07bd9a22442e5b5e7b",
+    "version": "1.0.109",
+    "uuid": "8EDCBD5B-73D0-3488-8703-FED8837683F9",
     "installed": true,
     "boot_verified": true,
-    "boot_uuid": "37571895-159B-4AF9-A20D-B1F2F1554098",
-    "evidence": "outputs/NATIVE-installed-runtime-20261030-154050/result.json",
-    "enterprise_enabled": false
+    "boot_uuid": "2667E42D-9EF0-4D07-B60F-37E461F4007D",
+    "enterprise_enabled": false,
+    "source_commit": "a88bbedb9c0113ff93219eda53a741ff28fa9a6a",
+    "evidence": "outputs/NATIVE-installed-1.0.109-runtime-20261030/result.json"
   },
   "active_scope": {
     "name": "Roam ownership and notification progress",
-    "status": "Local batch passed full regression, native build, signature and exact-UUID offline inclusion; publication pending",
+    "status": "Published and loaded as 1.0.109; bounded native SAE traffic passed, latency remains open",
     "contract": "docs/contracts/NATIVE-EAP-CONTRACT.md",
     "groups": [
       "Retain pending PTK/EAP owners before roam retirement",
@@ -54,17 +60,17 @@
       "full_regression": "68 C++ tests plus runner checks passed with ASan/UBSan",
       "native_build": "passed",
       "offline_dependencies": "isolated signature and exact-UUID inclusion passed",
-      "hardware": false,
+      "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
       "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
     },
     "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
     "next_group": {
-      "name": "Roam security ownership and Enterprise system-session handoff",
-      "status": "Local guards integrated; affected production-path validation in progress; Enterprise handoff not implemented",
+      "name": "Address and traffic configuration callbacks",
+      "status": "Four host address notifications locally validated: 69 sanitized tests, native build, signature and exact offline UUID passed; publication pending",
       "remaining": [
-        "Recover installed-client cache retirement and callback ordering across BSSID changes",
-        "Implement complete Enterprise roam session transition without assumed timer fences",
-        "Consolidated regression and native candidate validation after final group changes"
+        "Review and publish coherent host-address batch; hardware validation separate",
+        "Radio offload command capacity, replacement and retirement still unimplemented",
+        "DHCP sleep hint and conditional traffic engineering remain unimplemented"
       ]
     },
     "completed_predecessor": {
@@ -83,6 +89,13 @@
         "source_version_after_publication": "1.0.108",
         "version_metadata_published": false
       }
+    },
+    "publication": {
+      "functional_commit": "a88bbedb9c0113ff93219eda53a741ff28fa9a6a",
+      "remote_tree_verified": true,
+      "validated_candidate_version": "1.0.108",
+      "source_version_after_publication": "1.0.109",
+      "version_metadata_published": false
     }
   },
   "implemented": {

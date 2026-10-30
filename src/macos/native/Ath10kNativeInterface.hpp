@@ -114,8 +114,8 @@ public:
     IOReturn setCLEAR_PMKSA_CACHE(void* data) override { return perform(AthNativeOp::setCLEAR_PMKSA_CACHE,data); }
     IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data* data) override { return kIOReturnUnsupported; }
     IOReturn setHT_CAPABILITY(apple80211_ht_capability* data) override { return kIOReturnUnsupported; }
-    IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data* data) override { return kIOReturnUnsupported; }
-    IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data* data) override { return kIOReturnUnsupported; }
+    IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data* data) override { return perform(AthNativeOp::setOFFLOAD_ARP,data); }
+    IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data* data) override { return perform(AthNativeOp::setOFFLOAD_NDP,data); }
     IOReturn setGAS_REQ(apple80211_gas_query_t* data) override { return kIOReturnUnsupported; }
     IOReturn setVHT_CAPABILITY(apple80211_vht_capability* data) override { return kIOReturnUnsupported; }
     IOReturn setROAM_PROFILE(apple80211_roam_profile_all_bands* data) override { return kIOReturnUnsupported; }
@@ -183,7 +183,7 @@ public:
     IOReturn setINTERFACE_SETTING(apple80211_interface_setting* data) override { return kIOReturnUnsupported; }
     IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap* data) override { return kIOReturnUnsupported; }
     IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params* data) override { return kIOReturnUnsupported; }
-    IOReturn setIPV4_PARAMS(apple80211_ipv4_params* data) override { return kIOReturnUnsupported; }
+    IOReturn setIPV4_PARAMS(apple80211_ipv4_params* data) override { return perform(AthNativeOp::setIPV4_PARAMS,data); }
     IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config* data) override { return kIOReturnUnsupported; }
@@ -195,7 +195,7 @@ public:
     IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config* data) override { return kIOReturnUnsupported; }
     IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication* data) override { return kIOReturnUnsupported; }
     IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state* data) override { return kIOReturnUnsupported; }
-    IOReturn setIPV6_PARAMS(apple80211_ipv6_params* data) override { return kIOReturnUnsupported; }
+    IOReturn setIPV6_PARAMS(apple80211_ipv6_params* data) override { return perform(AthNativeOp::setIPV6_PARAMS,data); }
     IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated* data) override { return kIOReturnUnsupported; }
     IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config* data) override { return kIOReturnUnsupported; }
     IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params* data) override { return kIOReturnUnsupported; }

@@ -35,3 +35,29 @@ A callback returning Unsupported is not automatically optional. Its consumer,
 required scope and alternative path must be investigated before classification.
 Publication is batched. Installation requires a verified SD rollback; reboot
 requires explicit user approval and a 10-second delay.
+
+## Address and traffic configuration group
+
+Recover and implement IPv4/IPv6 parameter notification, DHCP activity hint and
+ARP/NDP offload as distinct operations. A host address notification must not be
+silently treated as permission to enable sleeping firmware responses.
+
+- Validate exact adapter record sizes and list counts before changing state.
+  Legacy NDP and IPv6 parameter records have different layouts and capacities.
+- Associate configuration with the current station/vdev/association generation;
+  reject stale work and retain both families when updating a combined command.
+- Replacing or shrinking a list must invalidate removed slots. Build a zeroed
+  complete firmware snapshot, set validity only for populated entries, and reject
+  excess capacity until extended-tuple support is recovered and verified.
+- Track submission and uncertain firmware ownership separately from desired host
+  configuration. Transport completion alone is not semantic confirmation.
+- Disable/retire potentially programmed state before owner reuse. Partial failure
+  must not lose the cleanup obligation; a proven reset can discharge it.
+- Tests must cover empty/shrinking lists, one-family replacement preserving the
+  other, malformed lengths, capacity overflow, stale generation, command failure,
+  cancellation and reset. Hardware acceptance must separately confirm responses
+  and absence of replies for retired addresses before advertising offload.
+
+Pinned Android reference replacement/cleanup caveats are recorded in
+`outputs/NATIVE-address-traffic-contract-20261030/offload-replacement-review.json`.
+These requirements do not claim that offload is currently implemented.

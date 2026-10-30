@@ -8,8 +8,8 @@
   "hardware_validation": false,
   "counts": {
     "total": 190,
-    "forwarded": 35,
-    "unsupported": 155
+    "forwarded": 39,
+    "unsupported": 151
   },
   "callbacks": [
     {
@@ -876,20 +876,60 @@
     {
       "callback": "setOFFLOAD_ARP",
       "parameters": "apple80211_offload_arp_data* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "implementation": "forwarded",
+      "operation": "setOFFLOAD_ARP",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "Legacy host address record translated into stock interface cache; empty replacement and partial IPv4 updates handled. No firmware offload capability enabled. Local implementation awaiting completed-batch validation and hardware evidence",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "set ioctl handler",
+          "address": "0xffffff800221a8d4",
+          "ioctl_operation": 191,
+          "input_bytes": 24,
+          "semantics": "Exact size and nonnull payload required; WCL dispatch and typed protocol fallback; return status propagated on inspected path"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setOFFLOAD_ARP",
+          "address": "0xffffff80016065de",
+          "semantics": "Input word+4 gates local IPv4 replacement from+8; zero preserves prior local IPv4. Gateway+12 and MAC+16 always update. Copies a 16-byte record to IO80211InfraInterface and conditionally runs keepalive handler; not a proven global disable flag",
+          "limitation": "Host replacement/cache behavior recovered; downstream firmware programming and caller requirements still open"
+        }
+      ]
     },
     {
       "callback": "setOFFLOAD_NDP",
       "parameters": "apple80211_offload_ndp_data* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "implementation": "forwarded",
+      "operation": "setOFFLOAD_NDP",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "Legacy host address record translated into stock interface cache; empty replacement and partial IPv4 updates handled. No firmware offload capability enabled. Local implementation awaiting completed-batch validation and hardware evidence",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "set ioctl handler",
+          "address": "0xffffff800221a9d7",
+          "ioctl_operation": 192,
+          "input_bytes": 72,
+          "semantics": "Exact size and nonnull payload required; WCL dispatch and typed protocol fallback; return status propagated on inspected path"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setOFFLOAD_NDP",
+          "address": "0xffffff8001606878",
+          "semantics": "Reads count at+4, clamps to four, copies 16-byte IPv6 entries from+8. Zero count still forwards to IO80211InfraInterface cache; distinct from ten-entry IPV6_PARAMS record. Gated IPv6 handler has diagnostic iteration and no immediate firmware command",
+          "limitation": "Host replacement/cache behavior recovered; downstream firmware programming and caller requirements still open"
+        }
+      ]
     },
     {
       "callback": "setGAS_REQ",
@@ -1455,8 +1495,28 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "Sleep activity hint under review; rejected, not an implemented no-op. Downstream alias consumers remain open",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "set ioctl handler",
+          "address": "0xffffff800221f5e7",
+          "ioctl_operation": 470,
+          "input_bytes": 1,
+          "semantics": "Validates exact size and nonnull payload; WCL dispatch falls back to typed protocol when unhandled or status 0xe082280f. This does not make every driver error a disconnect."
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setDHCP_RENEWAL_DATA",
+          "address": "0xffffff8001643764",
+          "semantics": "Stores whether the first input byte is nonzero at core-context+0x1a52. Diagnostic identifies active-during-sleep support. No DHCP packet construction in this setter; downstream uses and caller failure handling require recovery.",
+          "limitation": "Producer inspection does not establish optionality, consumer acceptance or native radio interoperability"
+        }
+      ]
     },
     {
       "callback": "setBATTERY_POWERSAVE_CONFIG",
@@ -1560,9 +1620,9 @@
     {
       "callback": "setIPV4_PARAMS",
       "parameters": "apple80211_ipv4_params* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
+      "implementation": "forwarded",
+      "operation": "setIPV4_PARAMS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
       "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
       "stock_consumer_evidence": [
         {
@@ -1697,9 +1757,9 @@
     {
       "callback": "setIPV6_PARAMS",
       "parameters": "apple80211_ipv6_params* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
+      "implementation": "forwarded",
+      "operation": "setIPV6_PARAMS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
       "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
       "stock_consumer_evidence": [
         {

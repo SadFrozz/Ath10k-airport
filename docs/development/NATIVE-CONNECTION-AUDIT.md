@@ -2451,3 +2451,220 @@ Production-fragment fixtures cover teardown Busy plus pending PTK notification,
 Start and Prep enqueue failures, failed Complete retry, no premature retirement,
 and exactly one accepted key-update notification. This fixes the local batch
 before publication; it is not an observed failure of installed 1.0.106.
+
+## 2026-10-30 — address configuration is not a generic success acknowledgement
+
+Recovered the next callback group from AppleBCMWLANCoreMac UUID
+4C3822FC-8902-3AF6-A791-DD4A8D9E9C66. setIPV4_PARAMS at 0xffffff8001643b3c
+stores address/gateway and peer fields, optionally forwards to 0xffffff80022dbd50,
+and calls IPv4 address/keepalive notification handlers. The IPv4 handler can
+configure traffic monitoring. setIPV6_PARAMS at 0xffffff8001643e80 forwards to
+0xffffff80022dbd92, clamps count to ten and invokes its gated address handler.
+setDHCP_RENEWAL_DATA at 0xffffff8001643764 stores a boolean at context+0x1a52;
+its diagnostic identifies active-during-sleep support, not lease-renewal packet
+construction. These producer facts do not prove caller tolerance of Unsupported
+or permit acknowledging unimplemented firmware behavior. Matrix generator updated;
+all three callbacks remain explicitly unsupported. Next: recover caller return
+handling and relation to ARP/NDP offload/traffic policy before implementation.
+No runtime code change, installation or repeat full regression in this step.
+
+## 2026-10-30 — IP callback caller and size contracts
+
+IO80211Family UUID 0D5AC570-04D4-38B6-8577-9F21350CDD50 ioctl handlers validate
+exact payload sizes: IPv4 16 bytes (0xffffff8002220006, operation0x1e9), IPv6
+164 bytes (0xffffff8002220950, operation0x1fe), DHCP 1 byte
+(0xffffff800221f5e7, operation0x1d6). All use WCL then typed-protocol fallback
+if unhandled or 0xe082280f. WCLNetManager IPv4 handler 0xffffff8002128a58 calls
+cmdIouc but does not inspect its return before receivedIPv4Address; it marks the
+nonnull message handled and returns zero. IPv6 handler 0xffffff8002128ac4 clamps
+to ten 16-byte addresses, copies them and calls receivedIPv6Address without a
+cmdIouc in the inspected method. Allocation failure returns 0xe00002c2.
+These facts narrow the hypothesis: unsupported driver setters alone do not prove
+ordinary WCL IP-state loss. Offload/keepalive side effects remain unimplemented
+and require separate call-path recovery. No fake-success callback added.
+
+## 2026-10-30 — QCA offload versus keepalive transport boundary
+
+Linux v6.12 ath10k reference: wmi-ops.h blob
+f3f6b5954b270dbc5c03cb8474981695a6c8f885 exposes gen_sta_keepalive and sends
+its generated payload through the selected sta_keepalive command. No ARP/NS
+encoder operation was found in that interface. wow.c blob
+aa7b2e703f3d4bd742d8f5abf39ea2607cb1bcb1 contains no ARP/NS or keepalive
+configuration path in the inspected source. Local wmi-tlv.c reference contains
+SET_ARP_NS_OFFLOAD command mapping but no matching generator; this is not proof
+that firmware lacks the feature. Its keepalive encoder has a fixed configuration
+TLV (vdev, enabled, method, interval) followed by an ARP response TLV with network
+address bytes and destination MAC. Host input, firmware serialization and actual
+radio evidence are separate requirements.
+
+The native source currently contains no ARP/NS/STA-keepalive implementation.
+Do not infer firmware support merely from a defined command ID, nor acknowledge
+macOS offload requests without address-generation ownership and disable/retirement
+behavior. Next: recover full ARP/NDP caller records, service-ready feature gating,
+and determine whether awake keepalive is required independently of deferred sleep.
+References: https://github.com/torvalds/linux/blob/v6.12/drivers/net/wireless/ath/ath10k/wmi-ops.h
+and https://github.com/torvalds/linux/blob/v6.12/drivers/net/wireless/ath/ath10k/wow.c.
+
+## 2026-10-30 — live firmware offload advertisement and legacy ARP/NDP ABI
+
+Read only Ath10kWMIServiceReadyPacket from the running driver's IOKit node.
+Validated HTC/TLV bounds and the 128-byte tag16 service bitmap. Using ath10k's
+four-low-bits-per-u32 service mapping, service16 ARPNS_OFFLOAD is advertised;
+service13 WOW, service17 NLO and service18 GTK_OFFLOAD are also advertised.
+This is capability advertisement, not successful command delivery or radio proof.
+No command or power transition was submitted. Evidence: live-firmware-services.json
+in outputs/NATIVE-address-traffic-contract-20261030 and SD.
+
+IO80211Family ARP ioctl0xbf at 0xffffff800221a8d4 requires24 bytes; NDP ioctl0xc0
+at 0xffffff800221a9d7 requires72. Both preserve returned status on the inspected
+path and retain WCL/typed fallback rules. BCM ARP setter uses +4 control word,
++8 local IPv4, +12 gateway and +16 six-byte MAC. BCM NDP reads count+4 and copies
+16-byte addresses from+8, clamped to four. Do not confuse that legacy record with
+164-byte IPV6_PARAMS supporting ten entries. Next: recover full QCA ARP/NS TLV
+encoder and disable/replacement semantics before implementing the native callbacks.
+
+## 2026-10-30 — complete ath10k ARP/NS reference recovered
+
+Android msm revision c8dcd0686d07003b3f84e4a2ff8920b07daaf278 contains the
+missing ath10k encoder in drivers/net/wireless/ath/ath10k/wmi-tlv.c.
+The combined command has a 12-byte fixed payload, followed by two NS tuples
+(76-byte payload each) and two ARP tuples (20-byte payload each), with TLV
+array envelopes. Clearing valid flags disables entries. Fixed payload includes
+extended NS count, but this encoder does not populate extended tuples. Its WoW
+path enables offload before sleep and disables on unwind/resume. Thus this source
+does not establish a requirement for awake offload on our adapter.
+
+Implementation constraints: preserve both address families in one configuration
+snapshot, zero all unused/reserved fields, reject unsupported list cardinality
+rather than silently dropping addresses, bind updates to vdev/association identity,
+and retire/disable before reuse. A CE/credit completion is not firmware semantic
+confirmation. Our macOS inputs support four or ten IPv6 entries versus this two-slot
+base reference; extended tuples need separate proof. Exact firmware execution and
+full address replacement semantics remain open. Source hashes and paths preserved
+in android-offload-reference.json; no source was imported into driver code.
+Reference: https://android.googlesource.com/kernel/msm.git/+/c8dcd0686d07003b3f84e4a2ff8920b07daaf278/drivers/net/wireless/ath/ath10k/wmi-tlv.c
+
+## 2026-10-30 — 1.0.109 authorized boot and bounded traffic check
+
+Loaded UUID 8EDCBD5B-73D0-3488-8703-FED8837683F9 on boot
+2667E42D-9EF0-4D07-B60F-37E461F4007D. 45 en1-bound gateway probes returned
+without loss; mean 9.267 ms, maximum 242.158 ms. SAE stayed connected, PMF port
+ready, disconnect/watchdog/security/replay counters zero, NoAck unchanged 9→9.
+No sleep/reconnect/scan timing test was repeated and no settings changed.
+Latency remains unresolved; this bounded check does not certify prolonged stability
+or the inter-AP roam case. Evidence: NATIVE-installed-1.0.109-runtime-20261030.
+
+## 2026-10-30 — user latency acceptance criterion
+
+The user accepts occasional latency spikes in at most 1% of samples as measurement
+variation. No numeric spike threshold was specified. Report sample size and count
+when evaluating this criterion; a 45-probe maximum alone cannot establish a <=1%
+frequency. Do not treat an isolated maximum as a mandatory latency fix.
+
+## 2026-10-30 — offload replacement and cleanup reference audit
+
+The pinned Android NS builder preserves entries outside the new count, while its
+encoder marks both base tuples valid whenever global NS enable is set. A shrinking
+list can therefore retain prior host records in this reference path. Partial
+multi-vdev enable failure bypasses ARP/NS rollback; cleanup also filters out vdevs
+no longer marked up. These are static reference-path findings, not observed bugs
+in Ath10kMac (whose offload setters remain unsupported).
+
+Added group requirements for full zeroed replacement snapshots, per-slot validity,
+generation binding, partial submission cleanup and reset fencing. Exact source
+hashes and locations: NATIVE-address-traffic-contract-20261030/offload-replacement-review.json.
+No firmware commands, runtime edits, version bump or publication performed.
+
+## 2026-10-30 — stock address replacement semantics
+
+Resolved the former unnamed context+0x2c20 calls to IO80211InfraInterface's
+setIPv4Params/setIPv6Params: they copy 16/164 bytes to interface-owned cache.
+BCM OFFLOAD_ARP word+4 gates only local IPv4 replacement; zero preserves the prior
+local address while gateway and peer MAC still update. It is not evidence of a
+firmware-disable flag. OFFLOAD_NDP count zero still reaches the interface cache;
+its gated IPv6 handler performs diagnostic iteration, with no immediate firmware
+command in the inspected body. Thus cache updates and radio offload remain
+separate contracts. Bounded assembly and facts saved in stock-address-replacement.*
+under NATIVE-address-traffic-contract-20261030. Callbacks remain unsupported pending
+the complete downstream contract; no runtime or version change.
+
+## 2026-10-30 — radio offload entry/exit versus host notifications
+
+Direct-call recovery places configureARPOffload(1) under configurePktFilters,
+called by configureLPASEntry/configureWoWEntry. unConfigurePktFilters uses zero
+and is called by entry failure unwind and LPAS/WoW exit; resetWoWConfig reaches
+resetOffloads, which also disables ARP. This is evidence for power-transition
+programming, not a requirement to send an offload command on each address update.
+Indirect callers are not excluded by this direct-call audit.
+
+The full handleKeepaliveDataNotificationGated body only logs and returns zero.
+IPv4 notification registers a traffic monitor only with a nonzero local address
+and traffic-engineering flag context+0x74cc==1; it uses the IO80211 traffic monitor
+and work-source APIs. The DHCP hint's direct field references are initialization,
+setter write and logging; alias-based consumers remain unproven.
+
+Next implementation boundary: host address cache and its retirement, separately
+from still-unsupported radio offload. Evidence: stock-offload-lifecycle.json and
+stock-keepalive-traffic.asm in NATIVE-address-traffic-contract-20261030.
+
+## 2026-10-30 — fresh filter snapshot and cache lifetime boundary
+
+configurePktFilters calls IO80211InfraInterface::getPacketFilterData at
+0xffffff8001626110, checks its return, then copies a fresh 0x30c-byte system record's
+IPv4 and IPv6 list into BCM state. Offload programming therefore has a later
+system-snapshot source beyond parameter callbacks. resetWoWStateMachine clears
+programmed IPv6 state; that is not evidence of clearing the interface host cache.
+Do not clear host L3 configuration on every radio association change: retained-link
+roam preserves connectivity, and indirect cache lifetime effects remain unresolved.
+
+The recovered binary globally defines setIPv4Params/setIPv6Params, but pinned
+macOS15 headers omit declarations. A reviewed ABI bridge and offline dependency
+inclusion are needed before calling them. No raw context-offset writes are planned.
+Evidence: host-cache-retirement-boundary.json and fresh-filter-snapshot.asm under
+NATIVE-address-traffic-contract-20261030. Runtime remains unchanged.
+
+## 2026-10-30 — local IPv4/IPv6 host-cache implementation
+
+Added native dispatch of IPV4_PARAMS/IPV6_PARAMS to the stock nonvirtual interface
+cache methods through an external symbol bridge, without changing vendor headers
+or class layout. Existing request admission/network gate serializes the synchronous
+copy. IPv6 validates count <=10 and zeroes unused slots; IPv4 copies address,
+gateway and MAC while clearing trailing padding. Empty IPv6 replaces the cache;
+OS return status is propagated. No firmware command or separate association-owned
+address cache was introduced. Legacy ARP/NDP and DHCP hint remain unsupported.
+
+Production dispatch fixtures cover malformed/null/detached inputs, shrinking/empty
+IPv6 replacement, family independence, unaligned input, padding and OS error return.
+These plus request admission passed ASan/UBSan. Native build and symbol validation
+passed. Isolated signed candidate UUID F4234BA4-0E38-3298-B68C-40DE436D733F was
+included in an offline auxiliary collection; no system collection changed. kmutil
+requires absolute candidate paths here (relative path attempt included no binary).
+Version remains 1.0.109, no commit/push/install. Full regression waits for the final
+group. Evidence: address-sanitized-tests.log, address-native-build.log and
+address-abi-probe/inclusion.json in NATIVE-address-traffic-contract-20261030.
+
+## 2026-10-30 — host notification group review, pending full suite
+
+The four callbacks share existing WCL-to-network gate admission. OS cache bridge
+methods are plain synchronous copies/pointer access in the recovered image, so no
+new reverse call or retained borrower was introduced. Interface-owned addresses
+remain continuous across retained-link roam; no speculative link-down reset added.
+Legacy ARP explicit local-address removal clears its gateway, while partial updates
+preserve local IPv4. Both IPv6 formats replace the entire normalized host record.
+The callback acknowledgement is host-cache acceptance, not a radio-offload claim.
+
+Pending changelog for publication: accept native IPv4/IPv6 and legacy ARP/NDP host
+address updates; validate counts, zero unused slots/padding, preserve partial ARP
+semantics and propagate OS cache errors under stop/power admission. Source snapshot
+and SHA256 review manifest are on SD (host-group-source, host-group-review.json).
+Full regression session 84265 remains active; do not restart from this note.
+
+## 2026-10-30 — complete host-address batch acceptance
+
+The final full regression completed with 69 C++ tests plus runner checks under
+ASan/UBSan, assertions enabled, terminal exit 0. Final native candidate UUID
+F1A75ABE-5C9E-3570-9DF7-0C62A3422E9C passed build, symbol checks, strict isolated
+signature and exact-UUID offline dependency inclusion. All four host callbacks
+are included. No radio-offload capability, sleep behavior or runtime installation
+changed. Source metadata remains 1.0.109 until publication succeeds.
+Evidence: host-group-full-summary.json and address-full-regression.log.

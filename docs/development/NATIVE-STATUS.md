@@ -8,19 +8,20 @@ its dated candidate/install statements are historical, not current state.
 
 ## Installed checkpoint
 
-Ath10kMac **1.0.106**, UUID **316E8378-1379-35B5-BCC9-BB4B99D59C0E**,
-source **826c310abf1c1e1888679a07bd9a22442e5b5e7b**. Enterprise remains disabled.
-The loaded UUID was verified on boot 37571895-159B-4AF9-A20D-B1F2F1554098.
-The latest requested installed-image check returned 45/45 en1-bound router replies,
-mean 4.175 ms, maximum 38.304 ms. Disconnect/watchdog/security/replay counts stayed
-zero; TX NoAck stayed 2→2. SAE/PMF remained ready. Evidence:
-`outputs/NATIVE-installed-runtime-20261030-154050/result.json`, workspace and SD.
-Earlier 1.0.106 observation had maximum 946.372 ms and 15 NoAck; later short
-successful checks do not resolve that observation or prove prolonged stability.
+Ath10kMac **1.0.109**, UUID **8EDCBD5B-73D0-3488-8703-FED8837683F9**,
+functional source **a88bbedb9c0113ff93219eda53a741ff28fa9a6a**. Enterprise remains disabled.
+Loaded UUID verified on boot 2667E42D-9EF0-4D07-B60F-37E461F4007D after authorized installation.
+The bounded en1-bound gateway check returned 45/45 replies, mean 9.267 ms,
+maximum 242.158 ms. Disconnect/watchdog/security/replay counts stayed zero;
+TX NoAck stayed 9→9. Connection remained connected-sae and PMF port ready.
+Evidence: `outputs/NATIVE-installed-1.0.109-runtime-20261030/result.json`, workspace and SD.
+This does not prove prolonged stability or AP-triggered rekey. The latency spike
+and earlier NoAck observations remain open.
 
-The published source checkpoint passed 68 C++ tests and runner checks with explicit
-ASan/UBSan, native build, signature and offline exact-UUID dependency inclusion.
-Those results describe 826c310, not untested subsequent changes.
+The same runtime source passed 68 sanitized C++ tests plus runner checks before
+publication. The subsequent metadata-only 1.0.109 candidate passed native build,
+signature and exact-UUID offline inclusion; installation/rollback evidence is in
+`outputs/NATIVE-1.0.109-hardware-candidate-20261030`.
 
 ## Current implementation
 
@@ -74,13 +75,33 @@ owner and original deadline. Expiry in a key callback explicitly cancels; servic
 retires orphaned EAP queue ownership without stopping authorized data. See the
 EAP contract and audit for precise evidence and unresolved boundaries.
 
-## Pending roam ownership batch
+## Published roam ownership batch
 
-Local admission/teardown guards retain pending PTK notification, EAP TX/queue and
+Published admission/teardown guards retain pending PTK notification, EAP TX/queue and
 replacement-authentication owners. Dispatcher waits allow the old link's key
 completion to progress instead of returning before its producer. Added fixtures
 cover residual EAP owners and notification retry ordering. The full 68-test regression passed with ASan/UBSan; native compilation, strict
 isolated signature and exact-UUID offline inclusion passed. Candidate UUID
-CB30D84D-5AAB-3595-AFD4-F259BD9CB5AA, source version 1.0.108. These changes
-are unpublished and not installed. Enterprise
+CB30D84D-5AAB-3595-AFD4-F259BD9CB5AA, source version 1.0.108. Published as a88bbed after exact remote-tree verification.
+Only after that publication, local metadata advanced to 1.0.109. The metadata-only 1.0.109 candidate was subsequently rebuilt, validated, installed
+and boot-verified; its metadata update is not yet published. Enterprise
 roam admission is still unsupported until the OS session handoff is implemented.
+
+## Local address-notification group (not installed)
+
+Four host notifications now reach the stock interface cache: IPV4_PARAMS,
+IPV6_PARAMS, legacy OFFLOAD_ARP and OFFLOAD_NDP. These are synchronous gated
+copies, not firmware-offload activation. Invalid counts fail before mutation;
+unused bytes are zeroed; empty IPv6 lists clear the cached list. Legacy ARP
+preserves the old local IPv4 when its replacement word is zero and always updates
+gateway/MAC. Explicit replacement with zero clears the gateway as stock does.
+No separate retained pointer or asynchronous address owner is introduced, and
+radio roam does not clear OS-owned L3 state. Existing stop/power/MAC admission
+applies to all four requests. The added getter bridge preserves upstream headers.
+
+Focused production dispatch and request admission checks passed; final expanded
+69-test regression passed with ASan/UBSan. The current native build, strict
+isolated signature and exact-UUID offline inclusion passed, including the getter
+bridge (UUID F1A75ABE-5C9E-3570-9DF7-0C62A3422E9C). DHCP sleep hint, conditional traffic
+engineering and radio ARP/NS offload remain unfinished; no capability advertised.
+Source version remains 1.0.109 until a completed batch is pushed and verified.

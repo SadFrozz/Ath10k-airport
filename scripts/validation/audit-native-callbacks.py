@@ -84,6 +84,49 @@ def inventory():
                 producer='AppleBCMWLANCore::setEAP_FILTER_CONFIG', address='0xffffff8001643cfa',
                 semantics='Nonnull record: copies first u32 to core-context +0x4c90, diagnostic identifies WoWEapolFilterEnable; returns success. Null returns 0xe00002bc. No immediate packet delivery or client startup call in this setter.',
                 limitation='Setter alone does not establish when configureEapolFilter uses the option or whether a consumer requires success')]
+        if name in ('setIPV4_PARAMS', 'setIPV6_PARAMS', 'setDHCP_RENEWAL_DATA'):
+            address, semantics = {
+                'setIPV4_PARAMS': ('0xffffff8001643b3c', 'Copies address/gateway words and six-byte peer address; forwards to IO80211InfraInterface::setIPv4Params at 0xffffff80022dbd50 (copies 16 bytes); calls handleIPv4AddressNotificationGated and conditional handleKeepaliveDataNotificationGated. IPv4 notification can set up traffic monitoring.'),
+                'setIPV6_PARAMS': ('0xffffff8001643e80', 'Forwards to IO80211InfraInterface::setIPv6Params at 0xffffff80022dbd92 (copies 164 bytes), clamps count to ten, updates address context and invokes gated handleIPv6AddressNotificationGated. Host record layout recovered; radio offload remains separately unimplemented.'),
+                'setDHCP_RENEWAL_DATA': ('0xffffff8001643764', 'Stores whether the first input byte is nonzero at core-context+0x1a52. Diagnostic identifies active-during-sleep support. No DHCP packet construction in this setter; downstream uses and caller failure handling require recovery.')
+            }[name]
+            row['requirement_audit'] = ('Host parameter cache forwarding implemented locally with validated/zeroed records and propagated OS status; focused sanitized tests and exact-UUID offline inclusion passed; not installed. Radio offload remains separate and unsupported' if name != 'setDHCP_RENEWAL_DATA' else 'Sleep activity hint under review; rejected, not an implemented no-op. Downstream alias consumers remain open')
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANCore::'+name, address=address, semantics=semantics,
+                limitation='Producer inspection does not establish optionality, consumer acceptance or native radio interoperability')]
+        if name in ('setIPV4_PARAMS', 'setIPV6_PARAMS', 'setDHCP_RENEWAL_DATA'):
+            handler, operation, length = {
+                'setIPV4_PARAMS': ('0xffffff8002220006', 0x1e9, 16),
+                'setIPV6_PARAMS': ('0xffffff8002220950', 0x1fe, 164),
+                'setDHCP_RENEWAL_DATA': ('0xffffff800221f5e7', 0x1d6, 1)
+            }[name]
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='set ioctl handler', address=handler, ioctl_operation=operation,
+                input_bytes=length,
+                semantics='Validates exact size and nonnull payload; WCL dispatch falls back to typed protocol when unhandled or status 0xe082280f. This does not make every driver error a disconnect.')]
+            if name == 'setIPV4_PARAMS':
+                row['stock_consumer_evidence'].append(dict(
+                    consumer='WCLNetManager::setIPV4_PARAMS', address='0xffffff8002128a58',
+                    semantics='Calls cmdIouc(0x1e9), then receivedIPv4Address without testing returned eax; nonnull message payload path returns zero and marks message handled. No claim about unrelated firmware side effects.'))
+            if name == 'setIPV6_PARAMS':
+                row['stock_consumer_evidence'].append(dict(
+                    consumer='WCLNetManager::setIPV6_PARAMS', address='0xffffff8002128ac4',
+                    semantics='Clamps address count to ten, copies 16-byte entries and calls receivedIPv6Address. No cmdIouc call in this handler; allocation failure returns 0xe00002c2. Other callers remain distinct.'))
+        if name in ('setOFFLOAD_ARP', 'setOFFLOAD_NDP'):
+            row['requirement_audit'] = 'Legacy host address record translated into stock interface cache; empty replacement and partial IPv4 updates handled. No firmware offload capability enabled. Local implementation awaiting completed-batch validation and hardware evidence'
+            arp = name == 'setOFFLOAD_ARP'
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='set ioctl handler', address='0xffffff800221a8d4' if arp else '0xffffff800221a9d7',
+                ioctl_operation=0xbf if arp else 0xc0, input_bytes=24 if arp else 72,
+                semantics='Exact size and nonnull payload required; WCL dispatch and typed protocol fallback; return status propagated on inspected path')]
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANCore::'+name, address='0xffffff80016065de' if arp else '0xffffff8001606878',
+                semantics=('Input word+4 gates local IPv4 replacement from+8; zero preserves prior local IPv4. Gateway+12 and MAC+16 always update. Copies a 16-byte record to IO80211InfraInterface and conditionally runs keepalive handler; not a proven global disable flag' if arp else 'Reads count at+4, clamps to four, copies 16-byte IPv6 entries from+8. Zero count still forwards to IO80211InfraInterface cache; distinct from ten-entry IPV6_PARAMS record. Gated IPv6 handler has diagnostic iteration and no immediate firmware command'),
+                limitation='Host replacement/cache behavior recovered; downstream firmware programming and caller requirements still open')]
         if name == 'setWCL_ROAM_USER_CACHE':
             row['requirement_audit'] = 'mandatory post-roam clear/disable and empty readback implemented; nonempty autonomous firmware cache and override enable explicitly unsupported'
             row['stock_consumer_evidence'] = [dict(

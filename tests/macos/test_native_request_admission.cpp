@@ -5,7 +5,7 @@ using UInt64=uint64_t;using IOReturn=int;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=1,kIOReturnBadArgument=2;
 struct OSObject{};
 #define OSDynamicCast(type,obj) static_cast<type *>(obj)
-enum class AthNativeOp {setWCL_SCAN_REQ,setWCL_ASSOCIATE,MACSet,PowerGet};
+#include "../../src/macos/native/Ath10kNativeOps.hpp"
 using Action=IOReturn(*)(OSObject *,void *,void *,void *,void *);
 class Ath10kPCIDevice;
 struct Gate {
@@ -35,7 +35,8 @@ IOReturn Gate::runAction(Action action,void *op,void *data){
 // gated handler. The test seam counts acceptance, not firmware side effects.
 #include "native_request_admission.inc"
 int main(){
-    for(auto op:{AthNativeOp::setWCL_SCAN_REQ,AthNativeOp::setWCL_ASSOCIATE,AthNativeOp::MACSet,AthNativeOp::PowerGet}){
+    for(auto op:{AthNativeOp::setWCL_SCAN_REQ,AthNativeOp::setWCL_ASSOCIATE,AthNativeOp::MACSet,AthNativeOp::PowerGet,
+        AthNativeOp::setIPV4_PARAMS,AthNativeOp::setIPV6_PARAMS,AthNativeOp::setOFFLOAD_ARP,AthNativeOp::setOFFLOAD_NDP}){
         int payload=0;
         Ath10kPCIDevice ready;assert(ready.nativeRequest(op,&payload)==0 && ready.accepted==1 && ready.gate.entries==1);
         Ath10kPCIDevice sleep;sleep.blocked=true;

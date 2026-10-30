@@ -6,6 +6,15 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.109 — 2026-10-30
+
+- Preserve pending EAP queue/TX, replacement authentication and pairwise-key
+  completion ownership before admitting or retiring a native roam operation.
+- Continue servicing the old link's notifications while roaming waits for owners;
+  prevent circular waiting between teardown and the pending key-update event.
+- Preserve ordered roam-event retry and cancellation without duplicating accepted
+  key-completion notifications.
+
 ## 1.0.108 — 2026-10-30
 
 - Add bounded experimental same-association Enterprise reauthentication. Preserve

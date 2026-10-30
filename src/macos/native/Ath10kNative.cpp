@@ -4,6 +4,8 @@
 #include "../controller/Ath10kPCIDevice.hpp"
 #include "../../security/Ath10kSupplicant.hpp"
 #include "Ath10kNativeWire.hpp"
+#include "Ath10kNativeAddress.hpp"
+#include "../abi/Ath10kNativeAddressABI.hpp"
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
 #include "Ath10kNativeProfile.hpp"
@@ -1588,6 +1590,28 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
        op!=N::NativeReady)return kIOReturnBadArgument;
     if((_nativeMACActive || _nativeMACWaiting) && op!=N::MACSet && op!=N::PowerGet && op!=N::getHW_ADDR)return kIOReturnBusy;
     switch(op){
+    case N::setIPV4_PARAMS:{
+        if(!_nativeInterface)return kIOReturnNotReady;
+        AthNative::IPv4Params record{};
+        if(!AthNative::copyIPv4Params(data,sizeof(record),record))return kIOReturnBadArgument;
+        return ath10kStoreIPv4Params(_nativeInterface,&record);}
+    case N::setIPV6_PARAMS:{
+        if(!_nativeInterface)return kIOReturnNotReady;
+        AthNative::IPv6Params record{};
+        if(!AthNative::copyIPv6Params(data,sizeof(record),record))return kIOReturnBadArgument;
+        return ath10kStoreIPv6Params(_nativeInterface,&record);}
+    case N::setOFFLOAD_ARP:{
+        if(!_nativeInterface)return kIOReturnNotReady;
+        const void *previous=ath10kReadIPv4Params(_nativeInterface);
+        if(!previous)return kIOReturnNotReady;
+        AthNative::IPv4Params record{};
+        if(!AthNative::translateARPParams(data,24,previous,record))return kIOReturnBadArgument;
+        return ath10kStoreIPv4Params(_nativeInterface,&record);}
+    case N::setOFFLOAD_NDP:{
+        if(!_nativeInterface)return kIOReturnNotReady;
+        AthNative::IPv6Params record{};
+        if(!AthNative::translateNDPParams(data,72,record))return kIOReturnBadArgument;
+        return ath10kStoreIPv6Params(_nativeInterface,&record);}
     case N::setCIPHER_KEY:return nativeSetCipherKey(data);
     case N::getRSN_XE:return nativeAssociationRSNXE(data)?kIOReturnSuccess:kIOReturnNotReady;
     case N::getHT_CAPABILITY:case N::getVHT_CAPABILITY:return nativePHYCapabilities(op,data);
