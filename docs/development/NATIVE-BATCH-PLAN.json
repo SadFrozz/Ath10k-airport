@@ -34,7 +34,15 @@
     "macOS11-26": "Versioned adapter stages; not claimed supported",
     "AWDL_AirDrop": "Separate feature stage; not implemented"
   },
-  "current_candidate": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD installed and loaded through OpenCore; boot 87DD2905-4A4F-4305-B72B-40B525B9A789. Single-router SAE traffic observed; prolonged stability and AP-triggered rekey not yet verified.",
+  "current_candidate": {
+    "version": "1.0.105",
+    "uuid": "39B543D3-B8B1-3147-98AB-EE4A99315DFD",
+    "installed": true,
+    "source_commit": "0f2db5ce24546a1d7717a5749fc00ecbaf292f1f",
+    "evidence": "outputs/NATIVE-repository-restructure-20261030/hardware-candidate-1.0.105",
+    "reboot_authorization": "explicitly granted and executed",
+    "boot_verified": true
+  },
   "regression_policy": {
     "single_entrypoint": "python3 tests/run-development-tests.py --cxx clang++",
     "scope": "Full local regression suite for completed implementation stages; no --only for batch acceptance",
@@ -164,23 +172,6 @@
       "physical_handoff": "Unavailable on this setup; retain an explicit unverified label without blocking implementation"
     }
   },
-  "postboot_evidence": {
-    "directory": "outputs/NATIVE-roam-postboot-20261030 (workspace and SD)",
-    "connection": "connected-sae",
-    "router_probe": {
-      "interface": "en1",
-      "sent": 30,
-      "received": 30,
-      "mean_ms": 3.932
-    },
-    "disconnects": 0,
-    "tx_watchdog_timeouts": 0,
-    "limitations": [
-      "Short observation only",
-      "No AP-triggered rekey captured",
-      "No physical inter-AP test"
-    ]
-  },
   "status_map": "docs/development/NATIVE-STATUS.md",
   "requirements": [
     "docs/contracts/NATIVE-CONTRACT.md",
@@ -208,7 +199,7 @@
     "implemented": false,
     "architecture": "OS EAP + MSK handoff with existing internal four-way/PMF is the source-supported target; wholly external PTK/GTK ownership is not assumed",
     "pairwise_completion_batch": {
-      "status": "implemented locally; candidate D2D48A34-9F25-327E-A916-7C7D4C297822 not installed",
+      "status": "Implemented, installed and loaded as 39B543D3 (1.0.105); ordinary SAE traffic observed, AP-triggered hardware rekey unverified",
       "evidence": [
         "serviceNative sets authorizePending only at securityPhase 3; rekey replies are sent at phase 5",
         "serviceConnection records EAPOL failure in a sticky flag; the native phase-5 reply path does not consume that failure",
@@ -229,8 +220,88 @@
   },
   "active_scope": {
     "name": "Repository organization only",
-    "status": "Layout, pinned submodules and firmware grouping implemented; consolidated tests and native build passed; final remote packaging checks pending",
-    "hardware_evidence": "Signed executable is byte-identical to the installed D2D48A34-9F25-327E-A916-7C7D4C297822 candidate; no fresh reboot",
-    "deferred": "The functional batch below remains historical/pending and is not implemented in this branch"
+    "status": "Reorganization and version metadata complete; Release/Debug and logic CI passed; 1.0.105 installed and exact loaded UUID verified, bounded native SAE traffic passed",
+    "hardware_evidence": "39B543D3 loaded; 30/30 en1-bound router replies, mean 4.388 ms; disconnects 0, TX errors unchanged at 12",
+    "deferred": "No new functional driver work in this branch; historical functional batches remain evidence, not new reorganization changes"
+  },
+  "historical_candidate": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD installed and loaded through OpenCore; boot 87DD2905-4A4F-4305-B72B-40B525B9A789. Single-router SAE traffic observed; prolonged stability and AP-triggered rekey not yet verified.",
+  "historical_roam_postboot_evidence": {
+    "directory": "outputs/NATIVE-roam-postboot-20261030 (workspace and SD)",
+    "connection": "connected-sae",
+    "router_probe": {
+      "interface": "en1",
+      "sent": 30,
+      "received": 30,
+      "mean_ms": 3.932
+    },
+    "disconnects": 0,
+    "tx_watchdog_timeouts": 0,
+    "limitations": [
+      "Short observation only",
+      "No AP-triggered rekey captured",
+      "No physical inter-AP test"
+    ]
+  },
+  "postboot_evidence": {
+    "version": "1.0.105",
+    "loaded_uuid": "39B543D3-B8B1-3147-98AB-EE4A99315DFD",
+    "boot_uuid": "73C778EA-96FB-42A9-80B6-73566E2524CA",
+    "before": {
+      "Ath10kDisconnectCount": "0",
+      "Ath10kDataTxErrors": "12",
+      "Ath10kRxDropReplay": "0",
+      "Ath10kRxDropSecurity": "0",
+      "Ath10kSecurityGeneration": "1",
+      "Ath10kSecurityPhase": "5",
+      "Ath10kNativePMFPortReady": "Yes",
+      "Ath10kConnectionState": "\"connected-sae\"",
+      "Ath10kConnectionError": "\"none\""
+    },
+    "after": {
+      "Ath10kDisconnectCount": "0",
+      "Ath10kDataTxErrors": "12",
+      "Ath10kRxDropReplay": "0",
+      "Ath10kRxDropSecurity": "0",
+      "Ath10kSecurityGeneration": "1",
+      "Ath10kSecurityPhase": "5",
+      "Ath10kNativePMFPortReady": "Yes",
+      "Ath10kConnectionState": "\"connected-sae\"",
+      "Ath10kConnectionError": "\"none\""
+    },
+    "ping_exit": 0,
+    "ping_summary": [
+      "30 packets transmitted, 30 packets received, 0.0% packet loss",
+      "round-trip min/avg/max/stddev = 1.870/4.388/10.021/2.168 ms"
+    ],
+    "limitations": [
+      "Bounded ordinary traffic only; no AP-triggered rekey or prolonged stability proof"
+    ],
+    "directory": "outputs/NATIVE-repository-restructure-20261030/hardware-candidate-1.0.105/postboot (workspace and SD)"
+  },
+  "staged_candidate": {
+    "version": "1.0.105",
+    "uuid": "39B543D3-B8B1-3147-98AB-EE4A99315DFD",
+    "installed": true,
+    "source_commit": "0f2db5ce24546a1d7717a5749fc00ecbaf292f1f",
+    "evidence": "outputs/NATIVE-repository-restructure-20261030/hardware-candidate-1.0.105",
+    "reboot_authorization": "explicitly granted and executed",
+    "boot_verified": true
+  },
+  "historical_ptk_postboot_evidence": {
+    "directory": "outputs/NATIVE-ptk-postboot-20261030 (workspace and SD)",
+    "loaded_uuid": "D2D48A34-9F25-327E-A916-7C7D4C297822",
+    "sent": 30,
+    "received": 30,
+    "mean_ms": 33.293,
+    "max_ms": 384.29,
+    "disconnects": 0,
+    "tx_errors_before": 6,
+    "tx_errors_after": 7,
+    "security_generation": 1,
+    "limitations": [
+      "Bounded observation only",
+      "No AP-triggered rekey",
+      "Not error-free operation"
+    ]
   }
 }
