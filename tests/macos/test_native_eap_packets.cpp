@@ -10,7 +10,7 @@ int mbuf_copydata(mbuf_t p,size_t off,size_t n,void *out){if(p->copyFail)return 
 int mbuf_copyback(mbuf_t p,size_t,size_t n,const void *in,int){if(p->copyFail)return 1;p->bytes.resize(n);memcpy(p->bytes.data(),in,n);return 0;}
 constexpr int MBUF_DONTWAIT=0,kIOReturnOutputDropped=1,kIOReturnOutputStall=2,kIOReturnOutputSuccess=0;
 namespace Ath10k {
-constexpr size_t kEthernetFrameMax=1522;uint64_t uptimeNS(){return 200000000;}
+constexpr size_t kEthernetFrameMax=1522;uint64_t clockMS=200;uint64_t uptimeNS(){return clockMS*1000000;}
 struct ConnectionState {enum Drop{EAPOL,Allocation,Plaintext};bool secure=true;unsigned eapolCount=0;unsigned securityAKM=1;bool associated=true,eapolPause=false;uint8_t local[6]={2,1,2,3,4,5},bssid[6]={2,6,7,8,9,10};unsigned rxPackets=0,rxBytes=0,drops[3]{};};
 struct RXBatch {unsigned count=1;UInt8 data[1600]{};unsigned offsets[1]{},lengths[1]{};UInt8 descriptor[16]{};};
 bool sameMAC(const UInt8 *a,const UInt8 *b){return !memcmp(a,b,6);}
@@ -34,6 +34,18 @@ struct Ath10kPCIDevice {
 #define ATH10K_NATIVE 1
 #include "native_eap_preflight.inc"
 int main(){
+ // Exercise the gap before asynchronous service retires an expired owner.
+ for(unsigned boundary=0;boundary<4;++boundary){
+  Ath10kPCIDevice d;auto f=d.frame(false);
+  Ath10k::clockMS=boundary==0?1000:boundary==1?99:200;
+  if(boundary==2)d._connection.associated=false;
+  if(boundary==3)d._networkInterface=nullptr;
+  if(boundary!=3)assert(!d.nativeEAPSystemFrame(f.data(),f.size()));
+  assert(d.nativeEAPReceive(f.data(),f.size()) && !d.interface.received && d._connection.drops[0]==1);
+  if(boundary<3)assert(d.nativeEAPOutput(new Packet{d.frame(true)})==kIOReturnOutputDropped && d.frees==1);
+ }
+ Ath10k::clockMS=200;
+
  {Ath10kPCIDevice d;auto f=d.frame(false);f.resize(1024);const unsigned body=1024-18;
  f[16]=body>>8;f[17]=UInt8(body);f[20]=body>>8;f[21]=UInt8(body);
  assert(d.nativeEAPSystemFrame(f.data(),f.size()));

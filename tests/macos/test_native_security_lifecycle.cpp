@@ -49,6 +49,7 @@ public:
         Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4;unsigned securityPhase=0;
         struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
     void discardIfStopped(UInt64 now=0);
+    unsigned eapQueueStops=0;void nativeSetEAPQueue(bool active){assert(!active);++eapQueueStops;}
     void discardNativeSecurity();
     bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
     bool nativeAcceptSecurityResult(UInt32);

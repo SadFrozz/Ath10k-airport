@@ -1627,8 +1627,18 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "requirement_audit": "stock producer stores a WoW EAPOL-filter option; not evidence of ordinary EAP-port startup. Wake-filter behavior and caller failure handling remain unverified; rejected rather than fake success",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setEAP_FILTER_CONFIG",
+          "address": "0xffffff8001643cfa",
+          "semantics": "Nonnull record: copies first u32 to core-context +0x4c90, diagnostic identifies WoWEapolFilterEnable; returns success. Null returns 0xe00002bc. No immediate packet delivery or client startup call in this setter.",
+          "limitation": "Setter alone does not establish when configureEapolFilter uses the option or whether a consumer requires success"
+        }
+      ]
     },
     {
       "callback": "setWOW_LOW_POWER_MODE",

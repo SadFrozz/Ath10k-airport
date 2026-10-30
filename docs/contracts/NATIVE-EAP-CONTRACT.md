@@ -60,8 +60,8 @@ completion have a combined sanitized fixture. Firmware key acknowledgements are
 emulated, and it checks authorization intent rather than actual radio port opening.
 Failure completion and clear-key cancel without authorizing.
 
-Still required: actual IO80211 pre-link delivery/startup evidence, timeout scheduling,
-and enterprise reauthentication/roaming. The 68-test sanitized suite and offline
+Still required: end-to-end pre-link delivery/system-client startup evidence,
+late MSK serialization and enterprise reauthentication/roaming. The 68-test sanitized suite and offline
 dependencies passed. Local validation is not
 enterprise interoperability or supported macOS 11–26 coverage.
 
@@ -69,3 +69,82 @@ The zero-BSSID MSK callback carries no association transaction token. Checking
 current internal generation prevents reuse of our retired owner but cannot prove
 that a delayed OS callback originated in the current association. Cross-association
 serialization must be established before claiming stale-OS-key isolation.
+
+## Uncontrolled output queue and ingress lifetime
+
+Starting EAP is independent of controlled-port authorization and BSD carrier.
+The shared output queue must run during an admitted current EAP association;
+ordinary data remains rejected by outputPacket until its existing data gate opens.
+An EAP-only queue must stop/flush on cancellation, interface disable and runtime
+retirement even if carrier was already down. Retiring the EAP owner after successful
+port authorization must not stop the authorized data queue. Queue mutation is
+performed from service/cleanup, never synchronously from outputPacket.
+
+Packet ingress validates association and owner deadline independently of service
+scheduling. Expired transmission is Invalid, including when the queue is full;
+it must not stall a caller waiting for space in an expired authentication. Expired
+or retired EAP receive is consumed/dropped, not passed to the internal key parser.
+A consumed PMK ends only the EAP wait budget, not subsequent four-way/join deadlines.
+
+Read-only examination of installed IONetworkingFamily UUID
+5D3F11B8-802B-3860-8A36-E9334980A117 establishes that inputPacket/pushInputPacket
+require an attached ifnet and reach ifnet_input_extended without a carrier check
+in these methods. The actual native data interface uses this IONetworkInterface
+path, not an assumed IO80211 input override. Downstream AF_NDRV delivery and
+system EAP client startup still require their own evidence.
+
+## System-client startup and empty-key reset
+
+Apple eap8021x controller.c (blob d51d67828162a9fecff7fede3ba2377f83a1f4de)
+starts the system process from ControllerStart after accepting an Ethernet or
+IEEE80211 interface and opening its EAPOL socket. Wi-Fi is excluded from the
+Ethernet automatic-start flag. A driver must provide the native interface and
+association contracts, not launch a private client or infer that one received
+EAP frame starts the system process. The installed user-mode manager ordering is recovered below; other startup modes
+and actual kernel join delivery remain unverified.
+
+Supplicant.c (blob 552c261964a5eee7382a0e54bba952a29731bb47) enters
+Supplicant_authenticating by clearing WPA key state before enabling reception.
+EAPOLSocket.c (blob a82591c5bd96afe2bf98057b261c225759596577) maps an ordinary
+client clear to zero-length MSK with no BSSID. Thus a valid current EAP owner
+without an accepted key treats that request as idempotent empty-key reset:
+preserve association, queued packets, generation and the original deadline.
+Never authorize or extend the deadline. Clearing an accepted/consumed PMK still
+revokes the owner and closes/cancels the association; reauthentication remains
+unsupported rather than silently replacing live keys.
+
+The public client's link-down handler schedules inactivity after a configurable
+delay (default one second). It is not a synchronous driver-visible callback drain.
+Neither observing link-down nor waiting a guessed interval proves that an MSK
+from a retired session cannot arrive after a replacement association. No arbitrary
+sleep or inferred generation token may be used to claim that isolation.
+
+Sources: [controller.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/EAPOLController.bproj/controller.c),
+[Supplicant.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/Supplicant.c),
+[EAPOLSocket.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/EAPOLSocket.c).
+These are source-supported wire/lifecycle requirements, not a claim that the
+installed private Wi-Fi manager and Enterprise radio path have been observed.
+
+## Installed user-mode startup sequence (24G90)
+
+The x86_64 airportd UUID 4C5133D4-CEF3-3D88-8E93-273EF886B93E
+user-mode Enterprise entry calls __startUserMode8021XWithSSID at 0x10001be59;
+a false result takes the failure branch. Only success reaches the common
+association call at 0x10001bee0, with is8021X=true in r9d. The startup helper
+calls internal_startUserMode8021X...reply: at 0x100006847 and waits for a
+WiFiAgent reply, bounded to 20 seconds. Thus this actual installed entry starts
+the system client before requesting radio association. It is not a reason to
+publish controlled-port success early or create a separate userland launcher.
+
+Installed CoreWLAN UUID A13906EE-B783-37F8-B44B-3DF90DF7EC8B, method
+CWEAPOLClient::startEAPOLWithClientItemID:authenticationInfo:error: (image offset
+0x4d8c6), queries EAPOLControlCopyStateAndStatus. Its running-client path calls
+EAPOLControlStop, polls state at 200 ms intervals up to 50 iterations, and then
+calls EAPOLControlStartWithClientItemID. The public ControllerStart additionally
+rejects non-idle clients. This is bounded process orchestration; it is not a
+per-association token supplied to the kext. Same-process autoreconnect and queued
+old key requests remain outside the proven boundary.
+
+Static evidence: outputs/NATIVE-eap-port-lifecycle-20261030/startup-contract.
+The user-mode ordering is recovered; system/login-window modes, the precise
+kernel enterprise join envelope and actual AF_NDRV/radio delivery remain unverified.

@@ -43,11 +43,12 @@ namespace Ath10k {enum class DisconnectStage {None,Drain};struct RXBatch {};}
 constexpr unsigned kIONetworkLinkValid=1,kIONetworkLinkActive=2;
 void IOFree(void *,unsigned){}
 struct Ath10kPCIDevice {
+ bool _nativeEAPQueueRunning=false;
  bool _networkEnabled=true,_networkLinkUp=true,_nativeDeferredLinkDown=false,_dataTXStalled=false,hold=true;
  struct {bool active=true;} _wmiLive;struct {Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;} _connection;
  struct Reorder {template<class F>void reset(F){}} _rxReorder;
  struct Reset {void reset(){}} _rxDefrag,_rxBatch;
- struct Queue {void stop(){}void flush(){}void start(){}} queue;
+ struct Queue {unsigned stops=0,flushes=0,starts=0;void stop(){++stops;}void flush(){++flushes;}void start(){++starts;}} queue;
  unsigned reports=0,last=3;
  bool nativeRetainSystemLink(){return hold;}
  Queue *getOutputQueue(){return &queue;}
@@ -59,6 +60,10 @@ struct Ath10kPCIDevice {
 #include "network_carrier.inc"
 #undef ATH10K_NATIVE
 void verify(){
+ {Ath10kPCIDevice d;d._networkLinkUp=false;d.hold=false;d._nativeEAPQueueRunning=true;
+  d.networkLink(false);assert(!d._nativeEAPQueueRunning && d.queue.stops==1 && d.queue.flushes==1);
+  d.networkLink(false);assert(d.queue.stops==1);
+ }
  for(bool success:{false,true}){
   Ath10kPCIDevice d;d.networkLink(false);assert(!d._networkLinkUp && d._nativeDeferredLinkDown && !d.reports);
   d.networkLink(false);assert(!d.reports);

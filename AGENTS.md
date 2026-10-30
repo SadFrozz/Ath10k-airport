@@ -21,6 +21,11 @@ changes. The previous local functional branch is archived without rewriting its 
   then date: `## 1.0.105 — 2026-10-30`. Do not include repository organization,
   documentation or CI changes. Keep build UUIDs, checks and limitations in the
   implementation map/journal instead.
+- Raise the build number only AFTER the completed functional batch has been
+  successfully pushed and the remote branch head verified. Local edits and
+  unpushed commits keep the previous version. Keep pending changelog notes in
+  the development journal; assign the new version only after that publication
+  boundary. Never install an intermediate candidate labelled prematurely.
 - Version format is major.minor.build; the third number is the build number.
   Current native series starts at 1.0.105 (formerly 0.0.105); keep plist and
   kmod_info.c versions synchronized. Do not rewrite historical evidence versions.

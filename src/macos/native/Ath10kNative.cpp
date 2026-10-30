@@ -983,13 +983,20 @@ UInt32 Ath10kPCIDevice::nativeEAPOutput(mbuf_t packet){
 }
 bool Ath10kPCIDevice::nativeEAPSystemFrame(const UInt8 *frame,UInt32 length){
     auto sec=_nativeSecurity;auto &s=_connection;
-    return s.securityAKM==1 && sec && sec->eapOwner.generation() &&
+    return s.securityAKM==1 && sec && Ath10k::connectionAssociated(s) &&
+        sec->eapOwner.validAt(Ath10k::uptimeNS()/1000000u) &&
         sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false)==
             AthNative::EAPOwner::PacketOwner::SystemEAP;
 }
 bool Ath10kPCIDevice::nativeEAPReceive(const UInt8 *frame,UInt32 length){
     auto sec=_nativeSecurity;auto &s=_connection;
     if(s.securityAKM!=1 || !sec || !sec->eapOwner.generation())return false;
+    // An owner may still exist between cancellation and asynchronous cleanup.
+    // Consume/drop here: falling through would feed retired EAP into key RX.
+    if(!Ath10k::connectionAssociated(s) || !_networkInterface ||
+       !sec->eapOwner.validAt(Ath10k::uptimeNS()/1000000u)){
+        Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);return true;
+    }
     const auto owner=sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false);
     if(owner==AthNative::EAPOwner::PacketOwner::InternalKey)return false;
     if(owner!=AthNative::EAPOwner::PacketOwner::SystemEAP){Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);return true;}
@@ -1001,11 +1008,31 @@ bool Ath10kPCIDevice::nativeEAPReceive(const UInt8 *frame,UInt32 length){
     _networkInterface->inputPacket(packet,envelope.bytes);
     ++s.rxPackets;s.rxBytes+=envelope.bytes;return true;
 }
+// The shared BSD output queue must run for the uncontrolled EAP port before
+// ordinary data is authorized. outputPacket still rejects all other traffic.
+// Radio gate held; never change BSD carrier to start this queue.
+void Ath10kPCIDevice::nativeSetEAPQueue(bool active){
+    auto queue=getOutputQueue();
+    active=active && queue && _networkEnabled && _wmiLive.active && !powerIOBlocked();
+    if(active==_nativeEAPQueueRunning)return;
+    _nativeEAPQueueRunning=active;
+    if(_networkLinkUp || !queue)return; // Authorized data owns the running queue.
+    if(active)queue->start();
+    else {queue->stop();queue->flush();}
+}
 void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
     auto sec=_nativeSecurity;auto &s=_connection;
-    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation() || !Ath10k::connectionAssociated(s))return;
+    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation() || !Ath10k::connectionAssociated(s)){
+        // A key callback or notification can retire the owner before this
+        // service tick. Release only EAP queue ownership, not authorized data.
+        nativeSetEAPQueue(false);return;
+    }
     auto fail=[&](const char *error){s.error=error;s.cancelRequested=true;s.portAuthorized=false;};
-    if(sec->eapOwner.expire(now)){fail("native-eap-msk-timeout");return;}
+    if(sec->eapOwner.expire(now)){nativeSetEAPQueue(false);fail("native-eap-msk-timeout");return;}
+    if(!_networkEnabled || !_wmiLive.active || powerIOBlocked()){
+        nativeSetEAPQueue(false);return;
+    }
+    nativeSetEAPQueue(true);
     if(!sec->ready){
         // Consume the translated PMK once, only for the still-current station
         // and peer. Secrets never outlive this gated invocation.
@@ -1067,12 +1094,19 @@ IOReturn Ath10kPCIDevice::nativeSetCipherKey(void *data){
     using R=AthNative::EAPOwner::KeyResult;
     switch(result){
     case R::Accepted:requestNativeService();return kIOReturnSuccess;
-    case R::Duplicate:return kIOReturnSuccess;
+    case R::Duplicate:case R::Empty:return kIOReturnSuccess;
     case R::Cleared:
         s.cancelRequested=true;s.portAuthorized=false;discardNativeSecurity();
         requestNativeService();return kIOReturnSuccess;
     case R::Conflict:return kIOReturnBusy;
-    case R::Stale:return kIOReturnNotReady;
+    case R::Stale:
+        // Expiry in setMSK clears the owner before the timer can observe it.
+        // Do not lose the timeout/cancellation just because generation is zero.
+        if(!sec->eapOwner.generation()){
+            s.error="native-eap-msk-timeout";s.cancelRequested=true;s.portAuthorized=false;
+            discardNativeSecurity();requestNativeService();
+        }
+        return kIOReturnNotReady;
     case R::Invalid:return kIOReturnBadArgument;
     }
     return kIOReturnBadArgument;
@@ -1097,6 +1131,7 @@ bool Ath10kPCIDevice::nativeAssociationRSNXE(void *output){
 // Radio-gated terminal cleanup. Event metadata and the last BSSID survive
 // until macOS accepts the terminal notifications; cryptographic material does not.
 void Ath10kPCIDevice::discardNativeSecurity() {
+    nativeSetEAPQueue(false);
     if(_connection.pmfRequired && _connection.spectrum.pending){
         _connection.spectrum.pending=false;_connection.spectrum.length=0;++_connection.spectrum.dropped;
     }

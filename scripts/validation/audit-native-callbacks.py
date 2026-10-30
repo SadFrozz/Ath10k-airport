@@ -77,6 +77,13 @@ def inventory():
                 address='0xffffff800212933e', command=0x1aa, input_bytes=0xbc,
                 observed_fields=dict(channel_count=0x94, flags=0x98, ssid=0x99, ssid_length=0xb9),
                 failure_effect='nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established')]
+        if name == 'setEAP_FILTER_CONFIG':
+            row['requirement_audit'] = 'stock producer stores a WoW EAPOL-filter option; not evidence of ordinary EAP-port startup. Wake-filter behavior and caller failure handling remain unverified; rejected rather than fake success'
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANCore::setEAP_FILTER_CONFIG', address='0xffffff8001643cfa',
+                semantics='Nonnull record: copies first u32 to core-context +0x4c90, diagnostic identifies WoWEapolFilterEnable; returns success. Null returns 0xe00002bc. No immediate packet delivery or client startup call in this setter.',
+                limitation='Setter alone does not establish when configureEapolFilter uses the option or whether a consumer requires success')]
         if name == 'setWCL_ROAM_USER_CACHE':
             row['requirement_audit'] = 'mandatory post-roam clear/disable and empty readback implemented; nonempty autonomous firmware cache and override enable explicitly unsupported'
             row['stock_consumer_evidence'] = [dict(

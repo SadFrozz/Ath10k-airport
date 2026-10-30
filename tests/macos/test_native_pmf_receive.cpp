@@ -90,10 +90,13 @@ public:
     int nativeRoamCacheRequest(void *);
     bool nativeRetainSystemLink();
  void requestNativeService(){}
+ bool _nativeEAPQueueRunning=false,_networkLinkUp=false;
+ void nativeSetEAPQueue(bool);
  void serviceNativeEAP(UInt64);
  int nativeSetCipherKey(void *);
  void serviceEAPCompletion(UInt64);
- struct OutputQueue {void service(int){}} outputQueue;
+ struct OutputQueue {unsigned starts=0,stops=0,flushes=0;void service(int){}
+  void start(){++starts;}void stop(){++stops;}void flush(){++flushes;}} outputQueue;
  OutputQueue *getOutputQueue(){return &outputQueue;}
  int nativeBeginJoin(AirportWCL::JoinRequest &);
     bool nativeJoinOwnersRetired(bool retainedPublication=false) const;

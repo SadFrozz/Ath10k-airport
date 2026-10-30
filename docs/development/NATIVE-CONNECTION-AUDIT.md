@@ -2156,3 +2156,106 @@ permission: this driver still rejects their distinct derivation/roam contracts.
 This proves the consumer's expected value, not current WCL getAUTH_TYPE output,
 EAP client startup or pre-link RX delivery. Fresh disassembly excerpt and hash
 are retained in NATIVE-eap-integration-20261030.
+
+
+## 2026-10-30 — EAP queue lifecycle and stock input boundary
+
+The installed 1.0.106 checkpoint is preserved; development resumed on the current
+branch without another hardware test. Auditing the integrated EAP path found that
+networkLink starts the BSD output queue only after authorization, while EAP needs
+that queue to transmit before authorization. The new separate EAP queue owner
+starts it without changing carrier, stops/flushes it on retirement while carrier
+is down, and hands queue ownership to ordinary data after authorization. Link-down
+handles the EAP-only running state before the old same-carrier early return.
+
+EAPOwner enqueue previously checked clock reversal but not the MSK wait deadline;
+RX routing likewise relied on later cleanup and did not check association retirement.
+Ingress now enforces these boundaries. Service does not submit EAP while interface,
+runtime or power admission is disabled, but timeout still retires the owner.
+
+Installed IONetworkingFamily was read from BootKC, UUID
+5D3F11B8-802B-3860-8A36-E9334980A117. inputPacket at ffffff800262fa96 checks
+attached ifnet (+0x90); pushInputPacket at ffffff800262f9be reaches
+ifnet_input_extended at ffffff800064a480 (confirmed against original KC symbols).
+Neither inspected method gates on carrier. IOBasicOutputQueue::start at
+ffffff80026361c0 sets running state and invokes dequeue. These are static boundary
+facts, not evidence of enterprise radio operation or complete system-client startup.
+Excerpts and image hash: outputs/NATIVE-eap-port-lifecycle-20261030/stock-evidence.json.
+No Apple implementation was copied into driver source.
+
+The separate setEAP_FILTER_CONFIG callback was also examined instead of treating
+its name as an ordinary EAP prerequisite. Stock Core setter at ffffff8001643cfa
+stores the first u32 in context +0x4c90; its diagnostic names WoWEapolFilterEnable.
+It does not start EAP or deliver packets in that setter. Wake-filter consumers and
+failure handling remain unverified. The callback matrix records this narrow
+finding; the driver continues to reject unsupported configuration, without fake
+success. Evidence: stock-eap-filter.asm in the same directory.
+
+
+Publication/version rule clarified by user: advance the build number only after
+successful push, not while changes are local or merely committed. Source metadata
+has been restored to 1.0.106. The prepublication FA99080C candidate labelled
+1.0.107 is superseded and must not be installed. Pending release notes for this
+batch are the queue-start/stop, expired ingress and disabled-runtime transmission
+changes described above; add them to the versioned changelog after publication.
+
+
+## 2026-10-30 — initial EAP key-clear and system startup audit
+
+Public Apple source identifies a concrete integration error: the EAP client clears
+WPA key state on entry to Authenticating, before the first MSK. Our zero-length
+MSK handler previously retired the association unconditionally. A current owner
+with no accepted PMK now reports Empty without changing its generation, packet
+queue or deadline. Accepted/consumed PMK clear still cancels and closes the port.
+The extracted callback, owner and combined join→initial clear→MSK→M1–M4→receipt
+fixtures pass ASan/UBSan; expired/reset/conflicting paths remain distinct.
+
+ControllerStart opens the system EAPOL socket and launches eapolclient; its
+interface-type gate accepts IEEE80211. Wi-Fi is not automatically started by the
+Ethernet autodetection flag. The driver must not add a companion launcher. The
+installed manager's start/join sequencing remains an exact consumer evidence gap.
+
+The public link-down path delays transition to inactive, so an accepted LinkDown
+message cannot be treated as an acknowledgement draining old OS MSK callbacks.
+No one-second delay was added: source defaults are configurable and not a fence.
+Late zero-BSSID MSK isolation and Enterprise reauthentication remain open.
+See NATIVE-EAP-CONTRACT.md for exact source blob identities and references.
+
+
+## 2026-10-30 — installed Enterprise start-before-associate ordering
+
+Read-only installed airportd/loaded CoreWLAN inspection recovered the actual
+user-mode caller sequence: WiFiAgent start request with bounded acknowledgement
+precedes common association, which receives is8021X=true. UUIDs, call addresses,
+selector-decoded bounded disassembly and restart-loop facts are saved under
+startup-contract and summarized in NATIVE-EAP-CONTRACT.md. No live system client
+was started and no connection settings were changed. Stop/restart polling does
+not establish a universal old-key drain: same-process autoreconnect remains an
+unproven boundary. Do not add a guessed delay or claim full late-key isolation.
+
+
+## 2026-10-30 — EAP retirement across callback and service
+
+Expiry detected inside the MSK callback clears the owner before the periodic
+service can see its deadline. The callback now explicitly records timeout,
+cancels association, closes the controlled port and schedules cleanup when that
+expiry retired the owner. A stale identity with a still-live owner remains a
+rejected request, without cancelling that owner. Service also releases EAP-only
+queue ownership when security/profile/association has already been retired; it
+preserves a running authorized data queue. Extracted callback, service and combined
+production handshake fixtures passed ASan/UBSan for these paths.
+
+These changes follow the initial empty-key reset fix. Final consolidated regression
+and native build are being rerun for the combined batch; earlier full-suite and
+image evidence must not be treated as validation of these final edits. No install,
+push or build-number advancement has occurred.
+
+
+Final combined checkpoint: all 68 C++ tests plus runner checks passed with explicit
+ASan/UBSan, assertions enabled. Native compilation/symbol check passed for UUID
+9CB4F564-2283-3261-A46A-3A27CBC19C87 at unchanged version 1.0.106. An isolated
+copy, with OSBundleRequired removed only there, passed strict ad-hoc signature
+verification and auxiliary linking; exact UUID inclusion was verified. No EFI or
+system collection modification, installation or Enterprise hardware claim.
+Evidence: final-regression.log, final-regression-summary.json, latest-build.json
+and final-inclusion.json in NATIVE-eap-port-lifecycle-20261030.

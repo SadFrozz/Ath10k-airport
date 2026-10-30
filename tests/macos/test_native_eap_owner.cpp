@@ -43,5 +43,20 @@ int main(){
  assert(owner.setMSK(third,sta,ap,9,key,32,4000)==K::Stale);
  assert(owner.begin(sta,ap,5000,6000));assert(owner.expire(4999));
  assert(!owner.begin(sta,sta,1,2));assert(!owner.begin(sta,ap,2,2));
+ // An expired queue must reject even when full; a stalled caller must not
+ // wait for space in an association whose authentication budget has elapsed.
+ assert(owner.begin(sta,ap,100,200));auto last=owner.generation();
+ assert(owner.validAt(199) && !owner.validAt(200) && !owner.validAt(99));
+ for(unsigned i=0;i<4;++i)assert(owner.enqueuePacket(last,sta,ap,frame,60,199)==Owner::Enqueue::Queued);
+ assert(owner.enqueuePacket(last,sta,ap,frame,60,200)==Owner::Enqueue::Invalid);
+ assert(owner.enqueuePacket(last,sta,ap,frame,60,99)==Owner::Enqueue::Invalid);
+ assert(owner.setMSK(last,sta,ap,9,nullptr,0,199)==K::Empty);
+ assert(owner.generation()==last && owner.pending());
+ assert(owner.expire(200) && !owner.pending());
+ assert(owner.begin(sta,ap,100,200));last=owner.generation();
+ assert(owner.setMSK(last,sta,ap,9,nullptr,0,200)==K::Stale && !owner.generation());
+ assert(owner.begin(sta,ap,100,200));last=owner.generation();
+ assert(owner.setMSK(last,sta,ap,9,key,32,150)==K::Accepted);
+ assert(owner.setMSK(last,sta,ap,9,nullptr,0,151)==K::Cleared && !owner.generation());
  AthSecurity::wipe(output,sizeof(output));AthSecurity::wipe(key,sizeof(key));
 }

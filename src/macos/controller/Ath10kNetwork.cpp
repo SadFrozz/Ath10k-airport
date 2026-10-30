@@ -98,7 +98,11 @@ void Ath10kPCIDevice::networkLink(bool up)
     const bool wasDeferred=_nativeDeferredLinkDown;
     const bool retain=!up && nativeRetainSystemLink();
     _nativeDeferredLinkDown=retain;
-    if(_networkLinkUp==up && !wasDeferred)return;
+    // An EAP-only queue can run while carrier/data remain down. Closing that
+    // owner must stop the queue even when the carrier value has not changed.
+    const bool hadEAPQueue=_nativeEAPQueueRunning;
+    _nativeEAPQueueRunning=false;
+    if(_networkLinkUp==up && !wasDeferred && !hadEAPQueue)return;
 #else
     if(_networkLinkUp==up)return;
 #endif

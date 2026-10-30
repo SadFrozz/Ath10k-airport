@@ -66,6 +66,8 @@ public:
     bool nativeEAPSystemFrame(const UInt8 *frame,UInt32 length);
     bool nativeEAPReceive(const UInt8 *,UInt32);
     void serviceNativeEAP(UInt64);
+    void nativeSetEAPQueue(bool);
+    bool _nativeEAPQueueRunning=false;
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
     bool nativeAssociationRSNXE(void *);

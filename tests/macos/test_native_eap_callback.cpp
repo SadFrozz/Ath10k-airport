@@ -18,7 +18,7 @@ namespace Ath10k {
 struct Ath10kPCIDevice {
  struct Security {AthNative::EAPOwner eapOwner;} security;
  Security *_nativeSecurity=&security;
- struct State {unsigned securityAKM=1;bool associated=true,cancelRequested=false,portAuthorized=false;
+ struct State {const char *error=nullptr;unsigned securityAKM=1;bool associated=true,cancelRequested=false,portAuthorized=false;
    uint8_t local[6]={2,1,2,3,4,5},bssid[6]={2,6,7,8,9,10};} _connection;
  unsigned scheduled=0,discarded=0;
  void requestNativeService(){++scheduled;}
@@ -28,6 +28,18 @@ struct Ath10kPCIDevice {
 #include "native_eap_callback.inc"
 int main(){
  using K=AthNative::EAPOwner::KeyResult;
+ // A callback may observe expiry before periodic service. It must both reject
+ // the key and schedule terminal cleanup, rather than silently erase the timer.
+ for(bool clear: {false,true}){
+  Ath10kPCIDevice expired;auto &state=expired._connection;
+  assert(expired.security.eapOwner.begin(state.local,state.bssid,0,1000));
+  apple80211_key request;request.key_len=clear?0:32;state.portAuthorized=true;
+  Ath10k::clockMS=1000;assert(expired.nativeSetCipherKey(&request)==kIOReturnNotReady);
+  assert(state.cancelRequested && !state.portAuthorized && expired.discarded==1 && expired.scheduled==1);
+  assert(!strcmp(state.error,"native-eap-msk-timeout") && !expired.security.eapOwner.generation());
+ }
+ Ath10k::clockMS=100;
+
  for(unsigned bad=0;bad<8;++bad){
   Ath10kPCIDevice d;auto &s=d._connection;assert(d.security.eapOwner.begin(s.local,s.bssid,0,1000));
   apple80211_key key;key.key[0]=17;
@@ -43,6 +55,10 @@ int main(){
  assert(d.security.eapOwner.begin(s.local,s.bssid,0,1000));
  for(unsigned personal: {2u,6u,8u}){s.securityAKM=personal;assert(d.nativeSetCipherKey(&key)==kIOReturnUnsupported);}
  s.securityAKM=1;s.associated=false;assert(d.nativeSetCipherKey(&key)==kIOReturnNotReady);s.associated=true;
+ const auto owner=d.security.eapOwner.generation();key.key_len=0;
+ for(unsigned i=0;i<3;++i)assert(d.nativeSetCipherKey(&key)==kIOReturnSuccess);
+ assert(!s.cancelRequested && !s.portAuthorized && !d.discarded && !d.scheduled && d.security.eapOwner.generation()==owner);
+ key.key_len=32;
  auto original=key;assert(d.nativeSetCipherKey(&key)==kIOReturnSuccess && d.scheduled==1);
  assert(!memcmp(&key,&original,sizeof(key)));
  assert(d.nativeSetCipherKey(&key)==kIOReturnSuccess && d.scheduled==1);

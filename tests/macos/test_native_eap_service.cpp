@@ -29,7 +29,12 @@ struct Security {
 struct Ath10kPCIDevice {
  Security security;Security *_nativeSecurity=&security;Ath10k::State _connection;
  struct {bool completed=true,cancelRequested=false;} _wmiScan;
- struct Queue {unsigned calls=0;void service(int){++calls;}} queue;
+ bool _nativeEAPQueueRunning=false,_networkEnabled=true,_networkLinkUp=false;
+ struct {bool active=true;} _wmiLive;
+ bool powerBlocked=false;bool powerIOBlocked(){return powerBlocked;}
+ void nativeSetEAPQueue(bool);
+ struct Queue {unsigned calls=0,starts=0,stops=0,flushes=0;void service(int){++calls;}
+ void start(){++starts;}void stop(){++stops;}void flush(){++flushes;}} queue;
  unsigned submits=0;const char *submitError=nullptr;
  Queue *getOutputQueue(){return &queue;}
  const char *submitNetworkPacket(const uint8_t *frame,size_t n,bool,UInt64){assert(n==18 && frame[15]==1);++submits;return submitError;}
@@ -40,9 +45,37 @@ struct Ath10kPCIDevice {
  void enqueue(UInt64 now=100){uint8_t f[18]{};memcpy(f,_connection.bssid,6);memcpy(f+6,_connection.local,6);f[12]=0x88;f[13]=0x8e;f[14]=2;f[15]=1;
  assert(security.eapOwner.enqueuePacket(security.eapOwner.generation(),_connection.local,_connection.bssid,f,sizeof(f),now)==AthNative::EAPOwner::Enqueue::Queued);}
 };
+#include "native_eap_queue.inc"
 #include "native_eap_service.inc"
 #include "native_eap_timeout.inc"
 int main(){
+ for(unsigned retired=0;retired<4;++retired)for(bool authorized:{false,true}){
+  Ath10kPCIDevice d;d.begin();d.serviceNativeEAP(101);assert(d._nativeEAPQueueRunning);
+  d._networkLinkUp=authorized;
+  if(retired==0)d.security.eapOwner.clear();
+  if(retired==1)d._nativeSecurity=nullptr;
+  if(retired==2)d._connection.associated=false;
+  if(retired==3)d._connection.securityAKM=8;
+  d.serviceNativeEAP(102);assert(!d._nativeEAPQueueRunning);
+  assert(d.queue.stops==unsigned(!authorized) && d.queue.flushes==unsigned(!authorized));
+  d.serviceNativeEAP(103);assert(d.queue.stops==unsigned(!authorized));
+ }
+
+ {Ath10kPCIDevice d;d.begin();d.serviceNativeEAP(101);
+  assert(d._nativeEAPQueueRunning && d.queue.starts==1 && !d._networkLinkUp);
+  d.serviceNativeEAP(102);assert(d.queue.starts==1);
+  d.nativeSetEAPQueue(false);assert(!d._nativeEAPQueueRunning && d.queue.stops==1 && d.queue.flushes==1);
+  d.nativeSetEAPQueue(false);assert(d.queue.stops==1);
+  d._networkLinkUp=true;d.nativeSetEAPQueue(true);d.nativeSetEAPQueue(false);
+  assert(d.queue.starts==1 && d.queue.stops==1); // Data queue ownership survives.
+ }
+ for(unsigned block=0;block<3;++block){Ath10kPCIDevice d;
+  if(block==0)d._networkEnabled=false;if(block==1)d._wmiLive.active=false;if(block==2)d.powerBlocked=true;
+  d.begin();d.enqueue();d.serviceNativeEAP(101);
+  assert(!d._nativeEAPQueueRunning && !d.queue.starts && !d.submits && d.security.eapOwner.pending());
+  d.serviceNativeEAP(20000);assert(d._connection.cancelRequested && !d.security.eapOwner.generation());
+ }
+
  {Ath10kPCIDevice d;d.begin();
   // The ordinary handshake clock cannot expire while the EAP owner is
   // legitimately waiting; the owner's independent budget still must expire.

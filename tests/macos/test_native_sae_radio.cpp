@@ -27,6 +27,7 @@ constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNotReady=2,kIOR
 #include "native_security_snapshot.inc"
 #include <Airport/apple80211_var.h>
 #include "native_eap_callback.inc"
+#include "native_eap_queue.inc"
 #include "native_eap_service.inc"
 #include "native_eap_integration_completion.inc"
 #include "../fixtures/eap_vectors.inc"
@@ -452,8 +453,15 @@ int main(){
    // PMK binding, authenticated exports and durable M4 completion barrier.
    s.stage=Ath10k::LinkStage::Connected;
    apple80211_key key{};key.version=1;key.key_cipher_type=9;key.key_len=32;memcpy(key.key,e_pmk,32);
+   // Stock Supplicant_authenticating first clears an absent MSK. This must
+   // not cancel the admitted association or manufacture controlled-port up.
+   const auto eapGeneration=sec->eapOwner.generation();key.key_len=0;nativeSAEClockMS=99;
+   assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+   assert(!s.cancelRequested && !s.portAuthorized && sec->eapOwner.generation()==eapGeneration);
+   key.key_len=32;
    nativeSAEClockMS=100;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
    ownerGate=true;d->serviceNativeEAP(100);ownerGate=false;
+   assert(d->_nativeEAPQueueRunning && d->outputQueue.starts==1 && !d->_networkLinkUp);
    assert(sec->ready && !s.portAuthorized && s.sinceMs==100);
    using E=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
    assert(sec->supplicant.receive(e_m1,sizeof(e_m1))==E::Reply);

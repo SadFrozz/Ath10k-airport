@@ -22,7 +22,7 @@ class EAPOwner {
             AthSecurity::equal(station_,station,6) && AthSecurity::equal(peer_,peer,6);
     }
 public:
-    enum class KeyResult {Invalid,Stale,Accepted,Duplicate,Conflict,Cleared};
+    enum class KeyResult {Invalid,Stale,Accepted,Duplicate,Conflict,Empty,Cleared};
     enum class Enqueue {Invalid,Full,Queued};
     enum class PacketOwner {Reject,SystemEAP,InternalKey};
     EAPOwner()=default;
@@ -43,8 +43,13 @@ public:
         AthSecurity::copy(station_,station,6);AthSecurity::copy(peer_,peer,6);
         generation_=++sequence_;started_=now;deadline_=deadline;return true;
     }
+    // Admission checks must use the same clock as service expiry: packet or
+    // key callbacks can arrive before a delayed workloop processes its timer.
+    bool validAt(uint64_t now) const {
+        return generation_ && now>=started_ && (consumed_ || now<deadline_);
+    }
     bool expire(uint64_t now){
-        if(!generation_ || (now>=started_ && (consumed_ || now<deadline_)))return false;
+        if(!generation_ || validAt(now))return false;
         clear();return true;
     }
     // Ordinary WPA2 EAP's kernel-translated MSK is 32 bytes. Suite-B/FT,
@@ -53,7 +58,16 @@ public:
                      uint32_t cipher,const uint8_t *key,size_t bytes,uint64_t now){
         if(!current(generation,station,peer))return KeyResult::Stale;
         if(cipher!=9 || (bytes!=0 && bytes!=32) || (bytes && !key))return KeyResult::Invalid;
-        if(!bytes){clear();return KeyResult::Cleared;}
+        if(!bytes){
+            // macOS clears its prior MSK when entering Authenticating, before
+            // producing the first key. There is no key to revoke in this owner;
+            // preserve its EAP queue, generation and original deadline.
+            if(!ready_){
+                if(!validAt(now)){clear();return KeyResult::Stale;}
+                return KeyResult::Empty;
+            }
+            clear();return KeyResult::Cleared;
+        }
         if(now<started_ || (!consumed_ && now>=deadline_)){clear();return KeyResult::Stale;}
         if(ready_)return AthSecurity::equal(pmk_,key,32)?KeyResult::Duplicate:KeyResult::Conflict;
         AthSecurity::copy(pmk_,key,32);ready_=true;return KeyResult::Accepted;
@@ -66,7 +80,7 @@ public:
     }
     Enqueue enqueuePacket(uint64_t generation,const uint8_t *station,const uint8_t *peer,
                     const uint8_t *frame,size_t length,uint64_t now){
-        if(length>PacketLimit || now<started_ ||
+        if(length>PacketLimit || !validAt(now) ||
            route(generation,station,peer,frame,length,true)!=PacketOwner::SystemEAP)return Enqueue::Invalid;
         if(count_==QueueLimit)return Enqueue::Full;
         const auto envelope=AthSecurity::classifyEAPOL(frame,length);
