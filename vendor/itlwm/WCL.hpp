@@ -57,6 +57,7 @@ enum BeaconFlags : uint32_t {
 enum Message : uint32_t {
     ResetInterface = 49,
     DriverAvailable = 55,
+    SupplicantEvent = 76,
     ScanResult = 201,
     Deauth = 203,
     AssocComplete = 211,
@@ -67,6 +68,32 @@ enum Message : uint32_t {
     LqmUpdate = 39,
     ScanDone = 237
 };
+
+// Sequoia stock handlePSKEvent -> postMessage(76, payload, 40, true).
+// Successful firmware status6/reason0 maps to these values and classification0.
+// Timing fields default to zero when no firmware duration element is present;
+// WCL derives joiningNewNetwork before userland delivery.
+struct SupplicantEventData {
+    uint32_t status;
+    uint32_t reason;
+    uint32_t classification;
+    uint32_t transitionDisabledFlags;
+    uint32_t durations[5];
+    uint8_t joiningNewNetwork;
+    uint8_t reserved[3];
+};
+static_assert(sizeof(SupplicantEventData)==40,"Sequoia supplicant event size");
+static_assert(offsetof(SupplicantEventData,transitionDisabledFlags)==12,"Sequoia transition policy offset");
+static_assert(offsetof(SupplicantEventData,joiningNewNetwork)==36,"Sequoia joining flag offset");
+inline SupplicantEventData completedSupplicantPolicy(uint8_t flags){
+    SupplicantEventData event{};event.status=0xe0820406u;event.reason=0xe0822c00u;
+    event.transitionDisabledFlags=flags;return event;
+}
+
+// Stock PTK-update completion, not initial join or GTK/IGTK-only replacement.
+inline SupplicantEventData completedPairwiseUpdate(uint8_t flags){
+    auto event=completedSupplicantPolicy(flags);event.reason=0xe0822c15u;return event;
+}
 
 struct SequoiaLqmUpdate {
     uint8_t rssiValid;
@@ -180,7 +207,8 @@ struct DeauthEvent {
     int32_t driverReason;
     uint16_t reason;
     uint8_t bssid[6];
-    uint8_t disassociation;
+    // Sequoia WCLDeauthDisassoc: nonzero dispatches handleDeauth.
+    uint8_t deauthentication;
     uint8_t reserved[3];
 };
 
@@ -211,6 +239,9 @@ static_assert(sizeof(AssociationEvent) == 0x1c, "AssociationEvent size");
 static_assert(sizeof(FirstBeaconEvent) == 0x14, "FirstBeaconEvent size");
 static_assert(sizeof(ConnectionEvent) == 0xa4, "ConnectionEvent size");
 static_assert(sizeof(DeauthEvent) == 0x14, "DeauthEvent size");
+static_assert(offsetof(DeauthEvent, reason) == 8, "DeauthEvent reason offset");
+static_assert(offsetof(DeauthEvent, bssid) == 10, "DeauthEvent BSSID offset");
+static_assert(offsetof(DeauthEvent, deauthentication) == 0x10, "DeauthEvent subtype offset");
 static_assert(sizeof(ChannelInfo) == 0xc86, "ChannelInfo size");
 
 struct NativeChannelInfo {
@@ -402,6 +433,18 @@ inline bool probeChannel(bool active, bool passiveOnly, bool dfs) {
     return active && !passiveOnly && !dfs;
 }
 
+// Sequoia modern scan tail, reconstructed from the stock serializer and
+// IO80211ScanRequest::getScanRequestForDriver.
+struct ScanSSIDEntry {
+    uint32_t version;
+    uint32_t length;
+    uint8_t bytes[32];
+    uint8_t metadata[16]; // Preserve opaque fields; do not infer their meaning.
+};
+struct ScanSSIDList {
+    uint32_t count;
+    ScanSSIDEntry entries[10];
+};
 struct ScanRequest {
     uint32_t identifier;
     uint32_t type;
@@ -410,6 +453,7 @@ struct ScanRequest {
     uint8_t bssid[6];
     uint32_t channelCount;
     uint8_t channels[32];
+    ScanSSIDList ssids;
 };
 
 inline bool scanChannelSelected(const uint8_t *channels, bool restricted, unsigned channel) {
@@ -446,15 +490,53 @@ inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
     return true;
 }
 
+inline bool decodeScanSSIDList(const void *buffer, size_t length, ScanSSIDList &out) {
+    constexpr size_t countOffset=0x1318, entriesOffset=0x131c, stride=56;
+    if (!buffer || length<countOffset+4) return false;
+    const auto p=static_cast<const uint8_t *>(buffer);
+    const uint32_t count=read32(p+countOffset);
+    if (count>10 || length<entriesOffset+size_t(count)*stride) return false;
+    ScanSSIDList decoded{};
+    decoded.count=count;
+    for (uint32_t i=0;i<count;++i) {
+        const auto entry=p+entriesOffset+size_t(i)*stride;
+        auto &ssid=decoded.entries[i];
+        ssid.version=read32(entry);ssid.length=read32(entry+4);
+        if (ssid.version>1 || ssid.length>32) return false;
+        // The serializer includes a zero-filled extra entry. Keep it intact;
+        // its eventual probe/filter policy belongs to the scan coordinator.
+        if (!ssid.version) {
+            for (size_t j=0;j<stride;++j) if (entry[j]) return false;
+        }
+        memcpy(ssid.bytes,entry+8,ssid.length);
+        memcpy(ssid.metadata,entry+40,sizeof(ssid.metadata));
+    }
+    out=decoded;
+    return true;
+}
+
+// Decode the complete Sequoia request transactionally; malformed tail data
+// must not leave a usable prefix behind.
+inline bool decodeModernScan(const void *buffer,size_t length,ScanRequest &out) {
+    if(length<0x1550)return false;
+    ScanRequest decoded{};
+    if(!decodeScan(buffer,length,decoded) || !decodeScanSSIDList(buffer,length,decoded.ssids))return false;
+    out=decoded;return true;
+}
+
 struct JoinRequest {
     uint32_t lowerAuth;
     uint32_t upperAuth;
+    uint32_t upperAuthExt;
+    uint32_t allowAuths; // Opaque allowed-auth metadata; not the selected AKM.
+    uint8_t transitionDisable;
     uint32_t ssidLength;
     uint8_t ssid[32];
     uint32_t keyLength;
     uint32_t keyCipher;
+    uint16_t keyFlags;
     uint16_t keyIndex;
-    uint8_t key[32];
+    uint8_t key[64]; // Sequoia apple80211_key slot, including password material.
     uint8_t bssid[6];
     uint16_t channelSpec;
     uint16_t rsnLength;
@@ -511,7 +593,11 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     uint32_t keyLength = read32(p + 0x44);
     uint16_t rsnLength = read16(p + 0xd4);
     if (!count || count > 10 || !ssidLength || ssidLength > 32 ||
-        keyLength > 32 || rsnLength > 257 || length < 0x218 + size_t(count) * 18)
+        keyLength > sizeof(out.key) || rsnLength > 257 ||
+        // Sequoia WCLJoinRequest validates the full apple80211_key envelope,
+        // even when these RSC/WoW fields are not used by our authentication.
+        read32(p + 0x90) > 8 || read32(p + 0xa4) > 16 || read32(p + 0xb8) > 16 ||
+        length < 0x218 + size_t(count) * 18)
         return false;
     if (p[0x21c] & 1)
         return false;
@@ -523,10 +609,16 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     out = {};
     out.lowerAuth = read32(p + 0x10);
     out.upperAuth = read32(p + 0x14);
+    // WCLJoinRequest::fillAssocCandidatesList, stock Sequoia image. These are
+    // the outbound candidate-envelope offsets, not raw assoc_data offsets.
+    out.upperAuthExt = read32(p + 0x18);
+    out.allowAuths = read32(p + 0x210);
+    out.transitionDisable = p[0x1e8]; // Stock ORs individual bits into this byte.
     out.ssidLength = ssidLength;
     memcpy(out.ssid, p + 0x20, ssidLength);
     out.keyLength = keyLength;
     out.keyCipher = read32(p + 0x48);
+    out.keyFlags = read16(p + 0x4c);
     out.keyIndex = read16(p + 0x4e);
     memcpy(out.key, p + 0x50, keyLength);
     memcpy(out.bssid, p + 0x21c, 6);

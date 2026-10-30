@@ -66,13 +66,13 @@ inline UInt8 countryPower(const RegulatoryCountry *c,UInt32 center,UInt32 width,
     }
     return best;
 }
-inline UInt8 regulatoryPower(const RegulatoryPolicy &p,UInt32 primary,UInt32 center,UInt32 width,bool transmit=true){
+inline UInt8 regulatoryPower(const RegulatoryPolicy &p,UInt32 primary,UInt32 center,UInt32 width,bool transmit=true,bool initiate=false){
     const UInt32 freq=regulatoryFrequency(primary);
     const UInt32 cf=regulatoryFrequency(center),half=width/2;
     const UInt32 lo=primary<=14?p.low2:p.low5,hi=primary<=14?p.high2:p.high5;
     if(cf<half || cf-half<lo-10 || cf+half>hi+10 || freq<lo || freq>hi)return 0;
-    UInt8 limit=countryPower(p.country,center,width,p.indoor,transmit,p.stationDFS);
-    if(p.boardCountry){UInt8 board=countryPower(p.boardCountry,center,width,p.indoor,transmit,p.stationDFS);if(board<limit)limit=board;}
+    UInt8 limit=countryPower(p.country,center,width,p.indoor,transmit,p.stationDFS,initiate);
+    if(p.boardCountry){UInt8 board=countryPower(p.boardCountry,center,width,p.indoor,transmit,p.stationDFS,initiate);if(board<limit)limit=board;}
     if(p.ceilingHalfDbm<limit)limit=p.ceilingHalfDbm;
     return limit;
 }

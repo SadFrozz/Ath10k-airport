@@ -1,0 +1,1941 @@
+{
+  "schema": 1,
+  "abi": "Sequoia 15.2+ native adapter",
+  "scope": "Inline IOReturn protocol overrides only; lifecycle/non-inline methods are covered separately in NATIVE-CONTRACT.md",
+  "source": "src/kext/native/Ath10kNativeInterface.hpp",
+  "feature_status": "NATIVE-STATUS.md",
+  "hardware_validation_scope": "False means the entire callback inventory is not hardware-certified; see feature_status for positive bounded evidence",
+  "hardware_validation": false,
+  "counts": {
+    "total": 190,
+    "forwarded": 34,
+    "unsupported": 156
+  },
+  "callbacks": [
+    {
+      "callback": "getCHANNEL",
+      "parameters": "apple80211_channel_data* data",
+      "implementation": "forwarded",
+      "operation": "getCHANNEL",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getPOWERSAVE",
+      "parameters": "apple80211_powersave_data* data",
+      "implementation": "forwarded",
+      "operation": "getPOWERSAVE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTXPOWER",
+      "parameters": "apple80211_txpower_data* data",
+      "implementation": "forwarded",
+      "operation": "getTXPOWER",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRATE",
+      "parameters": "apple80211_rate_data* data",
+      "implementation": "forwarded",
+      "operation": "getRATE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getOP_MODE",
+      "parameters": "apple80211_opmode_data* data",
+      "implementation": "forwarded",
+      "operation": "getOP_MODE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRSSI",
+      "parameters": "apple80211_rssi_data* data",
+      "implementation": "forwarded",
+      "operation": "getRSSI",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getSUPPORTED_CHANNELS",
+      "parameters": "apple80211_sup_channel_data* data",
+      "implementation": "forwarded",
+      "operation": "getSUPPORTED_CHANNELS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getGUARD_INTERVAL",
+      "parameters": "apple80211_guard_interval_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getMCS",
+      "parameters": "apple80211_mcs_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getPOWER_DEBUG_INFO",
+      "parameters": "apple80211_power_debug_info* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getHT_CAPABILITY",
+      "parameters": "apple80211_ht_capability* data",
+      "implementation": "forwarded",
+      "operation": "getHT_CAPABILITY",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "IO80211PeerManager::getHtCapabilityIE",
+          "address": "0xffffff80021e7220",
+          "failure_effect": "clears cached HT capability length"
+        }
+      ]
+    },
+    {
+      "callback": "getMCS_VHT",
+      "parameters": "apple80211_mcs_vht_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCHANNELS_INFO",
+      "parameters": "apple80211_channels_info* data",
+      "implementation": "forwarded",
+      "operation": "getCHANNELS_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getVHT_CAPABILITY",
+      "parameters": "apple80211_vht_capability* data",
+      "implementation": "forwarded",
+      "operation": "getVHT_CAPABILITY",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "IO80211PeerManager::getVHtCapabilityIE",
+          "address": "0xffffff80021e7452",
+          "failure_effect": "clears cached VHT-capable flag"
+        }
+      ]
+    },
+    {
+      "callback": "getROAM_PROFILE",
+      "parameters": "apple80211_roam_profile_all_bands* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCHIP_COUNTER_STATS",
+      "parameters": "apple80211_chip_stats* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getDBG_GUARD_TIME_PARAMS",
+      "parameters": "apple80211_dbg_guard_time_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getLEAKY_AP_STATS_MODE",
+      "parameters": "apple80211_leaky_ap_setting* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCOUNTRY_CHANNELS",
+      "parameters": "apple80211_country_channel_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getPRIVATE_MAC",
+      "parameters": "apple80211_private_mac_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRANGING_ENABLE",
+      "parameters": "apple80211_ranging_enable_request_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRANGING_START",
+      "parameters": "apple80211_ranging_start_request_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getAWDL_RSDB_CAPS",
+      "parameters": "apple80211_rsdb_capability* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTKO_PARAMS",
+      "parameters": "apple80211_tko_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTKO_DUMP",
+      "parameters": "apple80211_tko_dump* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getHW_SUPPORTED_CHANNELS",
+      "parameters": "apple80211_sup_channel_data* data",
+      "implementation": "forwarded",
+      "operation": "getHW_SUPPORTED_CHANNELS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getBTCOEX_PROFILE",
+      "parameters": "apple80211_btcoex_profile* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getBTCOEX_PROFILE_ACTIVE",
+      "parameters": "apple80211_btcoex_profile_active_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTRAP_INFO",
+      "parameters": "apple80211_trap_info_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTHERMAL_INDEX",
+      "parameters": "apple80211_thermal_index_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getMAX_NSS_FOR_AP",
+      "parameters": "apple80211_btcoex_max_nss_for_ap_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getBTCOEX_2G_CHAIN_DISABLE",
+      "parameters": "apple80211_btcoex_2g_chain_disable* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getPOWER_BUDGET",
+      "parameters": "apple80211_power_budget_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getOFFLOAD_TCPKA_ENABLE",
+      "parameters": "apple80211_offload_tcpka_enable_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRANGING_CAPS",
+      "parameters": "apple80211_ranging_capabilities_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getLQM_CONFIG",
+      "parameters": "apple80211_lqm_config_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTRAP_CRASHTRACER_MINI_DUMP",
+      "parameters": "apple80211_trap_mini_dump_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getBEACON_INFO",
+      "parameters": "apple80211_beacon_info_t* data",
+      "implementation": "forwarded",
+      "operation": "getBEACON_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCHIP_POWER_RANGE",
+      "parameters": "apple80211_chip_power_limit* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getNSS",
+      "parameters": "apple80211_nss_data* data",
+      "implementation": "forwarded",
+      "operation": "getNSS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getHW_ADDR",
+      "parameters": "apple80211_hw_mac_address* data",
+      "implementation": "forwarded",
+      "operation": "getHW_ADDR",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCHIP_DIAGS",
+      "parameters": "appl80211_chip_diags_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getHP2P_CTRL",
+      "parameters": "apple80211_hp2p_ctrl* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getBSS_BLACKLIST",
+      "parameters": "bss_blacklist* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTXRX_CHAIN_INFO",
+      "parameters": "apple80211_txrx_chain_info* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getMIMO_STATUS",
+      "parameters": "apple80211_mimo_status* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCUR_PMK",
+      "parameters": "apple80211_pmk* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "stock debug-gated PMK export; retain unsupported, no PMK exposure added",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::getCUR_PMK",
+          "address": "0xffffff800163e294",
+          "semantics": "Stock getter requires development/internal CSR and allowWiFiDebug gates before exporting PMK; rejection is normal outside these gates. Not an ordinary association prerequisite."
+        }
+      ]
+    },
+    {
+      "callback": "getDYNSAR_DETAIL",
+      "parameters": "apple80211_dynsar_detail* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getCOUNTRY_CHANNELS_INFO",
+      "parameters": "apple80211_channels_info* data",
+      "implementation": "forwarded",
+      "operation": "getCOUNTRY_CHANNELS_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getLQM_SUMMARY",
+      "parameters": "apple80211_lqm_summary* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getSLOW_WIFI_FEATURE_ENABLED",
+      "parameters": "apple80211_slow_wifi_feature_enabled* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTIMESYNC_INFO",
+      "parameters": "apple80211_timesync_info* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getSENSING_DATA",
+      "parameters": "apple80211_sensing_data_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_FW_HOT_CHANNELS",
+      "parameters": "apple80211_fw_hot_channels* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_LOW_LATENCY_INFO",
+      "parameters": "apple80211_low_latency_info* data",
+      "implementation": "forwarded",
+      "operation": "getWCL_LOW_LATENCY_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_BSS_INFO",
+      "parameters": "apple80211_beacon_msg* data",
+      "implementation": "forwarded",
+      "operation": "getWCL_BSS_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_TRAFFIC_COUNTERS",
+      "parameters": "apple80211_wcl_traffic_counters* data",
+      "implementation": "forwarded",
+      "operation": "getWCL_TRAFFIC_COUNTERS",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_GET_TX_BLANKING_STATUS",
+      "parameters": "unsigned int* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getHE_COUNTERS",
+      "parameters": "apple80211_he_counters_ctl* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_CHANNELS_INFO",
+      "parameters": "apple80211ChannelInfo* data",
+      "implementation": "forwarded",
+      "operation": "getWCL_CHANNELS_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getRSN_XE",
+      "parameters": "apple80211_rsn_xe_data* data",
+      "implementation": "forwarded",
+      "operation": "getRSN_XE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "read-only native association encoder integrated; host lifecycle/ABI tests, pending hardware verification",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "getRSN_XE(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*)",
+          "address": "0xffffff80022137d6",
+          "ioctl_operation": 457,
+          "input_output_bytes": 264,
+          "protocol_wrapper": "0xffffff80021faca3",
+          "protocol_vtable_byte_offset": 4200,
+          "failure_effect": "rejects record sizes other than 264; delegates through WCL or the typed protocol callback"
+        },
+        {
+          "module": "IO80211.framework",
+          "uuid": "D6F428E5-23D1-3240-9E20-5D29BD41DC85",
+          "consumer": "Apple80211Get public userland dispatch",
+          "ioctl_operation": 457,
+          "disposition": "unsupported in this public dispatcher before kernel I/O",
+          "evidence": "exact-UUID bounded dispatch reconstruction and process-owned synthetic context probe",
+          "synthetic_probe_result": -3903,
+          "synthetic_payload_unchanged": true,
+          "live_bind_result": -1,
+          "live_callback_verified": false,
+          "limitation": "Public API rejection and failed interface binding do not test the implemented kernel callback; internal WCL dispatch remains distinct"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::getRSN_XE",
+          "address": "0xffffff80015f462e",
+          "adapter": "AppleBCMWLANJoinAdapter::getAssocRSNXE",
+          "adapter_address": "0xffffff80015894be",
+          "data_fields": {
+            "length_offset": 4,
+            "length_bytes": 2,
+            "element_offset": 6,
+            "maximum_element_bytes": 257
+          },
+          "feature_gates": [
+            109,
+            65
+          ],
+          "additional_context_flag": 64,
+          "semantics": "Reads or replaces the outgoing association RSNXE cache; zero-length set clears it; separate firmware-associated RSNXE cache is not returned",
+          "limitation": "Getter is a current prepared association snapshot, not an arbitrary writable cache; hardware callback verification pending"
+        }
+      ]
+    },
+    {
+      "callback": "getSIB_COEX_STATUS",
+      "parameters": "apple80211_sib_coex_status* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWIFI_BT_5G_POLICY",
+      "parameters": "apple80211_wifi_bt_5g_policy_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_EXTENDED_BSS_INFO",
+      "parameters": "apple80211_extended_bss_info* data",
+      "implementation": "forwarded",
+      "operation": "getWCL_EXTENDED_BSS_INFO",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_LOW_LATENCY_INFO_STATS",
+      "parameters": "apple80211_wcl_low_latency_stats* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_BGSCAN_CACHE_RESULT",
+      "parameters": "apple80211_bgscan_cached_network_data_list* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWCL_WNM_OFFLOAD",
+      "parameters": "apple80211_wcl_wnm_offload_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getWIFI_NOISE_PER_ANT",
+      "parameters": "apple80211_noise_per_ant_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getFW_CLOCK_INFO",
+      "parameters": "apple80211_fw_clock_info* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getTIMESYNC_STATS",
+      "parameters": "apple80211_timesync_stats* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "getSYSTEM_SLEEP_CONFIG",
+      "parameters": "apple80211_system_sleep_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setCIPHER_KEY",
+      "parameters": "apple80211_key* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "external key installation ownership unresolved; keep explicitly unsupported",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "setCIPHER_KEY ioctl handler",
+          "address": "0xffffff8002218330",
+          "record_bytes": 148,
+          "internal_command": "0x802869c8",
+          "operation": 3,
+          "validation": "Requires exact record size and nonnull pointer. Interface-kind 1 first gets auth type; cipher mask 0x340 admits 6/8/9 with auth-dependent length clamp 32 or 48, mask 0x6 admits 1/2; other ciphers rejected on this path.",
+          "dispatch": "WCL dispatch, falling back to typed protocol only if unhandled or 0xe082280f",
+          "limitation": "Other interface kinds bypass that cipher filter. This is not proof that the current personal SAE path requires this callback."
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setCIPHER_KEY",
+          "address": "0xffffff800160dc76",
+          "semantics": "Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. The setKey jump table distinguishes traffic keys, PMK/MSK (6/9), PMKSA (7) and password (10). Traffic keys map through mapAppleKeyToBcomKey, then runtime-selected async/sync firmware programming. External owner and completion contracts remain unresolved; see NATIVE-CONNECTION-AUDIT.md.",
+          "join_adapter_dispatch": {
+            "jump_table": "0xffffff8001586ad4",
+            "selector_offset": 8,
+            "none_0": "returns success without key installation",
+            "pmk_6_msk_9": "programPMK path; nonempty input with core flag true enables supplicant events and 6000 ms timeout",
+            "pmksa_7": "feature/logging branch returns success without programPMK or data-key installation in this exact build",
+            "password_10": "separate credential path, not a data-key install",
+            "other_types": "mapAppleKeyToBcomKey then firmware programming; mapping may reject unsupported types",
+            "limitation": "Producer dispatch reconstructed; caller state ownership and host-supplicant interoperability remain pending"
+          }
+        }
+      ]
+    },
+    {
+      "callback": "setCHANNEL",
+      "parameters": "apple80211_channel_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setPOWERSAVE",
+      "parameters": "apple80211_powersave_data* data",
+      "implementation": "forwarded",
+      "operation": "setPOWERSAVE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTXPOWER",
+      "parameters": "apple80211_txpower_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRATE",
+      "parameters": "apple80211_rate_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setIBSS_MODE",
+      "parameters": "apple80211_network_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setAP_MODE",
+      "parameters": "apple80211_apmode_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setIE",
+      "parameters": "apple80211_ie_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWOW_TEST",
+      "parameters": "apple80211_wow_test_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setCLEAR_PMKSA_CACHE",
+      "parameters": "void* data",
+      "implementation": "forwarded",
+      "operation": "setCLEAR_PMKSA_CACHE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "no cross-association PMKSA cache implemented; successful no-op does not claim stock address side effects",
+      "stock_consumer_evidence": [],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setCLEAR_PMKSA_CACHE",
+          "address": "0xffffff80015ec6e4",
+          "semantics": "Core and infrastructure wrapper obtain an address through vtable offset 0xcf0 and call setCurEtheraddr. Downstream cache and address lifetime must be traced; function name alone does not prove active PTK destruction."
+        }
+      ]
+    },
+    {
+      "callback": "setVIRTUAL_IF_CREATE",
+      "parameters": "apple80211_virt_if_create_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setHT_CAPABILITY",
+      "parameters": "apple80211_ht_capability* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setOFFLOAD_ARP",
+      "parameters": "apple80211_offload_arp_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setOFFLOAD_NDP",
+      "parameters": "apple80211_offload_ndp_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setGAS_REQ",
+      "parameters": "apple80211_gas_query_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setVHT_CAPABILITY",
+      "parameters": "apple80211_vht_capability* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setROAM_PROFILE",
+      "parameters": "apple80211_roam_profile_all_bands* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setDBG_GUARD_TIME_PARAMS",
+      "parameters": "apple80211_dbg_guard_time_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setLEAKY_AP_STATS_MODE",
+      "parameters": "apple80211_leaky_ap_setting* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setPRIVATE_MAC",
+      "parameters": "apple80211_private_mac_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRESET_CHIP",
+      "parameters": "apple80211_reset_command* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setCRASH",
+      "parameters": "apple80211_crash_command* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRANGING_ENABLE",
+      "parameters": "apple80211_ranging_enable_request_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRANGING_START",
+      "parameters": "apple80211_ranging_start_request_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRANGING_AUTHENTICATE",
+      "parameters": "apple80211_ranging_authenticate_request_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTKO_PARAMS",
+      "parameters": "apple80211_tko_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBTCOEX_PROFILE",
+      "parameters": "apple80211_btcoex_profile* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBTCOEX_PROFILE_ACTIVE",
+      "parameters": "apple80211_btcoex_profile_active_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTHERMAL_INDEX",
+      "parameters": "apple80211_thermal_index_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBTCOEX_2G_CHAIN_DISABLE",
+      "parameters": "apple80211_btcoex_2g_chain_disable* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setPOWER_BUDGET",
+      "parameters": "apple80211_power_budget_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setOFFLOAD_TCPKA_ENABLE",
+      "parameters": "apple80211_offload_tcpka_enable_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setLQM_CONFIG",
+      "parameters": "apple80211_lqm_config_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setDYNAMIC_RSSI_WINDOW_CONFIG",
+      "parameters": "apple80211_dynamic_rssi_window_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setUSB_HOST_NOTIFICATION",
+      "parameters": "apple80211_usb_host_notification_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setHP2P_CTRL",
+      "parameters": "apple80211_hp2p_ctrl* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBSS_BLACKLIST",
+      "parameters": "bss_blacklist* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSET_PROPERTY",
+      "parameters": "apple80211_set_property_unserialized_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setROAM_CACHE_UPDATE",
+      "parameters": "apple80211_roam_cache_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setPM_MODE",
+      "parameters": "apple80211_pm_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSET_WIFI_ASSERTION_STATE",
+      "parameters": "apple80211_wifi_assertion_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setREALTIME_QOS_MSCS",
+      "parameters": "apple80211_state_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSENSING_ENABLE",
+      "parameters": "apple80211_sensing_enable_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSENSING_DISABLE",
+      "parameters": "apple80211_sensing_disable_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "set6G_MODE",
+      "parameters": "apple80211_6G_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_LEAVE_NETWORK",
+      "parameters": "apple80211_leave_network* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_LEAVE_NETWORK",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_REASSOC",
+      "parameters": "apple80211_reassoc* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_REASSOC",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "host-requested cached-candidate reassociation integrated with retirement and ordered success/failure completion; local production-path tests only; physical inter-AP validation unavailable",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::sendReassocCommand",
+          "address": "0xffffff800212933e",
+          "command": 426,
+          "input_bytes": 188,
+          "observed_fields": {
+            "channel_count": 148,
+            "flags": 152,
+            "ssid": 153,
+            "ssid_length": 185
+          },
+          "failure_effect": "nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established"
+        }
+      ]
+    },
+    {
+      "callback": "setWCL_SET_ROAM_LOCK",
+      "parameters": "apple80211_set_roam_lock* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_LEGACY_ROAM_PROFILE_CONFIG",
+      "parameters": "apple80211_legacy_roam_profile_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ROAM_PROFILE_CONFIG",
+      "parameters": "apple80211_roam_profile_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ROAM_USER_CACHE",
+      "parameters": "apple80211_user_roam_cache* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_ROAM_USER_CACHE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "mandatory post-roam clear/disable and empty readback implemented; nonempty autonomous firmware cache and override enable explicitly unsupported",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLAdaptiveRoam::configureUserRoamCache",
+          "address": "0xffffff80022dee46",
+          "command": 431,
+          "input_bytes": 128,
+          "semantics": "successful roam issues empty clear plus override disable; channel-offload policy remains a separate unsupported capability"
+        }
+      ]
+    },
+    {
+      "callback": "setWCL_SCAN_ABORT",
+      "parameters": "void* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_SCAN_ABORT",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_REAL_TIME_MODE",
+      "parameters": "apple80211_wcl_real_time_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ARP_MODE",
+      "parameters": "apple80211_wcl_arp_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_JOIN_ABORT",
+      "parameters": "void* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_JOIN_ABORT",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_TRIGGER_CC",
+      "parameters": "triggerCC* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_SCAN_REQ",
+      "parameters": "apple80211ScanRequest* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_SCAN_REQ",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ASSOCIATE",
+      "parameters": "apple80211AssocCandidates* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_ASSOCIATE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_QOS_PARAMS",
+      "parameters": "apple80211_wcl_qos_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_LINK_UP_DONE",
+      "parameters": "void* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_LINK_UP_DONE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_SET_SCAN_HOME_AWAY_TIME",
+      "parameters": "scanHomeAndAwayTime* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_SCAN_TIMING",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setVOICE_IND_STATE",
+      "parameters": "apple80211_voice_ind_state* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_LINK_STATE_UPDATE",
+      "parameters": "apple80211_wcl_update_link_state* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_LINK_STATE_UPDATE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setRSN_XE",
+      "parameters": "apple80211_rsn_xe_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "stock setter reconstructed; next-join binding and update/cancellation semantics pending; still explicitly unsupported",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "setRSN_XE(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*)",
+          "address": "0xffffff800221f389",
+          "ioctl_operation": 457,
+          "input_output_bytes": 264,
+          "internal_command": "0x802869c8",
+          "protocol_wrapper": "0xffffff80021fff5a",
+          "protocol_vtable_byte_offset": 4792,
+          "failure_effect": "rejects non-264-byte or null records; WCL dispatch falls back to the typed callback only when unhandled or returning 0xe082280f",
+          "limitation": "Dispatch reconstruction does not establish setter-to-next-join lifetime or admission requirements"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setRSN_XE",
+          "address": "0xffffff8001610d64",
+          "adapter": "AppleBCMWLANJoinAdapter::setAssocRSNXE",
+          "adapter_address": "0xffffff8001589794",
+          "data_fields": {
+            "length_offset": 4,
+            "length_bytes": 2,
+            "element_offset": 6,
+            "maximum_element_bytes": 257
+          },
+          "feature_gates": [
+            109,
+            65
+          ],
+          "additional_context_flag": 64,
+          "semantics": "Reads or replaces the outgoing association RSNXE cache; zero-length set clears it; separate firmware-associated RSNXE cache is not returned",
+          "limitation": "No safe setter-to-next-association lifetime mapping; setter remains explicitly unsupported"
+        }
+      ]
+    },
+    {
+      "callback": "setWIFI_BT_5G_POLICY",
+      "parameters": "apple80211_wifi_bt_5g_policy_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ULOFDMA_STATE",
+      "parameters": "apple80211_wcl_ulofdma_state* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ACTION_FRAME",
+      "parameters": "apple80211_wcl_action_frame* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setGAS_ABORT",
+      "parameters": "void* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setOS_FEATURE_FLAGS",
+      "parameters": "apple80211_feature_flags* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setDHCP_RENEWAL_DATA",
+      "parameters": "apple80211_dhcp_renewal_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBATTERY_POWERSAVE_CONFIG",
+      "parameters": "apple80211_battery_ps_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMIMO_CONFIG",
+      "parameters": "apple80211_mimo_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_CONFIG_BG_MOTIONPROFILE",
+      "parameters": "apple80211_bg_motion_profile* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_CONFIG_BG_NETWORK",
+      "parameters": "apple80211_bg_network* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_CONFIG_BGSCAN",
+      "parameters": "apple80211_bg_scan* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_CONFIG_BG_PARAMS",
+      "parameters": "apple80211_bg_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setPOWER_PROFILE",
+      "parameters": "apple80211_power_profile* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setHEARTBEAT",
+      "parameters": "void* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setINTERFACE_SETTING",
+      "parameters": "apple80211_interface_setting* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setBYPASS_TX_POWER_CAP",
+      "parameters": "apple80211_bypass_tx_power_cap* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setFACETIME_WIFICALLING_PARAMS",
+      "parameters": "apple80211_facetime_wificalling_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setIPV4_PARAMS",
+      "parameters": "apple80211_ipv4_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::setIPV4_PARAMS",
+          "address": "0xffffff8002128a58",
+          "behavior": "issues cmdIouc 0x1e9, ignores its return value, then calls receivedIPv4Address with request words 0 and 4; non-null request returns success",
+          "limitation": "Only this bulletin-board path inspected; ioctl paths and downstream address handlers remain distinct"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setIPV4_PARAMS",
+          "address": "0xffffff8001643b3c",
+          "observed_behavior": "copies request fields at offsets 0, 4, 8 and 12 into core state; calls handleIPv4AddressNotificationGated; conditionally calls handleKeepaliveDataNotificationGated",
+          "limitation": "Provider disassembly does not establish WCL caller admission, required capability bits, or safe success-without-offload semantics"
+        }
+      ]
+    },
+    {
+      "callback": "setWCL_WNM_OPS",
+      "parameters": "apple80211_wcl_wnm_config_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_WNM_OFFLOAD",
+      "parameters": "apple80211_wcl_wnm_offload_t* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_LIMITED_AGGREGATION",
+      "parameters": "apple80211_limited_aggregation_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_BCN_MUTE_CONFIG",
+      "parameters": "apple80211_bcn_mute_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setEAP_FILTER_CONFIG",
+      "parameters": "apple80211_eap_filter_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWOW_LOW_POWER_MODE",
+      "parameters": "apple80211_wow_low_power_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setDUAL_POWER_MODE",
+      "parameters": "apple80211_dual_power_mode_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_UPDATE_FAST_LANE",
+      "parameters": "apple80211_fastlane* data",
+      "implementation": "forwarded",
+      "operation": "setWCL_FAST_LANE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "implemented contract; kernel/hardware behavior unverified",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_ASSOCIATED_SLEEP",
+      "parameters": "apple80211_associated_sleep_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setCONGESTION_CTRL_IND",
+      "parameters": "apple80211_congestion_control_indication* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSTAND_ALONE_MODE_STATE",
+      "parameters": "apple80211_standalone_state* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setIPV6_PARAMS",
+      "parameters": "apple80211_ipv6_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "address propagation inspected; unsupported does not block the inspected WCL handler; firmware offload and other entry paths remain unimplemented/unverified",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLNetManager::setIPV6_PARAMS",
+          "address": "0xffffff8002128ac4",
+          "behavior": "copies up to ten 16-byte addresses from request+4 and calls receivedIPv6Address; no driver command in this handler",
+          "limitation": "Only this bulletin-board path inspected; ioctl paths and downstream address handlers remain distinct"
+        }
+      ],
+      "stock_producer_evidence": [
+        {
+          "module": "AppleBCMWLANCoreMac",
+          "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
+          "producer": "AppleBCMWLANCore::setIPV6_PARAMS",
+          "address": "0xffffff8001643e80",
+          "observed_behavior": "reads count at offset 0 and clamps to 10; processes entries at 16-byte strides starting offset 4; subsequent offload flow needs further reconstruction",
+          "limitation": "Provider disassembly does not establish WCL caller admission, required capability bits, or safe success-without-offload semantics"
+        }
+      ]
+    },
+    {
+      "callback": "setINFRA_ENUMERATED",
+      "parameters": "apple80211_infra_enumerated* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setLMTPC_CONFIG",
+      "parameters": "apple80211_lmtpc_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTRAFFIC_ENG_PARAMS",
+      "parameters": "apple80211_traffic_eng_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setLE_SCAN_PARAM",
+      "parameters": "apple80211_le_scan_params* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTIMESYNC_GPIO",
+      "parameters": "apple80211_timesync_gpio* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setHOST_CLOCK_INFO",
+      "parameters": "apple80211_host_clock_info* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setFW_CLOCK_SOURCE",
+      "parameters": "apple80211_fw_clock_source* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTIMESYNC_TX_POLICY",
+      "parameters": "apple80211_timesync_tx_policy* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTIMESYNC_RX_POLICY",
+      "parameters": "apple80211_timesync_rx_policy* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setTIMESTAMPING_EN",
+      "parameters": "apple80211_timestamping_en* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setWCL_SOI_CONFIG",
+      "parameters": "appl80211_sleep_on_inactivity_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_TIME_SHARING_WIFI_ENH",
+      "parameters": "apple80211_mws_time_sharing* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH",
+      "parameters": "apple80211_mws_wifi_channel_bitmap* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_COEX_BITMAP_WIFI_ENH",
+      "parameters": "apple80211_mws_wifi_channel_bitmap* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_DISABLE_OCL_BITMAP_WIFI_ENH",
+      "parameters": "apple80211_mws_wifi_channel_bitmap* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_RFEM_CONFIG_WIFI_ENH",
+      "parameters": "apple80211_mws_rfem_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH",
+      "parameters": "apple80211_mws_wifi_channel_bitmap* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_SCAN_FREQ_WIFI_ENH",
+      "parameters": "apple80211_mws_scan_freq* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_SCAN_FREQ_MODE_WIFI_ENH",
+      "parameters": "apple80211_mws_scan_freq_mode* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_CONDITION_ID_BITMAP_WIFI_ENH",
+      "parameters": "apple80211_mws_condition_id_config* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_ANTENNA_SELECTION_WIFI_ENH",
+      "parameters": "apple80211_mws_antenna_selection* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setNDD_REQ",
+      "parameters": "apple80211_ndd_data* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setDBRG_ENTROPY",
+      "parameters": "apple80211_drbg_entropy* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setSDB_ENABLE",
+      "parameters": "apple80211_sdb_enable* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    },
+    {
+      "callback": "setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH",
+      "parameters": "apple80211_mws_accessory_power_limit* data",
+      "implementation": "unsupported",
+      "operation": null,
+      "queue_contract": "inline rejection; no radio access",
+      "requirement_audit": "caller evidence required; do not classify as optional",
+      "stock_consumer_evidence": []
+    }
+  ]
+}

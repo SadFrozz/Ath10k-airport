@@ -1,3 +1,5 @@
+> Historical archive only. The companion application described below was removed; current builds and releases contain the native kext only. See the root README.
+
 # Historical legacy-driver background
 
 These upstream notes describe the Ethernet-backed driver, not the current native diagnostic adapter.

@@ -103,6 +103,12 @@ def supports_skip_clock_init(parts):
     return len(features) > 1 and bool(features[1] & 0x02)
 
 
+def supports_mfp(parts):
+    # Linux v6.12 core.h: ATH10K_FW_FEATURE_MFP_SUPPORT = 12.
+    features = parts.get(2, b"")
+    return len(features) > 1 and bool(features[1] & 0x10)
+
+
 def parse_segments(image):
     """Uncompressed SGMT image, with data + one BEGINADDR + terminal DONE.
 
@@ -182,6 +188,7 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
         "otp_sha256": sha(parts[4]), "wmi_op": 4, "htt_op": 3,
         "otp_ignore_result_feature": ignore_otp_result(parts),
         "supports_skip_clock_init_feature": supports_skip_clock_init(parts),
+        "mfp_support_feature": supports_mfp(parts),
         "firmware_segments": segments, "firmware_entry_address": entry,
         "firmware_segment_data_bytes": sum(s['length'] for s in segments),
         "runtime_policy": "Host Interest + board + OTP + WLAN readback + BMI_DONE + HTC READY + WMI/HTT runtime; verified reset on failure",
@@ -197,6 +204,7 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
               f"static constexpr char kOTPSHA256[] = {json.dumps(sha(parts[4]))};",
               f"static constexpr bool kOTPIgnoreResult = {str(ignore_otp_result(parts)).lower()};",
               f"static constexpr bool kSupportsSkipClockInit = {str(supports_skip_clock_init(parts)).lower()};",
+              f"static constexpr bool kSupportsMFP = {str(supports_mfp(parts)).lower()};",
               f"static constexpr char kBoardSelection[] = {json.dumps(selection)};",
               "static constexpr UInt8 kBoard[] = {"]
     for pos in range(0, len(board), 16):
@@ -222,7 +230,7 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
         # Keep one copy of these large firmware arrays in the kernel image.
         board_end = header.index("};")
         aliases = ("kFirmwareVersion", "kFirmwareSize", "kFirmwareSHA256", "kOTPSize",
-                   "kOTPSHA256", "kOTPIgnoreResult", "kSupportsSkipClockInit", "kOTP",
+                   "kOTPSHA256", "kOTPIgnoreResult", "kSupportsSkipClockInit", "kSupportsMFP", "kOTP",
                    "kFirmware", "kFirmwareSegments", "kFirmwareSegmentCount",
                    "kFirmwareSegmentDataBytes", "kFirmwareEntryAddress")
         header = [line for line in header[:board_end + 1]
@@ -242,7 +250,7 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
         f"{namespace}::kBoardSHA256, {namespace}::kBoard, sizeof({namespace}::kBoard), "
         f"{namespace}::kFirmwareVersion, {namespace}::kFirmwareSize, {namespace}::kFirmwareSHA256, "
         f"{namespace}::kFirmware, {namespace}::kOTPSize, {namespace}::kOTPSHA256, {namespace}::kOTP, "
-        f"{namespace}::kOTPIgnoreResult, {namespace}::kSupportsSkipClockInit, "
+        f"{namespace}::kOTPIgnoreResult, {namespace}::kSupportsSkipClockInit, {namespace}::kSupportsMFP, "
         f"{namespace}::kFirmwareSegments, {namespace}::kFirmwareSegmentCount, "
         f"{namespace}::kFirmwareSegmentDataBytes, {namespace}::kFirmwareEntryAddress}},")
     print(f"Prepared {profile}: {selection} ({len(board)} bytes); firmware {version}; OTP {len(parts[4])} bytes")

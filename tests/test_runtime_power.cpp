@@ -39,6 +39,22 @@ public:
 };
 #include "runtime_power_methods.inc"
 int main(){
+    // Native PMF and spectrum work can be queued on WCL between radio ticks.
+    // Even with station PS still applied, the PCI target must not enter idle
+    // sleep before the existing radio wake/drain path sees that reservation.
+    for(unsigned pending=0;pending<3;++pending){
+        Ath10k::nowMs=100;Ath10kPCIDevice probe;assert(probe.prepareRuntimePower());bool idle=false;
+        if(pending==0)probe._connection.pmfTXPending=true;
+        if(pending==1)probe._connection.spectrum.pending=true;
+        if(pending==2)probe._connection.spectrum.inFlight=true;
+        assert(!probe.idleRuntimePower(false,idle) && !idle);
+        Ath10k::nowMs=160;assert(!probe.idleRuntimePower(false,idle) && !idle && probe._runtimeWakeAsserted);
+        assert(probe._runtimePower.sleeps==0);
+        probe._connection.pmfTXPending=probe._connection.spectrum.pending=probe._connection.spectrum.inFlight=false;
+        assert(!probe.idleRuntimePower(false,idle) && idle && probe._runtimePower.sleeps==1);
+        assert(probe.finishRuntimePower());
+    }
+    Ath10k::nowMs=100;
     Ath10kPCIDevice d;assert(d.prepareRuntimePower());bool asleep=false;
     const auto &l=Ath10k::kQca6174RegisterLayout;const UInt32 rtc=Ath10k::rtcStateOffset(l),wake=Ath10k::socWakeOffset(l);
     assert(!d.idleRuntimePower(false,asleep) && !asleep && d.pci.control==0x8146);

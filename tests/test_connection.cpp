@@ -20,6 +20,11 @@ static std::vector<UInt8> managementResponse(const Ath10k::ConnectionState &s,bo
     }
     return p;
 }
+static std::vector<UInt8> comebackResponse(const Ath10k::ConnectionState &state,UInt32 tu){
+    auto p=managementResponse(state,true,30);const UInt32 old=Ath10k::wmiReadLE32(p.data()+32),bytes=old+7,aligned=(bytes+3)&~3u;
+    p.resize(60+aligned);UInt8 *ie=p.data()+60+old;ie[0]=56;ie[1]=5;ie[2]=3;Ath10k::htcWriteLE32(ie+3,tu);
+    Ath10k::htcWriteLE16(p.data()+2,p.size()-8);Ath10k::htcWriteLE32(p.data()+32,bytes);Ath10k::htcWriteLE16(p.data()+56,aligned);return p;
+}
 static std::vector<UInt8> completion(UInt16 id=0){
     std::vector<UInt8> p(16);p[0]=1;p[2]=8;p[8]=7;p[10]=1;Ath10k::htcWriteLE16(p.data()+12,id);return p;
 }
@@ -50,7 +55,8 @@ static void mgmtCompletionTests(){
 }
 class ConnectionDriver:public SetupDriver {
 public:
-    unsigned commands=0,packets=0;bool suppressCompletion=false,wrongID=false,rejectAssociation=false;
+    unsigned commands=0,packets=0,temporaryAssociationRejects=0;UInt32 comebackTU=1000;
+    bool suppressCompletion=false,wrongID=false,rejectAssociation=false;
     ConnectionDriver(){
         run();deliver(2,scanPacket(1));tick(1250);deliver(2,scanPacket(2));tick(1260);
         _wmi.htCapability=1;
@@ -123,7 +129,9 @@ public:
             if(_connection.txManagement){
                 assert(f[9]==0x65 && Ath10k::htcReadLE16(f+10)==0xc40);
                 assert(Ath10k::wmiReadLE32(f+16)==_packetBuffer.dmaAddress());
-                deliver(2,managementResponse(_connection,_connection.stage==LinkStage::Assoc,
+                if(_connection.stage==LinkStage::Assoc && temporaryAssociationRejects){
+                    --temporaryAssociationRejects;deliver(2,comebackResponse(_connection,comebackTU));
+                }else deliver(2,managementResponse(_connection,_connection.stage==LinkStage::Assoc,
                     rejectAssociation && _connection.stage==LinkStage::Assoc?17:0));
             }else{
                 assert(networkUp && f[9]==0x46 && Ath10k::htcReadLE16(f+10)==0xc00);
@@ -430,10 +438,10 @@ static void pauseTests(){
     p=captured;p[14]=229;assert(parse(p,s) && !s.txPauseMask);
     p=captured;p.insert(p.end(),captured.begin()+12,captured.end());p[2]=52;assert(parse(p,s) && !s.txPauseMask);
     p=captured;p[1]=2;p[4]=8;p[2]=36;p.insert(p.end(),{1,4,0,0,2,3,0,0});assert(parse(p,s) && !s.txPauseMask);
-    ConnectionDriver d;d.connect();d.deliver(2,captured);d.tick(1800);
+    ConnectionDriver d;d.connect();d.queueEnabled=true;d.deliver(2,captured);d.tick(1800);
     assert(d.networkUp && d._wmiLive.active && d._connection.txPauseMask==2);
     d.deliver(2,pauseEvent(1));d.tick(1810);
-    assert(d.networkUp && d._wmiLive.active && !d._connection.txPauseMask && !d._connection.txWakePending);
+    assert(d.networkUp && d._wmiLive.active && !d._connection.txPauseMask && !d._connection.txWakePending && d.queue.wakes==1);
     d.releaseWMIRuntime();
 }
 static void peerMapTests(){
@@ -842,6 +850,32 @@ static void htTests(){
     auto before=cache.accepted;beacon.insert(beacon.end(),{45,0});
     Ath10k::recordWMIBSS(cache,beacon.data(),beacon.size(),36,30,0);assert(cache.accepted==before && cache.malformed==1);
 }
+static void rsnxeBSSScanTests(){
+    Ath10k::WMIBSSCache cache{};std::vector<UInt8> base(36);base[0]=0x80;base[16]=2;base[32]=100;base[34]=0x11;
+    base.insert(base.end(),{0,1,'T',1,1,12});uint8_t rsn[44]{};size_t rsnBytes=0;
+    assert(AthSecurity::buildSAEStationRSN(nullptr,0,rsn,sizeof(rsn),rsnBytes));base.insert(base.end(),rsn,rsn+rsnBytes);
+    for(unsigned body=1;body<=16;++body){
+        auto frame=base;frame.push_back(244);frame.push_back(UInt8(body));frame.push_back(UInt8(0xa0|(body-1)));
+        for(unsigned i=1;i<body;++i)frame.push_back(UInt8(0x80+i));
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.count==1 && cache.entries[0].rsnxeLength==body+2);
+        assert(!memcmp(cache.entries[0].rsnxe,frame.data()+base.size(),body+2));
+        assert(AthSecurity::rsnxeHasH2E(cache.entries[0].rsnxe,cache.entries[0].rsnxeLength));
+        const auto saved=cache.entries[0];const auto accepted=cache.accepted;
+        frame.insert(frame.end(),{244,1,0x20}); // Duplicate cannot replace a valid observation.
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.accepted==accepted && !memcmp(&cache.entries[0],&saved,sizeof(saved)));
+    }
+    const auto saved=cache.entries[0];const auto accepted=cache.accepted;
+    for(const std::vector<UInt8> &bad : {std::vector<UInt8>{244,0}, {244,1,0x21}, {244,2,0x20,0}, {244,2,0x21}}){
+        auto frame=base;frame.insert(frame.end(),bad.begin(),bad.end());
+        Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),36,30,0);
+        assert(cache.accepted==accepted && !memcmp(&cache.entries[0],&saved,sizeof(saved)));
+    }
+    Ath10k::recordWMIBSS(cache,base.data(),base.size(),36,30,0);
+    assert(cache.accepted==accepted+1 && !cache.entries[0].rsnxeLength);
+    for(auto v:cache.entries[0].rsnxe)assert(!v); // A later omission cannot inherit old H2E support.
+}
 static void blockAckTests(){
     Ath10k::ConnectionState s{};s.stage=LinkStage::Connected;s.peerIDs[0]=1u<<7;s.peerCount=1;
     UInt8 f[16]{};f[0]=1;f[2]=4;f[8]=5;f[9]=64;Ath10k::htcWriteLE16(f+10,(7<<4)|3);
@@ -889,7 +923,191 @@ static void partialCancelTests(){
 }
 
 #if !defined(ATH10K_CHANNEL_SWITCH_TEST) && !defined(ATH10K_AP_MAINTENANCE_TEST)
+static void deferredDataWakeTests(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;
+    d.queueEnabled=true;d._dataTXStalled=true;
+    s.eapolPause=true;s.txWakePending=true;
+    assert(!d.serviceConnection(1800));
+    assert(!d.queue.wakes && s.txWakePending && d._dataTXStalled);
+    UInt8 frame[64]{};frame[12]=8;
+    assert(d.submitDataPacket(frame,sizeof(frame),1801));
+    assert(!s.dataPending); // Direct submission obeys the same EAPOL hold.
+    s.eapolPause=false;d.queueEnabled=false;
+    assert(!d.serviceConnection(1810));assert(s.txWakePending && d._dataTXStalled);
+    d.queueEnabled=true;
+    assert(!d.serviceConnection(1820));
+    assert(d.queue.wakes==1 && !s.txWakePending && !d._dataTXStalled);
+    // A stalled BSD queue must recover even without a new completion/WAKE event.
+    d._dataTXStalled=true;s.eapolPause=true;
+    assert(!d.serviceConnection(1830));assert(d.queue.wakes==1 && d._dataTXStalled);
+    s.eapolPause=false;
+    assert(!d.serviceConnection(1840));assert(d.queue.wakes==2 && !d._dataTXStalled);
+    d.releaseWMIRuntime();
+}
+static void protectedManagementTransport(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;s.secure=true;s.pairInstalled=true;s.pmfRequired=true;s.portAuthorized=true;s.securityPhase=5;
+    UInt8 plain[28]{};plain[0]=0xd0;plain[1]=0x40;memcpy(plain+4,s.bssid,6);memcpy(plain+10,s.local,6);memcpy(plain+16,s.bssid,6);
+    plain[24]=8;plain[26]=0x12;plain[27]=0x34;AthSecurity::PMFCCMPResult prepared;
+    assert(AthSecurity::PMFHardwareCCMP::prepare(plain,sizeof(plain),s.local,s.bssid,1,prepared));
+    bool submitted=false;
+    d._regs.tx4Consume=[&](){
+        const auto cmd=static_cast<const UInt8 *>(d._packetCommand.virtualAddress());
+        assert(s.txOwned && cmd[9]==0x61 && Ath10k::htcReadLE16(cmd+12)==prepared.bytes);
+        assert(Ath10k::wmiReadLE32(cmd+16)==d._packetBuffer.dmaAddress());
+        assert(!memcmp(d._packetBuffer.virtualAddress(),prepared.frame,prepared.bytes));submitted=true;
+        d.deliver(1,mgmtCompletion(s.txId));
+    };
+    const auto id=s.txId;const bool complete=s.txComplete;
+    assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000)); // Plain mode cannot bypass protected TX.
+    assert(s.txId==id && s.txComplete==complete && !s.txOwned && !submitted);
+    assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::SoftwareCCMP));
+    assert(!s.txOwned && !submitted);
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::HardwareCCMP));
+    assert(submitted && s.txOwned && s.lastTxPMF);d.tick(2010);assert(!s.txOwned && !s.cancelRequested);
+    d._regs.tx4Consume=[&](){d.deliver(1,mgmtCompletion(s.txId,1));};
+    assert(AthSecurity::PMFHardwareCCMP::prepare(plain,sizeof(plain),s.local,s.bssid,2,prepared));
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2020,AthSecurity::ManagementTX::HardwareCCMP));
+    d.tick(2030);assert(!s.txOwned && !s.cancelRequested && s.txErrors==1); // Query coordinator, not generic MLME failure, decides retry/timeout.
+    s.pmfTXPending=true;assert(!Ath10k::dataTXAdmissionOpen(s));s.pmfTXPending=false;assert(Ath10k::dataTXAdmissionOpen(s));
+    s.spectrum.pending=true;s.spectrum.length=31;const auto before=s.txId;
+    assert(!d.serviceConnection(2040) && s.txId==before && s.spectrum.pending && !s.txOwned); // Required reports are never submitted raw.
+    s.spectrum.pending=false;s.spectrum.inFlight=true;
+    d._regs.tx4Consume=[&](){d.deliver(1,mgmtCompletion(s.txId));};
+    assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2050,AthSecurity::ManagementTX::HardwareCCMP));
+    s.lastTxSpectrum=true; // Native handoff marks the retained report after the copied payload is accepted.
+    d.tick(2060);assert(!s.txOwned && !s.spectrum.inFlight && s.spectrum.completed==1);
+    d.releaseWMIRuntime();
+}
+static void pmfFirmwarePolicy(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;UInt8 f[256]{};
+    s.pmfRequired=true;s.firmwareMFPSupport=true;s.pmfQoSTransported=false;
+    assert(!Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc));
+    s.pmfQoSTransported=true;s.firmwareMFPSupport=false;
+    assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && !(Ath10k::wmiReadLE32(f+36)&0x08000000));
+    s.firmwareMFPSupport=true;assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && (Ath10k::wmiReadLE32(f+36)&0x08000000));
+    assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::Start) && !Ath10k::wmiReadLE32(f+32)); // Linux STA keeps VDEV_START PMF flag clear.
+    s.pmfRequired=false;assert(Ath10k::buildConnectionWMI(f,sizeof(f),2,s,LinkStage::PeerAssoc) && !(Ath10k::wmiReadLE32(f+36)&0x08000000));
+    Ath10k::resetDisconnected(s);assert(s.firmwareMFPSupport && s.pmfQoSTransported && !s.pmfRequired);d.releaseWMIRuntime();
+}
+static void associationComebackTests(){
+    const UInt8 ie[]={56,5,3,0xe8,3,0,0};UInt32 tu=999;
+    assert(Ath10k::associationComebackInterval(ie,sizeof(ie),tu) && tu==1000);
+    for(unsigned mode=0;mode<6;++mode){
+        std::vector<UInt8> bad(ie,ie+sizeof(ie));
+        if(mode==0)bad.pop_back();if(mode==1)bad[1]=4;if(mode==2)bad[2]=2;
+        if(mode==3)bad.insert(bad.end(),ie,ie+sizeof(ie));
+        if(mode==4)bad.push_back(1);if(mode==5)bad[0]=1;
+        tu=999;assert(!Ath10k::associationComebackInterval(bad.data(),bad.size(),tu) && tu==999);
+    }
+    Ath10k::ConnectionState state;state.stage=LinkStage::Assoc;state.submitted=state.txComplete=true;
+    state.sinceMs=100;state.managementAttempts=1;state.associationComeback.pending=true;state.associationComeback.intervalTU=1000;
+    bool waiting=false;assert(!Ath10k::serviceAssociationComeback(state,200,waiting) && waiting);
+    const UInt64 until=state.associationComeback.untilMs;assert(until==1224);
+    assert(!Ath10k::serviceAssociationComeback(state,1000,waiting) && waiting && state.associationComeback.untilMs==until);
+    state.txOwned=true;assert(!Ath10k::serviceAssociationComeback(state,until,waiting) && waiting && state.submitted);
+    state.txOwned=false;assert(!Ath10k::serviceAssociationComeback(state,until,waiting) && !waiting && !state.submitted && !state.associationComeback.pending);
+    for(unsigned mode=0;mode<4;++mode){
+        state={};state.stage=LinkStage::Assoc;state.submitted=state.txComplete=true;state.sinceMs=100;state.managementAttempts=1;
+        state.associationComeback.pending=true;state.associationComeback.intervalTU=1000;UInt64 now=200;
+        if(mode==0)state.managementAttempts=3;
+        if(mode==1)state.associationComeback.intervalTU=0xffffffffu;
+        if(mode==2)now=99;
+        if(mode==3){state.sinceMs=~UInt64(0)-100;now=~UInt64(0)-50;}
+        assert(Ath10k::serviceAssociationComeback(state,now,waiting) && state.submitted && !waiting);
+    }
+    // Independent protocol boundary values: zero TU is immediate; one TU
+    // requires two milliseconds in the host clock, never a truncated 1 ms.
+    for(unsigned interval:{0u,1u}){
+        state={};state.stage=LinkStage::Assoc;state.sinceMs=100;state.submitted=state.txComplete=true;state.managementAttempts=1;
+        state.associationComeback.pending=true;state.associationComeback.intervalTU=interval;
+        assert(!Ath10k::serviceAssociationComeback(state,200,waiting));
+        if(interval)assert(waiting && state.associationComeback.untilMs==202);
+        else assert(!waiting && !state.associationComeback.pending && !state.submitted);
+    }
+    for(unsigned cancel=0;cancel<3;++cancel){
+        state={};state.stage=LinkStage::Assoc;state.submitted=state.txComplete=true;state.sinceMs=100;state.managementAttempts=1;
+        state.associationComeback.pending=true;state.associationComeback.intervalTU=1000;
+        if(cancel==0)state.cancelRequested=true;
+        if(cancel==1)state.disconnect=Ath10k::DisconnectStage::Drain;
+        if(cancel==2)state.stage=LinkStage::Failed;
+        assert(!Ath10k::serviceAssociationComeback(state,200,waiting) && !waiting && !state.associationComeback.pending && state.submitted);
+    }
+    // Honor a valid interval beyond five seconds, within one fixed request
+    // deadline. A later caller cannot extend the original request lifetime.
+    state={};state.stage=LinkStage::Assoc;state.sinceMs=100;state.submitted=state.txComplete=true;state.managementAttempts=1;
+    state.associationComeback.pending=true;state.associationComeback.intervalTU=10000;
+    assert(!Ath10k::serviceAssociationComeback(state,200,waiting,20000) && waiting && state.associationComeback.untilMs==10440 && state.associationDeadlineMs==20000);
+    assert(!Ath10k::serviceAssociationComeback(state,10440,waiting,30000) && !waiting && !state.submitted && state.associationDeadlineMs==20000);
+    state.submitted=true;state.associationComeback.pending=true;state.associationComeback.intervalTU=10000;
+    assert(Ath10k::serviceAssociationComeback(state,10450,waiting,30000) && state.submitted && state.associationDeadlineMs==20000);
+    // Actual RX parser binds one wait to this in-flight request. Duplicate
+    // temporary replies cannot move its deadline, and success is immutable.
+    ConnectionDriver model;model.connect();auto response=model._connection;response.stage=LinkStage::Assoc;response.submitted=true;response.assocReply=false;
+    auto packet=comebackResponse(response,1000);UInt32 bytes=Ath10k::wmiReadLE32(packet.data()+32);
+    Ath10k::receiveStationManagement(response,packet.data()+60,bytes,0,response.operatingChannel);
+    assert(response.stage==LinkStage::Assoc && response.associationComeback.pending && response.diagnostics.associationComebacks==1 && !response.assocReply);
+    response.sinceMs=100;assert(!Ath10k::serviceAssociationComeback(response,200,waiting));const UInt64 deadline=response.associationComeback.untilMs;
+    packet=comebackResponse(response,4000);Ath10k::receiveStationManagement(response,packet.data()+60,Ath10k::wmiReadLE32(packet.data()+32),0,response.operatingChannel);
+    assert(response.associationComeback.untilMs==deadline && response.associationComeback.intervalTU==1000 && response.diagnostics.associationComebacks==1);
+    packet=managementResponse(response,true);Ath10k::receiveStationManagement(response,packet.data()+60,30,0,response.operatingChannel);
+    assert(response.assocReply && !response.associationComeback.pending);
+    packet=comebackResponse(response,1000);Ath10k::receiveStationManagement(response,packet.data()+60,Ath10k::wmiReadLE32(packet.data()+32),0,response.operatingChannel);
+    assert(response.assocReply && response.associationStatus==0 && !response.associationComeback.pending && response.diagnostics.associationComebacks==1);
+    model.releaseWMIRuntime();
+    // Full production radio service waits, retries without reopening Auth or
+    // recreating peers, then completes the original association normally.
+    ConnectionDriver d;d.temporaryAssociationRejects=1;d.comebackTU=10000;d.connect();assert(!d.networkUp && d._connection.associationComeback.armed);
+    const UInt64 retryAt=d._connection.associationComeback.untilMs;const unsigned packets=d.packets,commands=d.commands;
+    for(UInt64 now=1800;now<retryAt;++now)d.tick(now);
+    assert(d.packets==packets && d.commands==commands && !d.networkUp);
+    for(UInt64 now=retryAt;now<retryAt+500 && !d.networkUp;now+=10)d.tick(now);
+    assert(d.networkUp && d.packets==packets+1 && !d._connection.disconnectCount && d._connection.diagnostics.associationComebacks==1 && d._connection.diagnostics.lastAssociationStatus==30);d.releaseWMIRuntime();
+    ConnectionDriver exhausted;exhausted.temporaryAssociationRejects=4;exhausted.connect();
+    for(UInt64 now=1800;now<7000;now+=10)exhausted.tick(now);
+    assert(!exhausted.networkUp && exhausted._connection.stage==LinkStage::Disabled && exhausted._connection.disconnectCount==1 && exhausted._connection.diagnostics.associationComebacks==3);exhausted.releaseWMIRuntime();
+}
+static void associationIdentifierTests(){
+    ConnectionDriver d;d.connect();assert(d.networkUp);
+    // IEEE 802.11 AID is the lower eleven bits; all five high bits are reserved.
+    // This golden field interpretation is independent of the driver parser.
+    for(unsigned reserved=0;reserved<32;++reserved){
+        auto state=d._connection;state.stage=LinkStage::Assoc;state.submitted=true;state.assocReply=false;
+        auto packet=managementResponse(state,true);const UInt16 raw=UInt16(7u|(reserved<<11));
+        Ath10k::htcWriteLE16(packet.data()+88,raw);
+        Ath10k::receiveStationManagement(state,packet.data()+60,Ath10k::wmiReadLE32(packet.data()+32),0,state.operatingChannel);
+        assert(state.stage==LinkStage::Assoc && state.assocReply && state.aid==7 && state.associationStatus==0);
+    }
+    // Reject both AP-denied status and invalid low-bit AIDs; preserve raw
+    // diagnostics across teardown and a later successful association.
+    auto denied=d._connection;denied.stage=LinkStage::Assoc;denied.submitted=true;denied.assocReply=false;
+    auto packet=managementResponse(denied,true,17);Ath10k::htcWriteLE16(packet.data()+88,0xffff);
+    Ath10k::receiveStationManagement(denied,packet.data()+60,30,0,denied.operatingChannel);
+    assert(denied.stage==LinkStage::Failed && denied.diagnostics.associationRejects==1);
+    assert(denied.diagnostics.lastAssociationStatus==17 && denied.diagnostics.lastAssociationRawAID==0xffff);
+    Ath10k::resetDisconnected(denied);assert(denied.diagnostics.associationRejects==1 && denied.diagnostics.lastAssociationStatus==17);
+    auto next=d._connection;next.diagnostics=denied.diagnostics;next.stage=LinkStage::Assoc;next.submitted=true;next.assocReply=false;
+    packet=managementResponse(next,true);Ath10k::receiveStationManagement(next,packet.data()+60,30,0,next.operatingChannel);
+    assert(next.assocReply && next.associationStatus==0 && next.diagnostics.lastAssociationStatus==17 && next.diagnostics.associationRejects==1);
+    for(UInt16 raw:{UInt16(0),UInt16(0xf800),UInt16(2008),UInt16(0xffff)}){
+        auto invalid=d._connection;invalid.stage=LinkStage::Assoc;invalid.submitted=true;invalid.assocReply=false;
+        packet=managementResponse(invalid,true);Ath10k::htcWriteLE16(packet.data()+88,raw);
+        Ath10k::receiveStationManagement(invalid,packet.data()+60,30,0,invalid.operatingChannel);
+        assert(invalid.stage==LinkStage::Failed && invalid.diagnostics.associationRejects==1);
+        assert(invalid.diagnostics.lastAssociationStatus==0 && invalid.diagnostics.lastAssociationRawAID==raw);
+    }
+    auto ignored=d._connection;ignored.stage=LinkStage::Assoc;ignored.submitted=true;
+    packet=managementResponse(ignored,true,17);packet[70]^=2; // Foreign transmitter cannot overwrite diagnostics.
+    Ath10k::receiveStationManagement(ignored,packet.data()+60,30,0,ignored.operatingChannel);
+    assert(!ignored.diagnostics.associationRejects);
+    d.releaseWMIRuntime();
+}
 int main(){
+    associationComebackTests();
+    associationIdentifierTests();
+    rsnxeBSSScanTests();
+    pmfFirmwarePolicy();
+    protectedManagementTransport();
+    deferredDataWakeTests();
     partialCancelTests();
     blockAckTests();
     htTests();
@@ -917,11 +1135,57 @@ int main(){
     ConnectionDriver adjacent;adjacent._wmiBSS.entries[0].rxChannel=3;
     adjacent._wmiBSS.entries[0].advertisedChannel=1;
     auto &cs=adjacent._connection;
+    cs.apDisconnect.valid=true;cs.apDisconnect.reason=15;cs.apDisconnect.disassociation=true;
     assert(!Ath10k::selectOpenBSS(cs,adjacent._wmiBSS));
+    assert(!cs.apDisconnect.valid && !cs.apDisconnect.reason && !cs.apDisconnect.disassociation);
     assert(cs.operatingChannel==1 && cs.ap.rxChannel==3 && cs.ap.advertisedChannel==1);
     UInt8 wire[256];cs.stage=LinkStage::Start;
     assert(Ath10k::buildConnectionWMI(wire,sizeof(wire),2,cs)==120);
     assert(Ath10k::wmiReadLE32(wire+92)==2412 && Ath10k::wmiReadLE32(wire+96)==2412);
+    { // Reject unsupported basic rates before touching the selected AP.
+      auto candidate=adjacent._wmiBSS;
+      candidate.entries[0].advertisedChannel=6;
+      candidate.entries[0].rates[0]=0xff;
+      const auto before=cs;
+      assert(!strcmp(Ath10k::selectOpenBSS(cs,candidate),"unsupported-basic-rate"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { auto candidate=adjacent._wmiBSS;
+      candidate.entries[0].advertisedChannel=6;
+      candidate.entries[0].powerConstraintDb=255;
+      const auto before=cs;
+      assert(!strcmp(Ath10k::selectOpenBSS(cs,candidate),"invalid-channel-definition"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { auto ap=adjacent._wmiBSS.entries[0];ap.bssid[5]^=0x40;ap.advertisedChannel=6;
+      const auto before=cs;Ath10k::CandidateConfiguration prepared{};
+      assert(!Ath10k::prepareBSSCandidate(cs,ap,prepared));
+      assert(prepared.operatingChannel==6 && !memcmp(prepared.ap.bssid,ap.bssid,6));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+      ap.ssid[0]^=1;
+      assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"candidate-ssid-mismatch"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+    }
+    { const auto original=adjacent._wmiBSS.entries[0];
+      const auto before=cs;Ath10k::CandidateConfiguration prepared{};
+      for(unsigned length=33;length<256;++length){
+          auto ap=original;ap.ssidLength=length;
+          assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"invalid-ssid-length"));
+          ap=original;ap.rateCount=length;
+          assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"bss-missing-valid-rates"));
+      }
+      auto ap=original;ap.privacy=true;
+      assert(!strcmp(Ath10k::prepareBSSCandidate(cs,ap,prepared),"protected-network-not-supported"));
+      assert(!memcmp(&before,&cs,sizeof(cs)));
+      // Configuration application must not overwrite keys, BSSID or queue ownership.
+      assert(!Ath10k::prepareBSSCandidate(cs,original,prepared));
+      auto destination=cs;destination.installedPair[0]=0x5a;destination.pairPN[0]=123;
+      destination.wmiOwned=destination.txOwned=true;destination.bssid[5]^=0x80;
+      const auto lastBSSID=destination.bssid[5];
+      Ath10k::applyBSSCandidate(destination,prepared);
+      assert(destination.installedPair[0]==0x5a && destination.pairPN[0]==123);
+      assert(destination.wmiOwned && destination.txOwned && destination.bssid[5]==lastBSSID);
+    }
     adjacent._wmiBSS.entries[0].advertisedChannel=169;
     assert(!strcmp(Ath10k::selectOpenBSS(cs,adjacent._wmiBSS),"bss-channel-unsupported"));
     adjacent._wmiBSS.entries[0].advertisedChannel=36;

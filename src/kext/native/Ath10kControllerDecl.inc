@@ -3,7 +3,12 @@ public:
     IO80211WorkQueue *getWorkQueue() const override;
     bool createWorkQueue() override {return getWorkQueue()!=nullptr;}
     bool isCommandProhibited(int) override {return false;}
-    SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {return kIOReturnUnsupported;}
+    SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long command,void *,bool set) override {
+        // WCL performs the actual operation; this controller hook must not veto it.
+        setProperty("Ath10kNativeCardCommand",UInt64(command),64);
+        setProperty("Ath10kNativeCardCommandIsSet",set);
+        return kIOReturnSuccess;
+    }
     bool requiresExplicitMBufRelease() override {return false;}
     bool flowIdSupported() override {return false;}
     CCLogStream *getLogger() const override {return _nativeLogger;}
@@ -21,14 +26,69 @@ public:
     IOReturn nativeRequest(AthNativeOp,void *);
     static IOReturn nativeAction(OSObject *,void *,void *,void *,void *);
     IOReturn nativeRequestGated(AthNativeOp,void *);
+    IOReturn nativeJoinRequest(void *);
+    IOReturn nativeRoamRequest(void *);
+    IOReturn nativeRoamCacheRequest(void *);
+    bool nativeRetainSystemLink();
+    IOReturn nativeBeginJoin(AirportWCL::JoinRequest &);
+    bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
+    IOReturn nativeContinueRoam(UInt64);
+    IOReturn nativeDisconnectForRoam(UInt64);
+    bool nativePreparePersonalAuth(UInt64,const char *&);
+    bool nativeSAEEnabled() const;
+    bool nativePMFStartupQueryEnabled() const;
+    bool _nativePMFStartupQueryAttempted=false;
+    void publishNativeSecurityState(UInt64);
+    UInt64 _nativeSecurityPublished[10]{};
+    UInt64 _nativeSecuritySnapshotMS=0;
+    bool _nativeSecuritySnapshotPublished=false;
+    IOReturn nativeCurrentAPInfo(AthNativeOp,void *);
+    IOReturn nativeLinkStateUpdate(void *);
+    IOReturn nativeLinkMetrics(AthNativeOp,void *);
+    IOReturn nativePHYCapabilities(AthNativeOp,void *);
     bool prepareNativeInterface();
     bool prepareNativeLogs();
     void nativeStartupPhase(const char *);
     void releaseNativeInterface();
     void stopNativeRequests();
+    void nativeInterfaceWillStop(Ath10kNativeInterface *);
+    void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
+    static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
+    void discardNativeSecurity();
+    const char *serviceNativeSAE(UInt64);
+    UInt32 buildNativeSAEAssociation(UInt8 *,UInt32);
+    bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
+    bool nativeAcceptSecurityResult(UInt32);
+    bool nativePMFPairwiseAcknowledged(const UInt8 *);
+    bool nativePMFPortReady();
+    bool nativeAssociationRSNXE(void *);
     static IOReturn nativeStopAction(OSObject *,void *,void *,void *,void *);
     void releaseNativeLogs();
     void serviceNative(UInt64);
+    bool nativePMFFirmwareReady();
+    bool nativePMFTransportReady();
+    void serviceNativePMF(UInt64);
+    static bool nativePMFManagement(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32);
+    void serviceNativeNotifications(UInt64);
+    void requestNativeService();
+    static void nativeServiceThread(thread_call_param_t,thread_call_param_t);
+    static IOReturn nativeServiceWCLAction(OSObject *,void *,void *,void *,void *);
+    static IOReturn nativeServiceRadioAction(OSObject *,void *,void *,void *,void *);
+    thread_call_t _nativeServiceCall=nullptr;
+    IOLock *_nativeServiceLock=nullptr;
+    bool _nativeServiceQueued=false,_nativeServiceRunning=false,_nativeServiceStopping=false;
+    bool _nativeServicePending=false;
+    IOReturn _nativePostError=kIOReturnSuccess;
+    UInt64 _nativePostFailures=0;
+    const char *serviceNativeMAC(UInt64);
+    const char *nativeSelectBSS(UInt64);
+    bool _nativeMACActive=false,_nativeMACWaiting=false,_nativeMACValid=false;
+    bool _nativeMACSubmitted=false;
+    UInt32 _nativeMACStep=0,_nativeMACNext=0,_nativeMACGeneration=0;
+    UInt64 _nativeMACSince=0;
+    UInt8 _nativeMACCurrent[6]{},_nativeMACRequested[6]{};
+    Ath10k::WMIEchoState _nativeMACEcho{};
+    IOReturn _nativeMACResult=kIOReturnNotReady;
 private:
     friend class Ath10kNativeInterface;
     friend class Ath10kBSDInterface;
@@ -37,6 +97,7 @@ private:
     NativeSecurity *_nativeSecurity=nullptr;
     Ath10kNativeInterface *_nativeInterface=nullptr;
     IOCommandGate *_nativeGate=nullptr;
+    IOCommandGate *_nativeBSDGate=nullptr;
     CCPipe *_nativePipes[3]{};
     bool _nativePipesStarted[3]{};
     CCLogStream *_nativeLogger=nullptr;
@@ -45,12 +106,20 @@ private:
     IO80211FaultReporter *_nativeFault=nullptr;
     bool _nativeRadioOn=true,_nativeScanPending=false,_nativeJoinPending=false;
     bool _nativeAssocSent=false,_nativeBeaconSent=false,_nativeWasUp=false;
+    bool _nativeJoinBSSSent=false,_nativeLinkUpSent=false,_nativeDeauthSent=false,_nativeJoinFailed=false;
+    UInt8 _nativeLastBSSID[6]{};
+    UInt32 _nativeScanResultIndex=0,_nativeScanResultsEmitted=0;
+    bool _nativeScanStreamed=false;
     bool _nativeAttached=false,_nativeControllerAttached=false,_nativeStarted=false,_nativeStopping=false;
     UInt32 _nativeReportedBeacon=0;
     int _nativeReportedQuality=-2;
-    bool _nativeReadyPublished=false;
+    bool _nativeReadyPublished=false,_nativeReadyRequested=false,_nativeAbortRequested=false,_nativeReadyResetSent=false;
+    bool _nativeDeferredLinkDown=false;
+    UInt64 _nativeRoamPending=0,_nativeRoamDeadline=0;
+    UInt64 _nativeRoamJoinGeneration=0;
     UInt64 _nativeJoinDeadline=0;
     AirportWCL::JoinRequest _nativeJoin{};
     AirportWCL::ScanRequest _nativeScan{};
     UInt8 _nativeBSSMessage[1600]{};
     UInt32 _nativeBSSBytes=0;
+    UInt32 _nativeScanDwellMs=120;

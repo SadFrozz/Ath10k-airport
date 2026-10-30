@@ -83,7 +83,12 @@ static void rekeyTests(){
  assert(s.receive(r_pair1,sizeof(r_pair1))==S::Reply);
  changed.assign(r_pair3,r_pair3+sizeof(r_pair3));changed[95]^=1;
  assert(s.receive(changed.data(),changed.size())==S::Ignore && s.pairwisePending());
- s.cancelPairwiseAttempt();assert(!s.pairwisePending());
+ s.cancelPairwiseAttempt();assert(!s.pairwisePending() && !s.outputLength);
+ for(auto byte:s.output)assert(!byte);
+ // Late candidate M3 is retired; established authenticated retries still work.
+ assert(s.receive(r_pair3,sizeof(r_pair3))==S::Ignore);
+ assert(s.receive(v_m3,sizeof(v_m3))==S::Reply);
+ assert(s.outputLength==sizeof(v_m4) && !memcmp(s.output,v_m4,sizeof(v_m4)));
  // Forged M1 timeout restores established keys: an authentic GTK rekey still works.
  assert(s.receive(r_group_new,sizeof(r_group_new))==S::GroupKeys);
  assert(s.receive(r_pair1,sizeof(r_pair1))==S::Reply);
@@ -97,6 +102,62 @@ static void rekeyTests(){
 }
 
 int main(){
+ { AthSecurity::PMFKeyEpochs state;AthSecurity::IGTKCMAC128 key{},snapshot{};
+   key.keyID=4;key.ipn=3;key.key[0]=9;uint64_t epoch=0;
+   assert(state.activate(key) && state.snapshot(4,snapshot,epoch));const auto first=epoch;
+   assert(state.commitIPN(4,epoch,7));
+   assert(state.activate(key) && state.snapshot(4,snapshot,epoch));
+   assert(epoch==first && snapshot.ipn==7); // Redelivery never rolls back IPN.
+   assert(!state.commitIPN(4,epoch,7));
+   key.keyID=5;assert(!state.activate(key)); // Same key under another slot.
+   key.keyID=4;key.key[0]=10;assert(state.activate(key));
+   assert(!state.commitIPN(4,first,8));
+   assert(state.snapshot(4,snapshot,epoch) && epoch>first && snapshot.ipn==3);
+   const auto replacement=epoch;state.clear();assert(!state.commitIPN(4,epoch,9));
+   assert(state.activate(key) && state.snapshot(4,snapshot,epoch) && epoch>replacement);
+   assert(!state.commitIPN(4,epoch,0x1000000000000ull));
+   AthSecurity::wipe(&snapshot,sizeof(snapshot));AthSecurity::wipe(&key,sizeof(key));
+ }
+
+    { const uint8_t malformed[]={192,4,0,0,255,255,255,255,255,255,2,1,2,3,4,5,2,1,2,3,4,5,0,0,3,0,76,16,4,0,7,0,0,0,0,0,184,5,201,77,143,136,128,204};
+      uint64_t accepted=999;AthSecurity::IGTKCMAC128 key{};key.keyID=4;
+      for(unsigned i=0;i<16;++i)key.key[i]=uint8_t(i);
+      const uint8_t ap[]={2,1,2,3,4,5};
+      assert(!AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(malformed,sizeof(malformed),ap,key,6,accepted));
+      assert(accepted==999);
+    }
+    { const uint8_t malformed[]={192,0,0,0,255,255,255,255,255,255,2,1,2,3,4,5,2,1,2,3,4,5,1,0,3,0,76,16,4,0,7,0,0,0,0,0,219,152,59,137,57,155,205,49};
+      uint64_t accepted=999;AthSecurity::IGTKCMAC128 key{};key.keyID=4;
+      for(unsigned i=0;i<16;++i)key.key[i]=uint8_t(i);
+      const uint8_t ap[]={2,1,2,3,4,5};
+      assert(!AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(malformed,sizeof(malformed),ap,key,6,accepted));
+      assert(accepted==999);
+    }
+    { const uint8_t malformed[]={192,128,0,0,255,255,255,255,255,255,2,1,2,3,4,5,2,1,2,3,4,5,0,0,3,0,76,16,4,0,7,0,0,0,0,0,254,188,127,208,82,108,16,170};
+      uint64_t accepted=999;AthSecurity::IGTKCMAC128 key{};key.keyID=4;
+      for(unsigned i=0;i<16;++i)key.key[i]=uint8_t(i);
+      const uint8_t ap[]={2,1,2,3,4,5};
+      assert(!AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(malformed,sizeof(malformed),ap,key,6,accepted));
+      assert(accepted==999);
+    }
+
+ { uint8_t frame[]={192,0,0,0,255,255,255,255,255,255,2,1,2,3,4,5,2,1,2,3,4,5,0,0,3,0,76,16,4,0,7,0,0,0,0,0,219,152,59,137,57,155,205,49};
+   uint8_t ap[]={2,1,2,3,4,5};AthSecurity::IGTKCMAC128 key{};key.keyID=4;
+   for(unsigned i=0;i<16;++i)key.key[i]=uint8_t(i);
+   uint64_t accepted=999;
+   assert(AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(frame,sizeof(frame),ap,key,6,accepted) && accepted==7);
+   accepted=999;
+   assert(!AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(frame,sizeof(frame),ap,key,7,accepted) && accepted==999);
+   for(unsigned i=4;i<sizeof(frame);++i){
+     if(i==22 || i==23)continue; // Sequence control is outside BIP AAD.
+     frame[i]^=2;
+     assert(!AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(frame,sizeof(frame),ap,key,6,accepted));
+     assert(accepted==999);frame[i]^=2;
+   }
+   frame[1]=0x38; // Retry, power-management and more-data bits are masked.
+   assert(AthSecurity::verifyBIPDisconnect<OpenSSLCrypto>(frame,sizeof(frame),ap,key,6,accepted));
+ }
+
  rekeyTests();
  S s;start(s);
  assert(s.receive(v_m1,sizeof(v_m1))==S::Reply);

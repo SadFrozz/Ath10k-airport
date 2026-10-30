@@ -104,7 +104,13 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
  o.count=self->_wmiBSS.count;bcopy(s.local,o.local,6);bcopy(s.bssid,o.bssid,6);
  if(s.stage==Ath10k::LinkStage::Disabled)bcopy(self->_wmiInit.mac,o.local,6);
  strlcpy(o.error,s.error,sizeof(o.error));
+#ifdef ATH10K_NATIVE
+ if(s.stage==Ath10k::LinkStage::Disabled && self->_nativeMACValid)bcopy(self->_nativeMACCurrent,o.local,6);
+#endif
  if(r.operation==Status)return kIOReturnSuccess;
+#ifdef ATH10K_NATIVE
+ if(self->_nativeMACActive || self->_nativeMACWaiting)return kIOReturnBusy;
+#endif
  if(r.operation==BSS){
   if(r.index>=self->_wmiBSS.count)return kIOReturnNotFound;
   const auto &b=self->_wmiBSS.entries[r.index];o.data[0]=b.ssidLength;o.data[1]=b.privacy;
@@ -157,7 +163,11 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   if(r.index>1 || r.length<9 || !r.data[0] || r.data[0]>32 || r.length!=8u+r.data[0] || r.data[1]>1 || (r.data[2]&1))return kIOReturnBadArgument;
   s.regulatory=self->_regulatory;s.hiddenSSID=r.index==1;
   s.secure=r.data[1];s.ssidLength=r.data[0];bcopy(r.data+2,s.bssid,6);bcopy(r.data+8,s.ssid,s.ssidLength);bcopy(self->_wmiInit.mac,s.local,6);
+#ifdef ATH10K_NATIVE
+  if(self->_nativeMACValid)bcopy(self->_nativeMACCurrent,s.local,6);
+#endif
   s.firmwareHT=self->_wmi.htCapability;s.firmwareVHT=self->_wmi.vhtCapability;
+        s.firmwareMFPSupport=self->payload().kSupportsMFP;s.pmfQoSTransported=self->_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;
   s.rfChains=static_cast<UInt8>(self->_wmiInit.requestedChainMask==1?1:2);
   const char *error=Ath10k::selectOpenBSS(s,self->_wmiBSS);
   if(error){s.error=error;return kIOReturnUnsupported;}

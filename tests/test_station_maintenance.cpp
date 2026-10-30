@@ -75,6 +75,17 @@ int main(){
      assert(d.parameters[0]==0 && d.values[0]==0 && d.parameters[1]==1 && d.values[1]==1 && d.values[3]==102 && d.parameters[5]==1);
      s.eapolPause=true;for(unsigned t=2400;t<2600;t+=10){d.tick(t);}assert(!s.radio.appliedPS && s.radio.completed==2 && d.wire.size()==11);
      d.releaseWMIRuntime();}
+    // PMF wake reservation must wake a sleeping station through CE/ECHO,
+    // preserve the user's PS preference, then permit PS after query retirement.
+    {MaintenanceDriver d;auto &s=d._connection;s.radio.requestedPS=true;
+     for(unsigned t=2000;t<2400;t+=10)d.tick(t);
+     assert(s.radio.appliedPS);s.pmfTXPending=true;
+     for(unsigned t=2400;t<2700;t+=10)d.tick(t);
+     assert(!s.radio.appliedPS && !s.radio.step && !s.radio.blocked && s.radio.requestedPS);
+     assert(!Ath10k::dataTXAdmissionOpen(s));
+     s.pmfTXPending=false;s.txWakePending=true;
+     for(unsigned t=2700;t<3000;t+=10)d.tick(t);
+     assert(s.radio.appliedPS && !s.cancelRequested && d._wmiLive.active);d.releaseWMIRuntime();}
     {MaintenanceDriver d;d.holdEcho=true;d._connection.radio.requestedPS=true;
      for(unsigned t=2000;t<2300;t+=10){d.tick(t);}
      assert(d._connection.radio.step==8 && !d._connection.radio.appliedPS && d._connection.radio.blocked);
@@ -134,9 +145,9 @@ int main(){
      Ath10k::receiveStationManagement(s,response,sizeof(response),0,6);assert(s.beaconSerial==1 && s.powerConstraintDb==25);d.releaseWMIRuntime();}
     {MaintenanceDriver d;auto &s=d._connection;s.radio.appliedPS=s.radio.requestedPS=true;
      s.probe.active=true;s.probe.deadlineMs=2000;s.dataPending=1;
-     assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked && !s.radio.step);
+     assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked && s.radio.step==6 && !s.radio.targetPS);
      assert(!Ath10k::stationWatchdog(s,2010,false) && s.probe.active);
-     s.dataPending=0;assert(!d.serviceRadioMaintenance(2020) && s.radio.step==6 && !s.radio.targetPS);d.releaseWMIRuntime();}
+     assert(s.dataPending==1);s.dataPending=0;d.releaseWMIRuntime();}
     {MaintenanceDriver d;auto &s=d._connection;s.radio.requestedPS=true;s.dataPending=1;
      assert(!d.serviceRadioMaintenance(2000) && s.radio.blocked);s.radio.requestedPS=false;
      assert(!d.serviceRadioMaintenance(2010) && !s.radio.blocked && !s.radio.step && s.txWakePending);s.dataPending=0;d.releaseWMIRuntime();}

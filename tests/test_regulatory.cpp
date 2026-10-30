@@ -9,20 +9,45 @@ struct RegulatoryDriver:ScanDriver {
         _regs.tx3Consume=[this,previous](){
             auto *f=static_cast<const UInt8 *>(_wmiTxBuffer.virtualAddress());const UInt32 cmd=Ath10k::wmiReadLE32(f+8);
             if(cmd!=0x4003 && cmd!=0x4001){previous();return;}
-            unsigned i=radioCommands++;assert(i<5 && !_wmiScanChannels.attempted && _wmiRadio[i].txOwned);
+            unsigned i=radioCommands++;assert(i<Ath10k::kWMIRadioStepCount && !_wmiScanChannels.attempted && _wmiRadio[i].txOwned);
             if(i)assert(_wmiRadio[i-1].completed && _wmiRadio[i-1].txConsumed && _wmiRadio[i-1].creditReturned);
             assert(_wmi.credits.outstanding==1 && f[5]==i+6 && f[0]==2);
             if(i==2){assert(cmd==0x4001 && Ath10k::htcReadLE16(f+2)==32 && f[14]==81);
                 for(unsigned j=0;j<3;++j)assert(Ath10k::wmiReadLE32(f+20+j*4)==0x64);
                 assert(Ath10k::wmiReadLE32(f+32)==0xff && Ath10k::wmiReadLE32(f+36)==0xff);
             }else {assert(cmd==0x4003 && Ath10k::htcReadLE16(f+2)==20 && f[14]==82);
-                assert(Ath10k::wmiReadLE32(f+20)==(i<2?i+1:i));assert(Ath10k::wmiReadLE32(f+24)==(i<2?3:20));}
+                assert(Ath10k::wmiReadLE32(f+20)==(i==Ath10k::kWMIPMFQoSIndex?34:(i<2?i+1:i)));assert(Ath10k::wmiReadLE32(f+24)==(i==Ath10k::kWMIPMFQoSIndex?1:(i<2?3:20)));}
             if(i!=hold)deliver(1,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
         };
     }
 };
 static void rules(){
     using namespace Ath10k;RegulatoryPolicy p;
+    {RegulatoryPolicy sta;assert(!regulatoryPower(sta,52,52,20));
+     sta.stationDFS=true;assert(regulatoryPower(sta,52,52,20)>0);
+     assert(!countryPower(sta.country,52,20,false,true,true,true));
+     sta.high5=5200;assert(!regulatoryPower(sta,52,52,20));}
+
+    {
+        RegulatoryPolicy active;active.country=regulatoryCountry("BR");active.indoor=true;
+        assert(!regulatoryActiveScanChannel(active,6));
+        assert(!configureRegulatory(active,0x64,2412,2472,5180,5825));
+        assert(regulatoryActiveScanChannel(active,6));
+        active.stationDFS=true;assert(!regulatoryActiveScanChannel(active,52));
+        UInt8 channels[kWMIScanChannelsFrameBytes]{};
+        assert(buildWMIScanChannels(channels,sizeof(channels),2,&active,true));
+        const unsigned count=wmiReadLE32(channels+16);
+        for(unsigned i=0;i<count;++i){
+            const auto e=channels+24+i*28;const unsigned freq=wmiReadLE32(e+4);
+            const unsigned ch=freq<3000?(freq-2407)/5:(freq-5000)/5;
+            assert(bool(wmiReadLE32(e+16)&0x80)==!regulatoryActiveScanChannel(active,ch));
+            if(channelNeedsDFS(ch))assert((wmiReadLE32(e+16)&0x480)==0x480);
+        }
+        active.high2=2412;assert(!regulatoryActiveScanChannel(active,6));
+        active.high2=2472;active.boardCountry=regulatoryCountry("US");assert(!regulatoryActiveScanChannel(active,13));
+        assert(buildWMIScanChannels(channels,sizeof(channels),2,nullptr,true));
+        for(unsigned i=0;i<wmiReadLE32(channels+16);++i)assert(wmiReadLE32(channels+40+i*28)&0x80);
+    }
     assert(regulatoryCountry("BR") && !regulatoryCountry("ZZ") && !regulatoryCountry("br") && !regulatoryCountry("BRA"));
     p.country=regulatoryCountry("BR");assert(!configureRegulatory(p,0x64,2412,2472,5180,5825));
     assert(p.firmwareCapsValid && p.domain!=0x64 && p.ctl2!=0xff);
@@ -60,10 +85,10 @@ static void serviceReady(){
 int main(){
     rules();serviceReady();
     {RegulatoryDriver d;for(unsigned t=1000;t<1250;t+=10)d.tick(t);
-     assert(d._wmiLive.active && d.radioCommands==5 && d.lists==1 && d.scans==1 && d._regulatory.firmwareCapsValid);
+     assert(d._wmiLive.active && d.radioCommands==Ath10k::kWMIRadioStepCount && d.lists==1 && d.scans==1 && d._regulatory.firmwareCapsValid);
      for(auto &r:d._wmiRadio)assert(r.completed && r.creditReturned && r.txConsumed);
      d.releaseWMIRuntime();}
-    for(unsigned hold:{2u,3u,4u}){RegulatoryDriver d;d.hold=hold;for(unsigned t=1000;t<1250;t+=10)d.tick(t);
+    for(unsigned hold:{2u,3u,4u,5u}){RegulatoryDriver d;d.hold=hold;for(unsigned t=1000;t<1250;t+=10)d.tick(t);
         assert(d.radioCommands==hold+1 && !d.lists && !d.scans);d.tick(6500);assert(!d._wmiLive.active && d.resets==1);d.releaseWMIRuntime();}
     {RegulatoryDriver d;d._wmi.regCapsPresent=false;for(unsigned t=1000;t<1250;t+=10)d.tick(t);assert(d.radioCommands==2 && !d.lists && !d.scans && !d._wmiLive.active);d.releaseWMIRuntime();}
     puts("Regulatory passed: country/EEPROM/environment/band intersection, variable scan lengths, bounded SERVICE_READY parser, serialized domain/power commands and credit failure gates.");

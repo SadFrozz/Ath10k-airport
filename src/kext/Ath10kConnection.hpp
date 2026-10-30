@@ -2,6 +2,7 @@
 #include "Ath10kHTC.hpp"
 #include "Ath10kBSS.hpp"
 #include "Ath10kMulticast.hpp"
+#include "../shared/Ath10kPMFTransport.hpp"
 
 namespace Ath10k {
 // Ethernet MTU excludes headers. Permit at most two in-band VLAN tags, not jumbo payloads.
@@ -95,6 +96,7 @@ struct ConnectionState {
     // Small maintenance state: no ConnectionState/cache temporaries on the kernel stack.
     struct RadioState {
         bool requestedPS=false,appliedPS=false,configuredPS=false,submitted=false,blocked=false,powerBlocked=false;
+        bool wakeOnly=false,txWakeRequested=false;UInt32 txWakeRequests=0;UInt64 txWakeHoldUntilMs=0;
         UInt8 step=0,desiredPower=0,appliedPower=0,targetPower=0;bool targetPS=false;
         UInt8 vdevPower=0,targetDTIM=0,appliedDTIM=0;UInt16 targetBeacon=0,appliedBeacon=0;
         UInt32 generation=0,completed=0;UInt64 sinceMs=0;
@@ -128,12 +130,13 @@ struct ConnectionState {
         UInt8 frame[256]{};UInt16 length=0;bool pending=false,inFlight=false;
         UInt64 sinceMs=0;UInt32 received=0,completed=0,dropped=0;
     } spectrum{};
-    bool lastTxSpectrum=false;
+    bool lastTxSpectrum=false,lastTxPMF=false,lastTxSAE=false,pmfTXPending=false;
     bool beaconWarning=false;UInt64 beaconWarningSinceMs=0;
     ChannelSwitchState csa{};
     bool htEnabled=false,vhtEnabled=false,wmmConfigured=false;
     // SERVICE_READY capabilities, then intersected with AP and build limits.
     UInt32 firmwareHT=1,firmwareVHT=0;
+    bool firmwareMFPSupport=false,pmfQoSTransported=false;
     UInt8 rfChains=1,nss=1,width=20,centerChannel=0;
     bool shortGI=false,firmwareReorder=false;
     UInt16 localHT=0,peerHT=0,vhtRxMap=0xffff,vhtTxMap=0xffff;
@@ -152,6 +155,7 @@ struct ConnectionState {
     // Firmware retains payload ownership until HTT completion. An old frame
     // alone is not evidence that a still-progressing transmit queue is wedged.
     UInt32 dataDelayed=0,dataTimeouts=0;
+    const char *dataWatchdogReason="none";UInt32 dataWatchdogSlot=kDataTxSlots;UInt16 dataWatchdogID=0;UInt64 dataWatchdogAgeMs=0;
     UInt64 dataStallSinceMs=0,dataPauseSinceMs=0;
     bool dataStallArmed=false,dataPauseArmed=false;
     DataTxSlot dataTX[kDataTxSlots]{};
@@ -168,6 +172,11 @@ struct ConnectionState {
         bool active=false,startPending=false,echoPending=false;
         UInt32 echoCookie=0;
     } rollback{};
+    // Terminal AP metadata survives radio cleanup until native delivery.
+    struct APDisconnect {
+        bool valid=false,disassociation=false;
+        UInt16 reason=0;UInt8 bssid[6]{};
+    } apDisconnect{};
     struct ConnectionDiagnostics {
         UInt32 maps=0,unmaps=0,unknownUnmaps=0,peerBefore=0,peerAfter=0;
         UInt16 peer=0xffff;UInt8 vdev=255,peerMAC[6]{};bool own=false;
@@ -176,12 +185,16 @@ struct ConnectionState {
         UInt32 commands=0,lastCommand=0,lastCommandStage=0,lastCommandSecurity=0;
         UInt32 lastCommandDisconnect=0,lastCommandAP=0,lastCommandRadio=0;
         UInt32 rollbacks=0,lastRollbackStage=0;
+        // Last received association denial survives reset and later success.
+        UInt32 associationRejects=0;UInt16 lastAssociationStatus=0,lastAssociationRawAID=0;
+        UInt32 associationComebacks=0,lastAssociationComebackTU=0;
         const char *lastDisconnectReason="none",*cancelOrigin="none",*lastCancelOrigin="none";
         UInt32 lastDisconnectStage=0,lastDisconnectSecurity=0,lastDisconnectPeers=0;
     } diagnostics{};
     UInt32 disconnectCount=0;
     LinkStage stage=LinkStage::Disabled;
-    bool secure=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
+    UInt8 securityAKM=2;
+    bool secure=false,pmfRequired=false,portAuthorized=false,securityAck=false,authorizeRequested=false;
     bool cancelRequested=false,rekeySkipGroup=false,vdevStarted=false,vdevUp=false,eapolPause=false;
     UInt8 rekeyKind=0;UInt32 securityGeneration=0,beaconSerial=0;
     // Actual associated beacon, including TSF, for native freshness queries.
@@ -204,6 +217,16 @@ struct ConnectionState {
     UInt16 eapolLength[4]{};UInt8 eapolFrames[4][512]{};
     UInt32 eapolRead=0,eapolWrite=0,eapolCount=0;
     bool lastTxEAPOL=false,eapolTxFailed=false;
+    // Separate from the reusable serial TX slot. Native WCL service runs later
+    // and must not mistake a subsequent management packet for its EAPOL reply.
+    struct EAPOLCompletion {
+        bool pending=false,complete=false;UInt16 id=0;UInt32 status=0;
+        void begin(UInt16 value){pending=true;complete=false;id=value;status=0;}
+        void retire(UInt16 value,UInt32 result){
+            if(pending && !complete && id==value){status=result;complete=true;}
+        }
+        void clear(){pending=complete=false;id=0;status=0;}
+    } eapolCompletion{};
     RegulatoryPolicy regulatory{};
     WMIBSS ap{};
     UInt8 local[6]{},ssid[32]{},bssid[6]{},ssidLength=0;
@@ -216,6 +239,8 @@ struct ConnectionState {
     UInt16 aid=0,peerId=0xffff,txId=0,sequence=0;
     bool submitted=false,startReply=false,peerMapped=false,authReply=false,assocReply=false;
     UInt8 managementAttempts=0;UInt64 managementRetryMs=0;
+    struct AssociationComeback {UInt32 intervalTU=0;UInt64 untilMs=0;bool pending=false,armed=false;} associationComeback{};
+    UInt64 associationDeadlineMs=0;
     UInt32 txPauseMask=0,txPauseEvents=0;bool txWakePending=false;
     bool wmiOwned=false,txOwned=false,txComplete=false,txManagement=false;
     UInt32 wmiNext=0,txNext=0,txStatus=0,associationStatus=0;
@@ -228,6 +253,63 @@ struct ConnectionState {
     RXSecurityDiagnostics rxSecurity{};
     const char *error="none";
 };
+// Shared by BSD admission, direct data submission and deferred queue wakeup.
+// A wake must remain pending until all temporary admission blockers clear.
+inline bool dataTXAdmissionOpen(const ConnectionState &s){
+    return s.stage==LinkStage::Connected && s.portAuthorized && !s.cancelRequested &&
+        s.disconnect==DisconnectStage::None && !s.maintenance.blocked && !s.eapolPause &&
+        !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && !s.probe.active && !s.csa.blocked &&
+        !s.radio.blocked && !s.radio.powerBlocked && !s.txOwned && !s.txPauseMask &&
+        s.dataPending<kDataTxSlots;
+}
+// Association survives a controlled-port closure during key replacement.
+inline bool connectionAssociated(const ConnectionState &s){
+    return s.stage==LinkStage::Connected && s.disconnect==DisconnectStage::None && !s.cancelRequested;
+}
+// Timeout Interval IE (56), association comeback type (3). Validate the
+// entire IE stream before accepting one interval; duplicates are ambiguous.
+inline bool associationComebackInterval(const UInt8 *ies,UInt32 bytes,UInt32 &tu){
+    if(!ies || !bytes)return false;
+    bool found=false;UInt32 value=0;
+    for(UInt32 at=0;at<bytes;){
+        if(bytes-at<2 || ies[at+1]>bytes-at-2)return false;
+        const UInt32 length=ies[at+1];
+        if(ies[at]==56){
+            if(found || length!=5 || ies[at+2]!=3)return false;
+            found=true;value=UInt32(ies[at+3])|(UInt32(ies[at+4])<<8)|(UInt32(ies[at+5])<<16)|(UInt32(ies[at+6])<<24);
+        }
+        at+=2+length;
+    }
+    if(!found)return false;tu=value;return true;
+}
+// Radio owner only. Bind one fixed overall request deadline, preserving packet
+// ownership and retry bounds. A valid long comeback can outlast the ordinary
+// five-second response timer, but duplicates cannot renew the request lifetime.
+inline const char *serviceAssociationComeback(ConnectionState &s,UInt64 now,bool &waiting,UInt64 joinDeadline=0){
+    waiting=false;auto &c=s.associationComeback;if(!c.pending)return nullptr;
+    if(s.stage!=LinkStage::Assoc || s.assocReply || s.cancelRequested || s.disconnect!=DisconnectStage::None){c={};return nullptr;}
+    if(now<s.sinceMs)return "association-comeback-clock";
+    UInt64 deadline=s.associationDeadlineMs;
+    if(!deadline){
+        if(joinDeadline)deadline=joinDeadline;
+        else {
+            if(s.sinceMs>~UInt64(0)-30000)return "association-comeback-clock";
+            deadline=s.sinceMs+30000; // Non-native control request fallback.
+        }
+    }
+    if(joinDeadline && joinDeadline<deadline)deadline=joinDeadline;
+    if(now>=deadline)return "association-comeback-deadline";
+    if(s.managementAttempts>=3)return "association-comeback-retry-limit";
+    if(!c.armed){
+        // Ceiling converts TU to ms without retrying earlier than requested.
+        const UInt64 delay=(UInt64(c.intervalTU)*1024u+999u)/1000u;
+        if(delay>=deadline-now)return "association-comeback-deadline";
+        c.untilMs=now+delay;c.armed=true;
+    }
+    s.associationDeadlineMs=deadline;
+    if(now<c.untilMs || s.txOwned || s.wmiOwned || !s.txComplete){waiting=true;return nullptr;}
+    c={};s.submitted=false;s.managementRetryMs=0;return nullptr;
+}
 inline bool connectionHasError(const ConnectionState &s){
     return s.error && !(s.error[0]=='n' && s.error[1]=='o' && s.error[2]=='n' && s.error[3]=='e' && !s.error[4]);
 }
@@ -271,6 +353,7 @@ inline void resetDisconnected(ConnectionState &s) {
     const UInt16 tx=s.txId,seq=s.sequence;
     const UInt64 txb=s.txBytes,rxb=s.rxBytes;
     const UInt32 count=s.disconnectCount+1,txp=s.txPackets,txe=s.txErrors,rxp=s.rxPackets,rxd=s.rxDropped;
+    const bool mfp=s.firmwareMFPSupport,pmfQoS=s.pmfQoSTransported;
     const UInt32 fwHT=s.firmwareHT,fwVHT=s.firmwareVHT;const UInt8 chains=s.rfChains;
     UInt32 rxReasons[ConnectionState::DropCount];
     for(UInt32 i=0;i<ConnectionState::DropCount;++i)rxReasons[i]=s.rxReasons[i];
@@ -278,6 +361,7 @@ inline void resetDisconnected(ConnectionState &s) {
     const auto securityDiagnostics=s.rxSecurity;
     const auto securityInd=s.securityInd;
     const auto diagnostics=s.diagnostics;
+    const auto apDisconnect=s.apDisconnect;
     UInt8 mac[6];for(unsigned i=0;i<6;++i)mac[i]=s.local[i];
     AthSecurity::wipe(&s,sizeof(s));resetInPlace(s);
     s.regulatory=regulatory;s.csa.completed=csaCompleted;s.csa.rejected=csaRejected;
@@ -286,11 +370,12 @@ inline void resetDisconnected(ConnectionState &s) {
     s.wmiSequence=wmi;s.httSequence=htt;s.txId=tx;s.sequence=seq;s.txPowerHalfDbm=power;
     s.txBytes=txb;s.rxBytes=rxb;
     s.disconnectCount=count;s.txPackets=txp;s.txErrors=txe;s.rxPackets=rxp;s.rxDropped=rxd;
-    s.firmwareHT=fwHT;s.firmwareVHT=fwVHT;s.rfChains=chains;
+    s.firmwareHT=fwHT;s.firmwareVHT=fwVHT;s.rfChains=chains;s.firmwareMFPSupport=mfp;s.pmfQoSTransported=pmfQoS;
     for(UInt32 i=0;i<ConnectionState::DropCount;++i)s.rxReasons[i]=rxReasons[i];
     s.rxLastReason=lastReason;
     s.rxSecurity=securityDiagnostics;
     s.securityInd=securityInd;
+    s.apDisconnect=apDisconnect;
     s.diagnostics=diagnostics;s.diagnostics.cancelOrigin="none";
     for(unsigned i=0;i<6;++i)s.local[i]=mac[i];
 }
@@ -312,6 +397,35 @@ inline bool supportedLegacyRate(UInt8 value,bool five) {
 #endif
 static_assert(ATH10K_MAX_WIDTH==20 || ATH10K_MAX_WIDTH==40 || ATH10K_MAX_WIDTH==80,"width must be 20, 40 or 80");
 static_assert(ATH10K_MAX_NSS>=1 && ATH10K_MAX_NSS<=2,"QCA6174 supports at most 2SS");
+// Shared local capability policy and IE encoding for association and native queries.
+inline UInt16 localHTCapability(UInt32 firmwareHT){
+    UInt16 cap=12|(ATH10K_MAX_WIDTH>=40?2:0); // Disabled SMPS, host width ceiling.
+    if(firmwareHT&2)cap|=0x20;
+    if(ATH10K_MAX_WIDTH>=40 && (firmwareHT&0x800))cap|=0x40;
+    return cap;
+}
+inline UInt32 localVHTCapability(UInt32 firmwareVHT){return (3u<<23)|(firmwareVHT&(1u<<5));}
+inline UInt16 localVHTMCSMap(UInt8 streams){
+    UInt16 map=0xffff;
+    if(!streams || streams>ATH10K_MAX_NSS)return map;
+    for(UInt32 n=0;n<streams;++n)
+        map=static_cast<UInt16>((map&~(3u<<(2*n)))|((ATH10K_MAX_WIDTH==20?1u:2u)<<(2*n)));
+    return map;
+}
+inline UInt32 writeLocalHTCapabilityIE(UInt8 *out,UInt32 capacity,UInt16 cap,UInt8 streams){
+    if(!out || capacity<28 || !streams || streams>ATH10K_MAX_NSS)return 0;
+    htcZero(out,28);out[0]=45;out[1]=26;auto h=out+2;htcWriteLE16(h,cap);
+    h[2]=3|(6<<2); // 64 KiB A-MPDU, 8us spacing; MPDUs delivered separately.
+    for(UInt32 i=0;i<streams;++i)h[3+i]=0xff;
+    h[15]=1; // TX MCS set defined, equal to RX.
+    return 28;
+}
+inline UInt32 writeLocalVHTCapabilityIE(UInt8 *out,UInt32 capacity,UInt32 cap,UInt16 rx,UInt16 tx){
+    if(!out || capacity<14 || (rx&3)==3 || (tx&3)==3)return 0;
+    htcZero(out,14);out[0]=191;out[1]=12;auto v=out+2;
+    htcWriteLE32(v,cap);htcWriteLE16(v+4,rx);htcWriteLE16(v+8,tx);
+    return 14;
+}
 inline bool homeChannelAllowed(UInt32 c){return channelCanConnect(c);}
 inline UInt16 intersectVHTMap(UInt16 a,UInt16 b){
     UInt16 result=0;for(UInt32 n=0;n<8;++n){UInt16 x=(a>>(2*n))&3,y=(b>>(2*n))&3;
@@ -336,7 +450,8 @@ inline bool vhtPrimary80(UInt32 primary,UInt8 width,UInt8 first,UInt8 second,UIn
     }
     center=static_cast<UInt8>(c);return true;
 }
-inline void negotiateHighThroughput(ConnectionState &s){
+template<class Config>
+inline void negotiateHighThroughput(Config &s){
     s.htEnabled=s.vhtEnabled=false;s.htRateCount=0;s.vhtMap=0xffff;
     s.vhtRxMap=s.vhtTxMap=0xffff;s.nss=1;s.width=20;s.centerChannel=static_cast<UInt8>(s.operatingChannel);
     s.localHT=s.peerHT=0;s.localVHT=s.peerVHT=0;s.shortGI=false;
@@ -369,9 +484,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
            static_cast<UInt32>((static_cast<int>(s.operatingChannel)+secondary)/2),40,s.regulatory.stationDFS)){
         s.width=40;s.centerChannel=static_cast<UInt8>((s.operatingChannel+secondary)/2);}
     // Disabled SMPS is essential: zero CapInfo incorrectly advertises static SMPS.
-    s.localHT=12|(ATH10K_MAX_WIDTH>=40?2:0);
-    if(s.firmwareHT&2)s.localHT|=0x20;
-    if(ATH10K_MAX_WIDTH>=40 && (s.firmwareHT&0x800))s.localHT|=0x40;
+    s.localHT=localHTCapability(s.firmwareHT);
     // SGI is used only when both sides support the selected width.
     s.shortGI=(apHT&s.localHT&(s.width>=40?0x40:0x20))!=0;
     s.peerHT=static_cast<UInt16>(apHT & ~(0x0100u|0x0300u|1u));
@@ -401,12 +514,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
             if(ch==static_cast<int>(s.operatingChannel))primary=true;}
         if(valid && primary && channelDefinitionAllowed(s.operatingChannel,c,80,s.regulatory.stationDFS)){vhtWidth=80;vhtCenter=static_cast<UInt8>(c);}
     }
-    UInt16 localMap=0xffff;
-    for(UInt32 n=0;n<streams;++n){
-        // VHT20 MCS9 is invalid at 1/2SS; 40/80MHz support MCS0..9.
-        // Capability covers future allowed widths; applied VHT20 rates are capped separately.
-        const UInt16 mcs=ATH10K_MAX_WIDTH==20?1:2;
-        localMap=static_cast<UInt16>((localMap&~(3u<<(2*n)))|(mcs<<(2*n)));}
+    const UInt16 localMap=localVHTMCSMap(streams);
     s.vhtRxMap=intersectVHTMap(localMap,tx);s.vhtTxMap=intersectVHTMap(localMap,rx);
     const UInt16 commonMap=intersectVHTMap(s.vhtRxMap,s.vhtTxMap);
     s.phyReason="vht-basic-mcs-not-supported";
@@ -425,7 +533,7 @@ inline void negotiateHighThroughput(ConnectionState &s){
     s.vhtMap=commonMap;s.vhtEnabled=true;s.nss=1;
     for(UInt32 n=0;n<streams;++n)if(((commonMap>>(2*n))&3)!=3)s.nss=static_cast<UInt8>(n+1);
     // Bound RX MPDU to 3895 and A-MPDU to 64KiB. No beamforming/STBC claims.
-    s.localVHT=(3u<<23)|(s.firmwareVHT&(1u<<5));
+    s.localVHT=localVHTCapability(s.firmwareVHT);
     s.peerVHT=connLE32(a.vht)&~((1u<<4)|(1u<<7)|(7u<<8)|(0xfffu<<11));
     if(s.width==80)s.shortGI=(s.localVHT&connLE32(a.vht)&(1u<<5))!=0;
     s.phyReason="vht-common-capabilities";
@@ -438,7 +546,8 @@ inline UInt8 peerBandwidth(const ConnectionState &s){
     if(s.peerOperatingWidth && s.peerOperatingWidth<width)width=s.peerOperatingWidth;
     return s.htEnabled?width:20;
 }
-inline void rememberNegotiatedRates(ConnectionState &s){
+template<class Config>
+inline void rememberNegotiatedRates(Config &s){
     s.negotiatedNSS=s.nss;s.negotiatedWidth=20;s.negotiatedHTMask=0;
     if(s.htEnabled && (s.localHT&htcReadLE16(s.ap.ht)&2))
         s.negotiatedWidth=s.vhtEnabled && ATH10K_MAX_WIDTH>=80?80:40;
@@ -467,7 +576,8 @@ inline void applyPeerRates(ConnectionState &s,UInt8 nss,UInt8 width){
     s.vhtRxMap=r.rx;s.vhtTxMap=r.tx;s.vhtMap=intersectVHTMap(r.rx,r.tx);
 }
 inline void connTLV(UInt8 *,UInt16,UInt16);
-inline UInt8 stationPowerLimitFor(const ConnectionState &s,UInt32 primary,UInt32 center,UInt8 width,
+template<class Config>
+inline UInt8 stationPowerLimitFor(const Config &s,UInt32 primary,UInt32 center,UInt8 width,
                                  const UInt8 *country=nullptr,UInt32 countryLength=0){
     auto p=s.regulatory;p.ceilingHalfDbm=255;
     const UInt8 maximum=regulatoryPower(p,primary,center,width);
@@ -482,7 +592,8 @@ inline UInt8 stationPowerLimitFor(const ConnectionState &s,UInt32 primary,UInt32
     if(constrained>maximum)constrained=maximum;
     return constrained<s.regulatory.ceilingHalfDbm?constrained:s.regulatory.ceilingHalfDbm;
 }
-inline UInt8 stationPowerLimit(const ConnectionState &s){
+template<class Config>
+inline UInt8 stationPowerLimit(const Config &s){
     return stationPowerLimitFor(s,s.operatingChannel,s.centerChannel,s.width);
 }
 inline UInt8 stationOperationalPowerLimit(const ConnectionState &s){
@@ -528,41 +639,113 @@ inline UInt32 buildRadioMaintenance(UInt8 *f,UInt32 capacity,UInt8 endpoint,cons
     }else {n=20;cmd=0x1d001;connTLV(f+12,149,4);htcWriteLE32(f+16,radioCookie(s));}
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,n-8);htcWriteLE32(f+8,cmd);return n;
 }
+// Prepared AP/PHY configuration only: no keys, queues or firmware ownership.
+inline bool connectionRSNAccepted(const ConnectionState &s,const UInt8 *ie,size_t bytes){
+    if(s.securityAKM==8)return s.pmfRequired && AthSecurity::validSAEPersonalRSN(ie,bytes);
+    return AthSecurity::supportsPSKAKM(ie,bytes,s.securityAKM);
+}
+struct CandidateConfiguration {
+    WMIBSS ap{};RegulatoryPolicy regulatory{};
+    UInt32 operatingChannel=0,firmwareHT=0,firmwareVHT=0,localVHT=0,peerVHT=0;
+    UInt8 rfChains=1,nss=1,width=20,centerChannel=0,groupCipher=0;
+    UInt8 powerConstraintDb=0,txPowerHalfDbm=0,htRates[16]{},htRateCount=0;
+    UInt8 negotiatedNSS=1,negotiatedWidth=20;
+    UInt16 localHT=0,peerHT=0,vhtMap=0xffff,vhtRxMap=0xffff,vhtTxMap=0xffff;
+    UInt16 negotiatedHTMask=0,negotiatedVHTRx=0xffff,negotiatedVHTTx=0xffff;
+    bool htEnabled=false,vhtEnabled=false,shortGI=false,ratesRemembered=false;
+    const char *phyReason="not-negotiated";
+};
+static_assert(sizeof(CandidateConfiguration)<=2048,"candidate must fit bounded kernel stack budget");
+// The output is usable only on success; the live connection is read-only.
+// BSSID selection/ranking belongs to the caller, but SSID/security must match.
+inline const char *prepareBSSCandidate(const ConnectionState &s,const WMIBSS &ap,CandidateConfiguration &candidate) {
+    if(s.ssidLength>sizeof(s.ssid) || ap.ssidLength>sizeof(ap.ssid))return "invalid-ssid-length";
+    if(!(s.hiddenSSID && ap.hidden)){
+        if(ap.ssidLength!=s.ssidLength)return "candidate-ssid-mismatch";
+        for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])return "candidate-ssid-mismatch";
+    }
+    if(s.secure){if(!ap.privacy || !connectionRSNAccepted(s,ap.rsn,ap.rsnLength))return s.securityAKM==8?"sae-ccmp-pmf-required":"wpa2-psk-ccmp-pairwise-required";}
+    else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
+    if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
+    if(!ap.beaconInterval || !ap.rateCount || ap.rateCount>sizeof(ap.rates) || !ap.ratesValid)return "bss-missing-valid-rates";
+    // RX metadata describes where a beacon was heard, not necessarily
+    // the AP's primary channel. Preserve it and resolve the home channel
+    // independently from the DS/HT fields validated by recordWMIBSS.
+    const UInt32 channel=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
+    if(!wmiScanChannelAllowed(channel) || !wmiScanChannelAllowed(ap.rxChannel))return "bss-channel-unsupported";
+    if((channel>14)!=(ap.rxChannel>14))return "bss-channel-band-mismatch";
+    if(channelNeedsDFS(channel) && !s.regulatory.stationDFS)return "dfs-connection-not-supported";
+    // Candidate rejection must precede changes to the selected AP.
+    UInt32 commonRates=0;
+    for(UInt32 j=0;j<ap.rateCount;++j){
+        if(supportedLegacyRate(ap.rates[j],channel>14))++commonRates;
+        else if(ap.rates[j]&128)return "unsupported-basic-rate";
+    }
+    if(!commonRates)return "no-common-rate";
+    candidate={};
+    candidate.regulatory=s.regulatory;candidate.firmwareHT=s.firmwareHT;
+    candidate.firmwareVHT=s.firmwareVHT;candidate.rfChains=s.rfChains;
+    candidate.txPowerHalfDbm=s.txPowerHalfDbm;
+    candidate.operatingChannel=channel;
+    candidate.ap=ap;candidate.ap.rateCount=0;
+    candidate.groupCipher=s.secure?AthSecurity::wpa2GroupCipher(ap.rsn,ap.rsnLength):0;
+    for(UInt32 j=0;j<ap.rateCount;++j){
+        if(!supportedLegacyRate(ap.rates[j],channel>14))continue;
+        candidate.ap.rates[candidate.ap.rateCount++]=ap.rates[j];
+    }
+    negotiateHighThroughput(candidate);
+    rememberNegotiatedRates(candidate);
+    candidate.powerConstraintDb=ap.powerConstraintDb;
+    const UInt8 limit=stationPowerLimit(candidate);
+    if(!limit)return "invalid-channel-definition";
+    if(!candidate.txPowerHalfDbm)return "invalid-tx-power";
+    if(candidate.txPowerHalfDbm>limit)candidate.txPowerHalfDbm=limit;
+    return nullptr;
+}
+inline void applyBSSCandidate(ConnectionState &s,const CandidateConfiguration &candidate) {
+    // Commit only after every candidate check has passed.
+    s.ap=candidate.ap;
+    s.operatingChannel=candidate.operatingChannel;
+    s.groupCipher=candidate.groupCipher;
+    s.powerConstraintDb=candidate.powerConstraintDb;
+    s.txPowerHalfDbm=candidate.txPowerHalfDbm;
+    s.htRateCount=candidate.htRateCount;
+    s.htEnabled=candidate.htEnabled;
+    s.vhtEnabled=candidate.vhtEnabled;
+    s.nss=candidate.nss;
+    s.width=candidate.width;
+    s.centerChannel=candidate.centerChannel;
+    s.shortGI=candidate.shortGI;
+    s.localHT=candidate.localHT;
+    s.peerHT=candidate.peerHT;
+    s.localVHT=candidate.localVHT;
+    s.peerVHT=candidate.peerVHT;
+    s.vhtMap=candidate.vhtMap;
+    s.vhtRxMap=candidate.vhtRxMap;
+    s.vhtTxMap=candidate.vhtTxMap;
+    s.phyReason=candidate.phyReason;
+    s.negotiatedNSS=candidate.negotiatedNSS;
+    s.negotiatedWidth=candidate.negotiatedWidth;
+    s.negotiatedHTMask=candidate.negotiatedHTMask;
+    s.negotiatedVHTRx=candidate.negotiatedVHTRx;
+    s.negotiatedVHTTx=candidate.negotiatedVHTTx;
+    s.ratesRemembered=candidate.ratesRemembered;
+    for(UInt32 j=0;j<16;++j)s.htRates[j]=candidate.htRates[j];
+    s.apDisconnect={}; // New accepted candidate cannot inherit an old AP cause.
+}
 inline const char *selectOpenBSS(ConnectionState &s,const WMIBSSCache &cache) {
     for(UInt32 i=0;i<cache.count;++i){
         const auto &ap=cache.entries[i];
-        if(!sameMAC(ap.bssid,s.bssid) || (!(s.hiddenSSID && ap.hidden) && ap.ssidLength!=s.ssidLength))continue;
-        bool equal=true;for(UInt32 j=0;j<s.ssidLength;++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
-        if(!equal && !(s.hiddenSSID && ap.hidden))continue;
-        if(s.secure){if(!ap.privacy || !AthSecurity::supportsWPA2(ap.rsn,ap.rsnLength))return "wpa2-psk-ccmp-pairwise-required";}
-        else if(ap.privacy || ap.rsnPresent || ap.wpaPresent)return "protected-network-not-supported";
-        if(!(ap.capabilities&1) || (ap.capabilities&2))return "not-infrastructure-bss";
-        if(!ap.beaconInterval || !ap.rateCount || !ap.ratesValid)return "bss-missing-valid-rates";
-        // RX metadata describes where a beacon was heard, not necessarily
-        // the AP's primary channel. Preserve it and resolve the home channel
-        // independently from the DS/HT fields validated by recordWMIBSS.
-        const UInt32 channel=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
-        if(!wmiScanChannelAllowed(channel) || !wmiScanChannelAllowed(ap.rxChannel))return "bss-channel-unsupported";
-        if((channel>14)!=(ap.rxChannel>14))return "bss-channel-band-mismatch";
-        if(channelNeedsDFS(channel) && !s.regulatory.stationDFS)return "dfs-connection-not-supported";
-        s.operatingChannel=channel;
-        s.ap=ap;s.ap.rateCount=0;
-        s.groupCipher=s.secure?AthSecurity::wpa2GroupCipher(ap.rsn,ap.rsnLength):0;
-        for(UInt32 j=0;j<ap.rateCount;++j){
-            if(!supportedLegacyRate(ap.rates[j],channel>14)){
-                if(ap.rates[j]&128)return "unsupported-basic-rate";
-                continue;
-            }
-            s.ap.rates[s.ap.rateCount++]=ap.rates[j];
+        if(!sameMAC(ap.bssid,s.bssid))continue;
+        if(!(s.hiddenSSID && ap.hidden)){
+            if(ap.ssidLength!=s.ssidLength)continue;
+            bool equal=true;for(UInt32 j=0;j<s.ssidLength && j<sizeof(s.ssid);++j)if(ap.ssid[j]!=s.ssid[j])equal=false;
+            if(!equal)continue;
         }
-        if(!s.ap.rateCount)return "no-common-rate";
-        negotiateHighThroughput(s);
-        rememberNegotiatedRates(s);
-        s.powerConstraintDb=ap.powerConstraintDb;
-        const UInt8 limit=stationPowerLimit(s);
-        if(!limit)return "invalid-channel-definition";
-        if(!s.txPowerHalfDbm)return "invalid-tx-power";
-        if(s.txPowerHalfDbm>limit)s.txPowerHalfDbm=limit;
+        CandidateConfiguration candidate{};
+        const char *error=prepareBSSCandidate(s,ap,candidate);
+        if(error)return error;
+        applyBSSCandidate(s,candidate);
         return nullptr;
     }
     return "configured-bss-not-found";
@@ -599,6 +782,7 @@ inline UInt32 buildConnectionWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const C
         for(UInt32 i=0;i<6;++i)p[4+i]=s.bssid[i]; // generic peer, same as Linux station path
         break;
     case LinkStage::PeerAssoc: {
+        if(s.pmfRequired && !s.pmfQoSTransported)return 0;
         if(s.ap.wmmPresent && !s.wmmConfigured){
             cmd=0x4006;bytes=136;writeWMMCommand(f,s.ap.wmm);
             break;
@@ -608,6 +792,9 @@ inline UInt32 buildConnectionWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const C
         bytes=120+rates+htRates;connTLV(f+12,101,76);
         for(UInt32 i=0;i<6;++i)p[i]=s.bssid[i];
         UInt32 flags=(s.secure?(5|(s.ap.wpaPresent?16:0)):1)|(s.ap.wmmPresent?2u:0)|(s.htEnabled?0x1000u:0)|(s.vhtEnabled?0x02000000u:0);
+        // Match Linux ath10k_peer_assoc_h_crypto: the TLV peer PMF bit is
+        // conditional on the reviewed firmware-file feature, not SERVICE_READY.
+        if(s.pmfRequired && s.firmwareMFPSupport)flags|=0x08000000u;
         if(r.width>=40)flags|=0x2000;
         if(r.width==80)flags|=0x04000000;
         // SMPS flags have the same meaning as Linux ath10k_peer_assoc_h_ht.
@@ -769,8 +956,10 @@ inline UInt32 buildSecurityWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const Con
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,static_cast<UInt16>(bytes-8));htcWriteLE32(f+8,cmd);
     return bytes;
 }
-inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionState &s) {
+inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionState &s,
+    const UInt8 *saeRSN=nullptr,size_t saeRSNBytes=0) {
     const bool spectrum=(s.ap.capabilities&0x100)!=0;
+    if(s.securityAKM==8 && s.stage==LinkStage::Auth)return 0; // Never encode open auth for SAE.
     if(!f || capacity<(s.htEnabled || spectrum?256u:128u) || s.ssidLength>32 || s.ap.rateCount>32 || !s.nss || s.nss>2 || (s.stage!=LinkStage::Auth && s.stage!=LinkStage::Assoc))return 0;
     htcZero(f,s.htEnabled || spectrum?256:128);f[0]=s.stage==LinkStage::Auth?0xb0:0;
     for(UInt32 i=0;i<6;++i){f[4+i]=s.bssid[i];f[10+i]=s.local[i];f[16+i]=s.bssid[i];}
@@ -789,7 +978,15 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         }
         f[start+1]=static_cast<UInt8>(n-start-2);
     }
-    size_t stationRSNLength=0;const UInt8 *stationRSN=s.secure?AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength):nullptr;
+    size_t stationRSNLength=0;const UInt8 *stationRSN=nullptr;
+    if(s.securityAKM==8){
+        if(!s.secure || !s.pmfRequired || s.groupCipher!=AthSecurity::cipherCCMP ||
+           !AthSecurity::validSAEStationRSN(saeRSN,saeRSNBytes))return 0;
+        stationRSN=saeRSN;stationRSNLength=saeRSNBytes;
+    }else {
+        if(saeRSN || saeRSNBytes)return 0;
+        if(s.secure)stationRSN=AthSecurity::stationRSNForGroup(s.groupCipher,stationRSNLength,s.securityAKM);
+    }
     if(s.secure&&!stationRSN)return 0;
     const UInt32 tail=2+s.ap.rateCount+(s.ap.rateCount>8?2:0)+(s.secure?stationRSNLength:0)+
         (s.ap.wmmPresent?(s.ap.wmmVendor?9:3):0)+(s.htEnabled?28:0)+(s.vhtEnabled?17:0);
@@ -803,17 +1000,11 @@ inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionSt
         if(s.ap.wmmVendor){const UInt8 wmm[]={221,7,0,0x50,0xf2,2,0,1,0};for(UInt8 b:wmm)f[n++]=b;}
         else {f[n++]=46;f[n++]=1;f[n++]=0;}}
     if(s.htEnabled){
-        f[n++]=45;f[n++]=26;UInt8 *h=f+n;n+=26;
-        // One RX MCS0-7 mask per negotiated stream; TX equal to RX.
-        // Match Linux ath10k: 64 KiB A-MPDU and 8us MPDU spacing. An
-        // A-MPDU is delivered as separate MPDUs, not one 64KiB RX buffer.
-        const UInt8 localAmpduExponent=3,localMpduDensity=6;
-        htcWriteLE16(h,s.localHT);
-        h[2]=static_cast<UInt8>(localAmpduExponent|(localMpduDensity<<2));
-        for(UInt32 i=0;i<s.negotiatedNSS;++i)h[3+i]=0xff;
-        h[15]=1;
-        if(s.vhtEnabled){f[n++]=191;f[n++]=12;UInt8 *v=f+n;n+=12;
-            htcWriteLE32(v,s.localVHT);htcWriteLE16(v+4,s.vhtRxMap);htcWriteLE16(v+8,s.vhtTxMap);
+        const UInt32 htBytes=writeLocalHTCapabilityIE(f+n,capacity-n,s.localHT,s.negotiatedNSS);
+        if(!htBytes)return 0;n+=htBytes;
+        if(s.vhtEnabled){
+            const UInt32 vhtBytes=writeLocalVHTCapabilityIE(f+n,capacity-n,s.localVHT,s.vhtRxMap,s.vhtTxMap);
+            if(!vhtBytes)return 0;n+=vhtBytes;
             // Operating Mode Notification: selected width and receive NSS.
             f[n++]=199;f[n++]=1;f[n++]=static_cast<UInt8>((s.negotiatedWidth==80?2:(s.negotiatedWidth==40?1:0))|((s.negotiatedNSS-1)<<4));}
     }
@@ -1101,16 +1292,30 @@ inline UInt32 buildChannelSwitchWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,Conn
     else return 0;
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,n-8);htcWriteLE32(f+8,cmd);return n;
 }
-inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel=0) {
-    if(s.disconnect!=DisconnectStage::None || s.stage<LinkStage::Auth || s.stage==LinkStage::Failed || status&0x39u || bytes<24)return;
+enum class ManagementAuthentication : UInt8 {Unverified,Pairwise,Group};
+// Authentication is an internal dispatch assertion, never derived from WMI
+// status or Protected alone. Native callers must first commit a PMF result.
+inline void receiveStationManagementAuthenticated(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel,ManagementAuthentication authentication) {
+    if(!f || s.disconnect!=DisconnectStage::None || s.stage<LinkStage::Auth || s.stage==LinkStage::Failed || status&0x39u || bytes<24)return;
     UInt16 fc=htcReadLE16(f);
-    if((fc&0x470fu) || (htcReadLE16(f+22)&15) || !sameMAC(f+10,s.bssid) || !sameMAC(f+16,s.bssid))return;
+    if(authentication!=ManagementAuthentication::Unverified && authentication!=ManagementAuthentication::Pairwise && authentication!=ManagementAuthentication::Group)return;
+    const UInt16 forbidden=authentication==ManagementAuthentication::Pairwise?0x070fu:0x470fu;
+    if((fc&forbidden) || (htcReadLE16(f+22)&15) || !sameMAC(f+10,s.bssid) || !sameMAC(f+16,s.bssid))return;
+    if(authentication==ManagementAuthentication::Pairwise && (!(fc&0x4000) || !sameMAC(f+4,s.local)))return;
+    if(authentication==ManagementAuthentication::Group && (!(f[4]&1) || !AthSecurity::robustManagementFrame(f,bytes)))return;
+    // Raw WMI input cannot bypass the retained PMF verifier after PTK setup.
+    if(authentication==ManagementAuthentication::Unverified && s.pmfRequired && s.pairInstalled && AthSecurity::robustManagementFrame(f,bytes))return;
     bool broadcast=true;for(UInt32 i=0;i<6;++i)if(f[4+i]!=255)broadcast=false;
-    if(!sameMAC(f+4,s.local) && !broadcast)return;
+    if(!sameMAC(f+4,s.local) && !broadcast && authentication!=ManagementAuthentication::Group)return;
     const UInt32 subtype=fc&0xf0u;
     if((subtype==0xc0 || subtype==0xa0) && bytes>=26){
         ++s.diagnostics.mlmeCount;s.diagnostics.mlmeSubtype=static_cast<UInt8>(subtype);
         s.diagnostics.mlmeReason=htcReadLE16(f+24);s.diagnostics.mlmeChannel=rxChannel;
+        if(!s.cancelRequested && !s.apDisconnect.valid){
+            s.apDisconnect.valid=true;s.apDisconnect.disassociation=subtype==0xa0;
+            s.apDisconnect.reason=htcReadLE16(f+24);
+            for(UInt32 i=0;i<6;++i)s.apDisconnect.bssid[i]=s.bssid[i];
+        }
         connectionFailure(s,"ap-disconnected");s.portAuthorized=false;s.cancelRequested=true;return;
     }
     if((subtype==0x80 || (subtype==0x50 && s.probe.active)) && bytes>=36){
@@ -1160,9 +1365,27 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
         else s.authReply=true;
     }
     if(subtype==0x10 && s.stage==LinkStage::Assoc && s.submitted && bytes>=30){
+        // An accepted response is immutable until its firmware transaction.
+        if(s.assocReply)return;
         s.associationStatus=htcReadLE16(f+26);
-        UInt16 aid=htcReadLE16(f+28)&0x3fff;
-        if(s.associationStatus || aid==0 || aid>2007){s.error="association-rejected";s.stage=LinkStage::Failed;return;}
+        const UInt16 rawAID=htcReadLE16(f+28);
+        // IEEE 802.11-2016 9.4.1.8: the five MSBs are reserved.
+        const UInt16 aid=rawAID&0x07ff;
+        UInt32 comebackTU=0;
+        if(s.associationStatus==30 && associationComebackInterval(f+30,bytes-30,comebackTU)){
+            if(!s.associationComeback.pending){
+                s.associationComeback.intervalTU=comebackTU;s.associationComeback.pending=true;
+                ++s.diagnostics.associationComebacks;s.diagnostics.lastAssociationComebackTU=comebackTU;
+                ++s.diagnostics.associationRejects;s.diagnostics.lastAssociationStatus=30;s.diagnostics.lastAssociationRawAID=rawAID;
+            }
+            return;
+        }
+        if(s.associationStatus || aid==0 || aid>2007){
+            ++s.diagnostics.associationRejects;
+            s.diagnostics.lastAssociationStatus=static_cast<UInt16>(s.associationStatus);
+            s.diagnostics.lastAssociationRawAID=rawAID;
+            s.error="association-rejected";s.stage=LinkStage::Failed;return;
+        }
         // Validate all response IEs before accepting the AID.
         for(UInt32 p=30;p<bytes;){if(bytes-p<2 || f[p+1]>bytes-p-2)return;p+=2+f[p+1];}
         bool ratesSeen=false,extendedSeen=false,rsnSeen=false,responseEDCA=false,responseWMM=false,responseOM=false;
@@ -1178,7 +1401,7 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
                         if(v[i]&128){s.error="association-unsupported-basic-rate";s.stage=LinkStage::Failed;return;}continue;}
                     responseRates[rateCount++]=v[i];}
             }
-            if(id==48){if(rsnSeen || (s.secure && !AthSecurity::supportsWPA2(f+p,len+2)))return;rsnSeen=true;}
+            if(id==48){if(rsnSeen || (s.secure && (!connectionRSNAccepted(s,f+p,len+2) || AthSecurity::wpa2GroupCipher(f+p,len+2)!=s.groupCipher)))return;rsnSeen=true;}
             if(id==199){if(responseOM || len!=1)return;responseOM=true;operatingMode=v[0];}
             if(id==12){UInt8 ac[16]{},counter=0;
                 if(responseEDCA || !parseAPEDCA(v,len,ac,counter))return;
@@ -1240,9 +1463,13 @@ inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 by
         if(s.ap.wmmPresent && (responseWMM || responseEDCA)){
             s.ap.wmmCount=responseCount;s.ap.wmmVendor=responseWMM;
             for(UInt32 i=0;i<16;++i)s.ap.wmm[i]=responseAC[i];}
-        s.aid=aid;s.assocReply=true;
+        s.aid=aid;s.assocReply=true;s.associationComeback={};
     }
 }
+inline void receiveStationManagement(ConnectionState &s,const UInt8 *f,UInt32 bytes,UInt32 status,UInt32 rxChannel=0){
+    receiveStationManagementAuthenticated(s,f,bytes,status,rxChannel,ManagementAuthentication::Unverified);
+}
+
 inline UInt32 connectionReadLE32(const UInt8 *p) {
     return static_cast<UInt32>(htcReadLE16(p)) |
            (static_cast<UInt32>(htcReadLE16(p+2))<<16);
@@ -1421,14 +1648,27 @@ inline UInt8 txPriorityTID(const ConnectionState &s,const UInt8 *packet,UInt32 l
     }
     return 255;
 }
+// Our HTT management path follows Linux v6.12 hardware CCMP with host IV.
+// Software ciphertext passthrough has not been validated for this firmware.
+inline bool packetProtectionAllowed(const UInt8 *packet,UInt32 length,const ConnectionState &s,bool management,AthSecurity::ManagementTX protection){
+    if(!packet || length<14 || length>kEthernetFrameMax)return false;
+    if(!management)return protection==AthSecurity::ManagementTX::Plain && ethernetFrameAllowed(packet,length);
+    if(protection==AthSecurity::ManagementTX::Plain)
+        return length>=24 && !(htcReadLE16(packet)&0xc70fu) && !(htcReadLE16(packet+22)&15) &&
+            !(s.pmfRequired && s.pairInstalled && AthSecurity::robustManagementFrame(packet,length));
+    if(protection!=AthSecurity::ManagementTX::HardwareCCMP || !s.pmfRequired || !s.secure || !s.pairInstalled ||
+       s.stage!=LinkStage::Connected || s.disconnect!=DisconnectStage::None)return false;
+    return AthSecurity::PMFHardwareCCMP::valid(packet,length,s.local,s.bssid);
+}
 inline UInt32 buildHTTPacket(UInt8 *f,UInt32 capacity,const UInt8 *packet,UInt32 length,
-                            UInt32 address,UInt32 frags,UInt8 ep,const ConnectionState &s,bool management) {
-    if(!f || !packet || capacity<256 || !ep || ep==255 || !address || length<14 || length>kEthernetFrameMax || (!management && !ethernetFrameAllowed(packet,length)))return 0;
+                            UInt32 address,UInt32 frags,UInt8 ep,const ConnectionState &s,bool management,
+                            AthSecurity::ManagementTX protection=AthSecurity::ManagementTX::Plain) {
+    if(!f || capacity<256 || !ep || ep==255 || !address || !frags || !packetProtectionAllowed(packet,length,s,management,protection))return 0;
     htcZero(f,256);f[0]=ep;f[5]=s.httSequence;
     UInt32 bytes=0;
     if(!frags)return 0;
     UInt32 prefetch=length<50?length:50;bytes=24+((prefetch+3u)&~3u);
-    f[8]=1;f[9]=management?0x65:((s.secure && (s.portAuthorized || s.rekeyKind))?0x42:0x46); // HTT >=3: TX_FRM for both management and Ethernet.
+    f[8]=1;f[9]=management?(protection==AthSecurity::ManagementTX::HardwareCCMP?0x61:0x65):((s.secure && (s.portAuthorized || s.rekeyKind))?0x42:0x46); // HTT >=3: TX_FRM for both management and Ethernet.
     const UInt8 tid=management?17:txPriorityTID(s,packet,length);if(tid==255)return 0;
     htcWriteLE16(f+10,static_cast<UInt16>(0x800u|(UInt16(tid)<<6))); // POSTPONED, TID bits 6..10
     htcWriteLE16(f+12,static_cast<UInt16>(length));htcWriteLE16(f+14,s.txId);

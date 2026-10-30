@@ -3,18 +3,6 @@
 #include <IOKit/pwr_mgt/RootDomain.h>
 #include <libkern/OSAtomic.h>
 
-bool Ath10kPCIDevice::preparePowerNotifications()
-{
-    if(_powerNotifier)return true;
-    _powerNotifier=registerPrioritySleepWakeInterest(powerNotification,this,nullptr);
-    return _powerNotifier!=nullptr;
-}
-void Ath10kPCIDevice::releasePowerNotifications()
-{
-    // remove() synchronizes with outstanding handlers. Detach before PMstop,
-    // work-loop release or PCI unmap; no callback may reach a freed provider.
-    if(_powerNotifier){_powerNotifier->remove();_powerNotifier=nullptr;}
-}
 bool Ath10kPCIDevice::powerIOBlocked()
 {
     // Atomic load with the OSAtomic barrier, including polling-only builds.
@@ -23,6 +11,53 @@ bool Ath10kPCIDevice::powerIOBlocked()
 bool Ath10kPCIDevice::powerRestartAllowed()
 {
     return OSCompareAndSwap(2,2,&_powerIOBlock);
+}
+void Ath10kPCIDevice::beginPowerSuspend()
+{
+    // Count intent and block I/O in the same CAS. A wake action can promote
+    // exactly 1 -> 2 only after every pending suspend has recorded its state.
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::queuePowerSuspend(old),&_powerIOBlock))return;
+    }
+}
+void Ath10kPCIDevice::finishPowerSuspend()
+{
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::applyPowerSuspend(old),&_powerIOBlock))return;
+    }
+}
+void Ath10kPCIDevice::blockPowerIOForTermination()
+{
+    for(;;){
+        const UInt32 old=static_cast<UInt32>(OSAddAtomic(0,&_powerIOBlock));
+        if(OSCompareAndSwap(old,Ath10k::terminatePowerIO(old),&_powerIOBlock))return;
+    }
+}
+bool Ath10kPCIDevice::controllerPowerClosed()
+{
+    return !OSCompareAndSwap(0,0,&_controllerPowerClosed);
+}
+void Ath10kPCIDevice::drainControllerPowerCalls()
+{
+    // Stop/free enter outside the hardware gate. First quiesce while PCI is
+    // available, then close callback admission under the same producer barrier.
+    // A late root sleep acknowledgement is safe only after this quiescence.
+    blockPowerIOForTermination();
+    if(_probePowerLock)IOLockLock(_probePowerLock);
+    if(!controllerPowerClosed()){
+        auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
+        if(loop)loop->runAction(controlPowerState,this,
+            reinterpret_cast<void *>(static_cast<uintptr_t>(Ath10k::PowerEvent::DeviceOff)));
+        OSCompareAndSwap(0,1,&_controllerPowerClosed);
+    }
+    if(_probePowerLock)IOLockUnlock(_probePowerLock);
+    releasePowerNotifications();
+    if(_powerManaged){PMstop();_powerManaged=false;}
+    // PMstop is bounded. Drain bodies admitted before closure; calls which
+    // were dispatched but have not entered yet fail their admission check.
+    if(_probePowerLock){IOLockLock(_probePowerLock);IOLockUnlock(_probePowerLock);}
 }
 void Ath10kPCIDevice::publishPowerState()
 {
@@ -44,23 +79,37 @@ void Ath10kPCIDevice::publishPowerState()
         _pci->setProperty("Ath10kRecoveryWakeCount", _power.wakes, 32);
     }
 }
-void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event)
+void Ath10kPCIDevice::requestPowerEvent(Ath10k::PowerEvent event,bool suspendAlreadyQueued)
 {
-    if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff){
-        OSCompareAndSwap(0,1,&_powerIOBlock);
-        OSCompareAndSwap(2,1,&_powerIOBlock);
+    if(controllerPowerClosed())return;
+    if(!suspendAlreadyQueued && (event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff)){
+        beginPowerSuspend();
     }
     // Block new filter/timer/output work before waiting for the hardware gate.
-    // The priority root notification does not return until existing work and
-    // verified IRQ/reset quiescence finish, while PCI is still powered.
-    if(_wmiWorkLoop)_wmiWorkLoop->runAction(controlPowerState,this,
+    // The root notification worker acknowledges only after existing work
+    // and verified IRQ/reset quiescence finish, while PCI is still powered.
+    // Firmware initialization is not yet a runtime workloop action. Wait for
+    // it before quiescing DMA, including sleep before _wmiWorkLoop exists.
+    IOLog("Ath10kMac: POWER request=%u phase=producer-wait\n",static_cast<UInt32>(event));
+    if(_probePowerLock)IOLockLock(_probePowerLock);
+    if(controllerPowerClosed()){
+        if(_probePowerLock)IOLockUnlock(_probePowerLock);
+        return;
+    }
+    IOLog("Ath10kMac: POWER request=%u phase=radio-wait\n",static_cast<UInt32>(event));
+    auto *loop=_wmiWorkLoop?_wmiWorkLoop:getWorkLoop();
+    if(loop)loop->runAction(controlPowerState,this,
         reinterpret_cast<void *>(static_cast<uintptr_t>(event)));
+    if(!_deferredProbeStarted && !powerIOBlocked())queueDeferredProbe();
+    else if(powerRestartAllowed())queueWakeRecovery();
+    if(_probePowerLock)IOLockUnlock(_probePowerLock);
 }
 IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void *,void *,void *)
 {
     auto *self=OSDynamicCast(Ath10kPCIDevice,owner);
     if(!self)return kIOReturnBadArgument;
     const auto event=static_cast<Ath10k::PowerEvent>(reinterpret_cast<uintptr_t>(argument));
+    IOLog("Ath10kMac: POWER event=%u phase=radio-entered\n",static_cast<UInt32>(event));
     auto &p=self->_power;
     if(event==Ath10k::PowerEvent::SystemSleep){++p.notifications;p.rootSleeping=true;}
     else if(event==Ath10k::PowerEvent::DeviceOff)p.deviceOn=false;
@@ -68,25 +117,46 @@ IOReturn Ath10kPCIDevice::controlPowerState(OSObject *owner,void *argument,void 
     else if(event==Ath10k::PowerEvent::SystemWake || event==Ath10k::PowerEvent::SleepCancelled){
         ++p.notifications;p.rootSleeping=false;
     }else return kIOReturnBadArgument;
+    if(event==Ath10k::PowerEvent::SystemSleep || event==Ath10k::PowerEvent::DeviceOff)
+        self->finishPowerSuspend();
     const bool suspended=p.rootSleeping || !p.deviceOn;
+    if(!self->_deferredProbeStarted){
+        // No configuration, BAR or DMA work has begun. This is first-power
+        // admission, not recovery of an old firmware/ring/security instance.
+        self->_systemSuspended=suspended;
+        if(!suspended)OSCompareAndSwap(1,0,&self->_powerIOBlock);
+        p.status=suspended?"awaiting-initial-power":
+            (self->powerIOBlocked()?"initial-suspend-pending":"initial-power-ready");
+        self->publishPowerState();return kIOReturnSuccess;
+    }
     if(suspended){
-        if(!self->_systemSuspended)++p.sleeps;
+        const bool firstSuspend=!self->_systemSuspended;
+        if(firstSuspend)++p.sleeps;
         self->_systemSuspended=true;p.needsRestart=true;
-        OSCompareAndSwap(2,1,&self->_powerIOBlock);
         self->endWMIRuntime("suspended-awaiting-wake");
+        // A failed/partial firmware probe may never have made WMI active.
+        // Verify that no outstanding bootstrap DMA survives the first sleep.
+        // Repeated root/device notices must not touch an already powered-off PCI.
+        if(firstSuspend && !self->stopDMAForRelease())self->_dmaQuarantine=true;
         p.status=self->_dmaQuarantine?"suspended-dma-quarantined":"suspended-quiesced";
     }else{
         if(self->_systemSuspended)++p.wakes;
         self->_systemSuspended=false;
         // Do not re-arm old CE rings or reuse security state after PCI sleep.
-        // The existing app Restart operation performs full stop/rematch/boot.
+        // Internal recovery performs full stop/rematch/boot outside PM calls.
         // Keep I/O blocked until that new driver instance is ready.
         if(p.needsRestart){
+            // A queued sleep/off increments the same atomic word, so its
+            // block cannot be mistaken for the completed previous suspend.
             OSCompareAndSwap(1,2,&self->_powerIOBlock);
-            p.status=self->_dmaQuarantine?"wake-dma-quarantined":"wake-restart-required";
+            p.status=!self->powerRestartAllowed()?"suspend-pending":
+                (self->_dmaQuarantine?"wake-dma-quarantined":"wake-restart-required");
             self->_wmiLive.status=p.status;
         }else{
-            OSCompareAndSwap(1,0,&self->_powerIOBlock);p.status="active";
+            // A sleep/off request may already have raised the atomic block
+            // while waiting for this gate. An unrelated DeviceOn must not
+            // clear that intent before the suspend action records its state.
+            p.status=self->powerIOBlocked()?"suspend-pending":"active";
         }
     }
     self->publishPowerState();self->publishWMIRuntimeProperties();
@@ -100,11 +170,24 @@ IOReturn Ath10kPCIDevice::powerNotification(void *target,void *,UInt32 message,
 {
     auto *self=OSDynamicCast(Ath10kPCIDevice,static_cast<OSObject *>(target));
     if(!self)return kIOReturnBadArgument;
+    if(message!=kIOMessageSystemWillSleep && message!=kIOMessageSystemHasPoweredOn &&
+       message!=kIOMessageSystemWillNotSleep)return kIOReturnSuccess;
+    IOLog("Ath10kMac: POWER notification=%u phase=entered\n",message);
+    auto *note=message==kIOMessageSystemWillSleep?
+        static_cast<IOPowerStateChangeNotification *>(argument):nullptr;
+    if(self->queuePowerNotification(message,note))return kIOReturnSuccess;
+    // Partial-start/closed-admission or protocol-overflow fallback preserves quiescence rather than
+    // acknowledging a device whose DMA is still live. Normal registered
+    // notifications use the retained worker and never wait on radio here.
+    IOLog("Ath10kMac: POWER notification=%u phase=synchronous-fallback\n",message);
     if(message==kIOMessageSystemWillSleep){
         self->requestPowerEvent(Ath10k::PowerEvent::SystemSleep);
-        // Synchronous quiescence: root can proceed to sleep after this return.
-        auto *note=static_cast<IOPowerStateChangeNotification *>(argument);
-        if(note){note->returnValue=0;acknowledgeSleepWakeNotification(note->powerRef);}
+        // XNU pmTellClientWithResponse records a synchronous acknowledgement
+        // when this callback returns success with returnValue == 0. Do not
+        // also enqueue an asynchronous acknowledgement of the same powerRef.
+        // Quiescence above must complete before root can proceed.
+        if(note)note->returnValue=0;
+        IOLog("Ath10kMac: POWER notification=%u phase=quiesced-return\n",message);
     }else if(message==kIOMessageSystemHasPoweredOn)
         self->requestPowerEvent(Ath10k::PowerEvent::SystemWake);
     else if(message==kIOMessageSystemWillNotSleep)

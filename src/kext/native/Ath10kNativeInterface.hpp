@@ -1,12 +1,34 @@
 #pragma once
 #include "Ath10kNativeABI.hpp"
 #include "Ath10kNativeOps.hpp"
+#include <kern/thread_call.h>
 class Ath10kPCIDevice;
 class Ath10kNativeInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(Ath10kNativeInterface)
 public:
     Ath10kPCIDevice *controller=nullptr;
+    bool _baseStarted=false;
+    ifnet_t _nativeBSDReference=nullptr;
+    IOService *_nativeBSDOwner=nullptr;
     bool initWithController(Ath10kPCIDevice *);
+    IOReturn prepareBSDInterface(ifnet_t,unsigned int) override;
+    bool prepareTerminationNotification();
+    IOReturn setPowerState(unsigned long,IOService *) override;
+    bool didTerminate(IOService *,IOOptionBits,bool *) override;
+    bool finalize(IOOptionBits) override;
+    void closePowerAdmission();
+    void drainPowerCalls();
+    static void terminationThread(thread_call_param_t,thread_call_param_t);
+    static IOReturn finalizeBSDAction(OSObject *,void *,void *,void *,void *);
+    static IOReturn resumeTerminationAction(OSObject *,void *,void *,void *,void *);
+    void releaseTerminationNotification();
+    static bool willTerminateNotification(void *,void *,IOService *,IONotifier *);
+    bool prepareRegistrationInfo(const IOSkywalkEthernetInterface::RegistrationInfo &);
+    void detachRegistrationLoan();
+    void stop(IOService *) override;
+    void free() override;
+    IOReturn deregisterLogicalLink() override;
+    IOWorkLoop *getWorkLoop() const override;
     IOReturn perform(AthNativeOp,void *);
     IOReturn setMacAddress(ether_addr &) override;
     IOReturn getCHANNEL(apple80211_channel_data* data) override { return perform(AthNativeOp::getCHANNEL,data); }
@@ -19,10 +41,10 @@ public:
     IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data* data) override { return kIOReturnUnsupported; }
     IOReturn getMCS(apple80211_mcs_data* data) override { return kIOReturnUnsupported; }
     IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info* data) override { return kIOReturnUnsupported; }
-    IOReturn getHT_CAPABILITY(apple80211_ht_capability* data) override { return kIOReturnUnsupported; }
+    IOReturn getHT_CAPABILITY(apple80211_ht_capability* data) override { return perform(AthNativeOp::getHT_CAPABILITY,data); }
     IOReturn getMCS_VHT(apple80211_mcs_vht_data* data) override { return kIOReturnUnsupported; }
     IOReturn getCHANNELS_INFO(apple80211_channels_info* data) override { return perform(AthNativeOp::getCHANNELS_INFO,data); }
-    IOReturn getVHT_CAPABILITY(apple80211_vht_capability* data) override { return kIOReturnUnsupported; }
+    IOReturn getVHT_CAPABILITY(apple80211_vht_capability* data) override { return perform(AthNativeOp::getVHT_CAPABILITY,data); }
     IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands* data) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats* data) override { return kIOReturnUnsupported; }
     IOReturn getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params* data) override { return kIOReturnUnsupported; }
@@ -63,13 +85,13 @@ public:
     IOReturn getTIMESYNC_INFO(apple80211_timesync_info* data) override { return kIOReturnUnsupported; }
     IOReturn getSENSING_DATA(apple80211_sensing_data_t* data) override { return kIOReturnUnsupported; }
     IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels* data) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info* data) override { return kIOReturnUnsupported; }
+    IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info* data) override { return perform(AthNativeOp::getWCL_LOW_LATENCY_INFO,data); }
     IOReturn getWCL_BSS_INFO(apple80211_beacon_msg* data) override { return perform(AthNativeOp::getWCL_BSS_INFO,data); }
     IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters* data) override { return perform(AthNativeOp::getWCL_TRAFFIC_COUNTERS,data); }
     IOReturn getWCL_GET_TX_BLANKING_STATUS(unsigned int* data) override { return kIOReturnUnsupported; }
     IOReturn getHE_COUNTERS(apple80211_he_counters_ctl* data) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo* data) override { return kIOReturnUnsupported; }
-    IOReturn getRSN_XE(apple80211_rsn_xe_data* data) override { return kIOReturnUnsupported; }
+    IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo* data) override { return perform(AthNativeOp::getWCL_CHANNELS_INFO,data); }
+    IOReturn getRSN_XE(apple80211_rsn_xe_data* data) override { return perform(AthNativeOp::getRSN_XE,data); }
     IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status* data) override { return kIOReturnUnsupported; }
     IOReturn getWIFI_BT_5G_POLICY(apple80211_wifi_bt_5g_policy_t* data) override { return kIOReturnUnsupported; }
     IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info* data) override { return perform(AthNativeOp::getWCL_EXTENDED_BSS_INFO,data); }
@@ -126,11 +148,11 @@ public:
     IOReturn setSENSING_DISABLE(apple80211_sensing_disable_t* data) override { return kIOReturnUnsupported; }
     IOReturn set6G_MODE(apple80211_6G_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network* data) override { return perform(AthNativeOp::setWCL_LEAVE_NETWORK,data); }
-    IOReturn setWCL_REASSOC(apple80211_reassoc* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_REASSOC(apple80211_reassoc* data) override { return perform(AthNativeOp::setWCL_REASSOC,data); }
     IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config* data) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache* data) override { return perform(AthNativeOp::setWCL_ROAM_USER_CACHE,data); }
     IOReturn setWCL_SCAN_ABORT(void* data) override { return perform(AthNativeOp::setWCL_SCAN_ABORT,data); }
     IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode* data) override { return kIOReturnUnsupported; }
@@ -140,7 +162,7 @@ public:
     IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates* data) override { return perform(AthNativeOp::setWCL_ASSOCIATE,data); }
     IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LINK_UP_DONE(void* data) override { return perform(AthNativeOp::setWCL_LINK_UP_DONE,data); }
-    IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime* data) override { return perform(AthNativeOp::setWCL_SCAN_TIMING,data); }
     IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state* data) override { return perform(AthNativeOp::setWCL_LINK_STATE_UPDATE,data); }
     IOReturn setRSN_XE(apple80211_rsn_xe_data* data) override { return kIOReturnUnsupported; }
@@ -169,7 +191,7 @@ public:
     IOReturn setEAP_FILTER_CONFIG(apple80211_eap_filter_config* data) override { return kIOReturnUnsupported; }
     IOReturn setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params* data) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane* data) override { return perform(AthNativeOp::setWCL_FAST_LANE,data); }
     IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config* data) override { return kIOReturnUnsupported; }
     IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication* data) override { return kIOReturnUnsupported; }
     IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state* data) override { return kIOReturnUnsupported; }
@@ -199,4 +221,19 @@ public:
     IOReturn setDBRG_ENTROPY(apple80211_drbg_entropy* data) override { return kIOReturnUnsupported; }
     IOReturn setSDB_ENABLE(apple80211_sdb_enable* data) override { return kIOReturnUnsupported; }
     IOReturn setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(apple80211_mws_accessory_power_limit* data) override { return kIOReturnUnsupported; }
+private:
+    // Borrow only the prefix of the framework-owned Ethernet registration.
+    // Its typed owner outlives stop/deregister and releases it in base free().
+    IOSkywalkNetworkInterface::RegistrationInfo *_registrationLoan=nullptr;
+    IONotifier *_terminationNotifier=nullptr;
+    IOLock *_terminationLock=nullptr;
+    thread_call_t _terminationCall=nullptr;
+    UInt32 _nativePowerCalls=0;
+    bool _powerAdmissionClosed=false,_terminationRequested=false;
+    bool _terminationScheduled=false,_terminationPMStopped=false,_terminationCompleted=false;
+    IOService *_terminationProvider=nullptr;
+    IOOptionBits _terminationOptions=0;
+    bool _terminationFinalizePending=false;
+    IOOptionBits _terminationFinalizeOptions=0;
+
 };

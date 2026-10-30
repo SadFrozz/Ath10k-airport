@@ -4,6 +4,14 @@
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
 
+// SIOCGIFMEDIA is part of native Wi-Fi discovery: wifip2pd checks
+// IFM_TYPE(ifm_current) before it reads the IO80211 interface role.
+#ifdef ATH10K_NATIVE
+static constexpr IOMediumType kAth10kAutoMedium=kIOMediumIEEE80211Auto;
+#else
+static constexpr IOMediumType kAth10kAutoMedium=kIOMediumEthernetAuto;
+#endif
+
 const OSString *Ath10kPCIDevice::newModelString() const {
     return OSString::withCString("Ath10k WLAN Adapter");
 }
@@ -35,7 +43,12 @@ IOOutputQueue *Ath10kPCIDevice::createOutputQueue()
 IOReturn Ath10kPCIDevice::getHardwareAddress(IOEthernetAddress *address)
 {
     if(!address || !_wmiInit.ready)return kIOReturnNotReady;
-    for(UInt32 i=0;i<6;++i)address->bytes[i]=_wmiInit.mac[i];
+#ifdef ATH10K_NATIVE
+    const UInt8 *mac=_nativeMACValid?_nativeMACCurrent:_wmiInit.mac;
+#else
+    const UInt8 *mac=_wmiInit.mac;
+#endif
+    for(UInt32 i=0;i<6;++i)address->bytes[i]=mac[i];
     return kIOReturnSuccess;
 }
 UInt32 Ath10kPCIDevice::getFeatures() const
@@ -45,7 +58,7 @@ UInt32 Ath10kPCIDevice::getFeatures() const
 }
 IOReturn Ath10kPCIDevice::selectMedium(const IONetworkMedium *medium)
 {
-    if(!medium || medium->getType()!=kIOMediumEthernetAuto)return kIOReturnUnsupported;
+    if(!medium || medium->getType()!=kAth10kAutoMedium)return kIOReturnUnsupported;
     return setSelectedMedium(medium)?kIOReturnSuccess:kIOReturnError;
 }
 IOReturn Ath10kPCIDevice::setPromiscuousMode(bool active)
@@ -81,9 +94,22 @@ void Ath10kPCIDevice::networkLink(bool up)
 {
     up=up && _networkEnabled && _wmiLive.active && _connection.disconnect==Ath10k::DisconnectStage::None;
     if(!up){_dataTXStalled=false;flushNetworkRX();_rxReorder.reset([](Ath10k::RXBatch *b){IOFree(b,sizeof(*b));});_rxDefrag.reset();_rxBatch.reset();}
+#ifdef ATH10K_NATIVE
+    const bool wasDeferred=_nativeDeferredLinkDown;
+    const bool retain=!up && nativeRetainSystemLink();
+    _nativeDeferredLinkDown=retain;
+    if(_networkLinkUp==up && !wasDeferred)return;
+#else
     if(_networkLinkUp==up)return;
+#endif
     _networkLinkUp=up;
     if(!up && getOutputQueue()){getOutputQueue()->stop();getOutputQueue()->flush();}
+#ifdef ATH10K_NATIVE
+    // Data admission and queues are closed above. Preserve BSD carrier only
+    // for the admitted roam; later failure must publish even if internal up
+    // was already false while the notification was deferred.
+    if(retain)return;
+#endif
     setLinkStatus(kIONetworkLinkValid|(up?kIONetworkLinkActive:0));
     if(up && getOutputQueue())getOutputQueue()->start();
 }
@@ -96,7 +122,7 @@ bool Ath10kPCIDevice::prepareNetwork()
         if(!b.payload.allocate(2048,128,_dmaMapper,Ath10kDMABuffer::Role::Payload) ||
            !b.command.allocate(256,128,_dmaMapper) || !b.fragments.allocate(16,16,_dmaMapper))return false;
     auto *dict=OSDictionary::withCapacity(1);
-    auto *medium=IONetworkMedium::medium(kIOMediumEthernetAuto,0);
+    auto *medium=IONetworkMedium::medium(kAth10kAutoMedium,0);
     if(!dict || !medium){if(dict)dict->release();if(medium)medium->release();return false;}
     bool ok=IONetworkMedium::addMedium(dict,medium) && publishMediumDictionary(dict);
     if(ok)setCurrentMedium(medium);
@@ -167,6 +193,12 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kConnectionChannelPowerLimitHalfDbm",Ath10k::stationPowerLimit(_connection),32);
     setProperty("Ath10kStationPowerSaveRequested",_connection.radio.requestedPS);
     setProperty("Ath10kStationPowerSaveApplied",_connection.radio.appliedPS);
+    setProperty("Ath10kTXPowerSaveWakeRequested",_connection.radio.txWakeRequested);
+    setProperty("Ath10kTXPowerSaveWakeRequests",UInt64(_connection.radio.txWakeRequests),32);
+    setProperty("Ath10kDataTxWatchdogReason",_connection.dataWatchdogReason);
+    setProperty("Ath10kDataTxWatchdogSlot",UInt64(_connection.dataWatchdogSlot),32);
+    setProperty("Ath10kDataTxWatchdogID",UInt64(_connection.dataWatchdogID),32);
+    setProperty("Ath10kDataTxWatchdogAgeMs",_connection.dataWatchdogAgeMs);
     setProperty("Ath10kStationDTIMPeriod",_connection.radio.appliedDTIM,32);
     setProperty("Ath10kAPDTIMPeriod",_connection.ap.timPresent?_connection.ap.dtimPeriod:0,32);
     setProperty("Ath10kStationTXPowerBlocked",_connection.radio.powerBlocked);
@@ -183,13 +215,22 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kStationBeaconMisses",_connection.beaconMisses,32);
     setProperty("Ath10kStationBeaconTimeoutMs",_connection.beaconTimeoutMs,32);
     setProperty("Ath10kStationMulticastDrops",_connection.multicast.dropped,32);
-    setProperty("Ath10kStationDFS",_connection.regulatory.stationDFS);
+    setProperty("Ath10kStationDFS",_regulatory.stationDFS);
     setProperty("Ath10kConnectionChannelDefinitionValid",Ath10k::channelDefinitionAllowed(
         _connection.operatingChannel,_connection.centerChannel,_connection.width,_connection.regulatory.stationDFS));
     setProperty("Ath10kChannelPolicy","regdb-board-firmware-infrastructure-sta-10dbm");
     setProperty("Ath10kDisconnectStage",static_cast<UInt32>(_connection.disconnect),32);
     setProperty("Ath10kDisconnectCount",_connection.disconnectCount,32);
     const auto &cd=_connection.diagnostics;
+    setProperty("Ath10kAssociationComebacks",cd.associationComebacks,32);
+    setProperty("Ath10kLastAssociationComebackTU",cd.lastAssociationComebackTU,32);
+    setProperty("Ath10kAssociationComebackPending",_connection.associationComeback.pending);
+    setProperty("Ath10kAssociationComebackUntilMs",_connection.associationComeback.untilMs,64);
+    setProperty("Ath10kAssociationDeadlineMs",_connection.associationDeadlineMs,64);
+    setProperty("Ath10kAssociationRejects",cd.associationRejects,32);
+    setProperty("Ath10kLastAssociationRejectStatus",cd.lastAssociationStatus,16);
+    setProperty("Ath10kLastAssociationRejectRawAID",cd.lastAssociationRawAID,16);
+    setProperty("Ath10kLastAssociationRejectAID",cd.lastAssociationRawAID&0x07ffu,16);
     setProperty("Ath10kConnectionLastDisconnectReason",cd.lastDisconnectReason);
     setProperty("Ath10kConnectionLastCancelOrigin",cd.lastCancelOrigin);
     setProperty("Ath10kConnectionLastDisconnectStage",cd.lastDisconnectStage,32);
@@ -222,7 +263,7 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kConnectionMLMEChannel",cd.mlmeChannel,32);
     setProperty("Ath10kConnectionPeerCreateIssued",_connection.peerCreateIssued);
     setProperty("Ath10kConnectionVdevStartIssued",_connection.vdevStartIssued);
-    setProperty("Ath10kConnectionState",_connection.disconnect!=Ath10k::DisconnectStage::None?"disconnecting":_connection.secure && _connection.stage==Ath10k::LinkStage::Connected?(_connection.portAuthorized?"connected-wpa2":"wpa2-handshake"):Ath10k::linkStageName(_connection.stage));
+    setProperty("Ath10kConnectionState",_connection.disconnect!=Ath10k::DisconnectStage::None?"disconnecting":_connection.secure && _connection.stage==Ath10k::LinkStage::Connected?(_connection.securityAKM==8?(_connection.portAuthorized?"connected-sae":"sae-four-way-handshake"):(_connection.portAuthorized?"connected-wpa2":"wpa2-handshake")):Ath10k::linkStageName(_connection.stage));
     setProperty("Ath10kSecurityPhase",_connection.securityPhase,32);
     setProperty("Ath10kSecurityGeneration",_connection.securityGeneration,32);
     setProperty("Ath10kSecurityRekeyKind",_connection.rekeyKind,32);
@@ -418,7 +459,7 @@ UInt32 Ath10kPCIDevice::outputPacket(mbuf_t packet,void *)
     if(powerIOBlocked() || !_networkLinkUp || !_networkEnabled || !_wmiLive.active || _connection.stage!=Ath10k::LinkStage::Connected){
         freePacket(packet);return kIOReturnOutputDropped;
     }
-    if(!_connection.portAuthorized || _connection.maintenance.blocked || _connection.eapolPause || _connection.spectrum.pending || _connection.spectrum.inFlight || _connection.probe.active || _connection.csa.blocked || _connection.radio.blocked || _connection.radio.powerBlocked || _connection.txOwned || _connection.txPauseMask || _connection.dataPending>=Ath10k::kDataTxSlots){
+    if(!Ath10k::dataTXAdmissionOpen(_connection)){
         _dataTXStalled=true;
         ++_connection.dataStalls;
         if(_connection.txOwned || _connection.eapolPause || !_connection.portAuthorized)++_connection.stallManagement;
@@ -571,9 +612,10 @@ const char *Ath10kPCIDevice::submitNetworkCE(UInt32 ce,Ath10kDMABuffer &buffer,U
     if(!_regs.write32(doorbell,next) || !_regs.read32(doorbell,value) || value!=next)return "connection-ce-doorbell";
     return nullptr;
 }
-const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs)
+const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs,AthSecurity::ManagementTX protection)
 {
     if(powerIOBlocked() || _connection.maintenance.step || _connection.csa.blocked || _connection.radio.blocked || _connection.radio.powerBlocked || _connection.txOwned || _connection.dataPending || !_wmiLive.active || _dmaQuarantine)return "connection-tx-busy";
+    if(!Ath10k::packetProtectionAllowed(data,bytes,_connection,mgmt,protection))return "packet-protection";
     if(!_packetBuffer.allocated() && !_packetBuffer.allocate(2048,128,_dmaMapper,Ath10kDMABuffer::Role::Payload))return "packet-allocation";
     if(!_packetCommand.allocated() && !_packetCommand.allocate(256,128,_dmaMapper))return "packet-command-allocation";
     if(!_packetFragments.allocated() && !_packetFragments.allocate(16,16,_dmaMapper))return "packet-fragment-allocation";
@@ -586,16 +628,21 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     // Firmware has 1056 descriptor IDs configured. Rotate IDs even with one
     // packet in flight so a late duplicate cannot complete the next packet.
     _connection.txId=static_cast<UInt16>((_connection.txId+1)%1056);_connection.txComplete=false;_connection.txStatus=0;_connection.txManagement=mgmt;
+    _connection.lastTxPMF=mgmt && protection==AthSecurity::ManagementTX::HardwareCCMP;
+    _connection.lastTxSAE=mgmt && bytes>=30 && (data[0]&0xfcu)==0xb0u && Ath10k::htcReadLE16(data+24)==3;
     _connection.lastTxSpectrum=mgmt && _connection.spectrum.inFlight && data==_connection.spectrum.frame;
     _connection.lastTxProbe=mgmt && _connection.probe.active && bytes>=24 && Ath10k::htcReadLE16(data)==0x40;
     UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(_packetCommand.virtualAddress()),256,data,bytes,
         static_cast<UInt32>(_packetBuffer.dmaAddress()),static_cast<UInt32>(_packetFragments.dmaAddress()),
-        _htcHTTData.endpoint,_connection,mgmt);
+        _htcHTTData.endpoint,_connection,mgmt,protection);
     if(!length || !_packetBuffer.syncForDevice() || !_packetFragments.syncForDevice())return "packet-sync";
     _connection.lastTxEAPOL=!mgmt && bytes>=14 && data[12]==0x88 && data[13]==0x8e;
     _connection.txSinceMs=nowMs;
     const char *error=submitNetworkCE(4,_packetCommand,length,_connection.txNext);
-    if(!error)++_connection.httSequence;
+    if(!error){
+        ++_connection.httSequence;
+        if(_connection.lastTxEAPOL)_connection.eapolCompletion.begin(_connection.txId);
+    }
     return error;
 }
 const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
@@ -619,10 +666,11 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(snapshot.currentSrcRead==s.txNext && s.txComplete){
             if(!_packetCommand.syncFromDevice() || !_ceSrcRings[4].syncFromDevice())return "packet-completion-sync";
             s.txOwned=false;
+            if(s.lastTxEAPOL)s.eapolCompletion.retire(s.txId,s.txStatus);
             if(s.txStatus){
                 if(s.lastTxEAPOL)s.eapolTxFailed=true;
                 ++s.txErrors;
-                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum){
+                if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum && !s.lastTxPMF && !s.lastTxSAE){
                     const bool mlme=s.stage==LinkStage::Auth || s.stage==LinkStage::Assoc;
                     const bool reply=s.stage==LinkStage::Auth?s.authReply:s.assocReply;
                     if(!mlme || (!reply && s.managementAttempts>=3)){s.error="management-tx-failed";s.cancelRequested=true;}
@@ -639,9 +687,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(!s.txManagement && getOutputQueue())getOutputQueue()->service(1); // IOBasicOutputQueue::kServiceAsync, avoid recursive output
         }else if(nowMs-s.txSinceMs>=5000)return "packet-completion-timeout";
     }
-    if(s.txWakePending && !s.probe.active && !s.txPauseMask && !s.csa.blocked && !(s.radio.blocked || s.radio.powerBlocked) && !s.txOwned){
-        s.txWakePending=false;
-        if(getOutputQueue())getOutputQueue()->service(1);
+    if((s.txWakePending || _dataTXStalled) && Ath10k::dataTXAdmissionOpen(s) && getOutputQueue()){
+        s.txWakePending=false;_dataTXStalled=false;
+        getOutputQueue()->service(1);
     }
     if(s.stats.step){const char *error=serviceStatsMaintenance(nowMs);if(error)return error;if(s.stats.step)return nullptr;}
     if(s.radio.step){const char *error=serviceRadioMaintenance(nowMs);if(error)return error;if(s.radio.step || s.radio.blocked)return nullptr;}
@@ -669,10 +717,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             static_cast<UInt32>(s.stage),s.diagnostics.lastCommand,static_cast<unsigned long long>(nowMs-s.sinceMs),s.error);
         s.submitted=false;
     }
-    if(s.cancelRequested && s.stage==LinkStage::Connected && s.secure && s.submitted &&
+    // Once teardown starts, submitted belongs to its DELETE/STOP/barrier command.
+    // A repeated abort must not reinterpret that command as an INSTALL_KEY wait.
+    if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.stage==LinkStage::Connected && s.secure && s.submitted &&
        ((s.securityPhase<=2 && !s.securityAck) || (s.securityPhase==4 && !_connectionEcho.replyReceived)))
         return nowMs-s.sinceMs>=5000?"cancel-security-response-timeout":nullptr;
-    if(s.cancelRequested && s.csa.submitted &&
+    if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.csa.submitted &&
        ((s.csa.phase==Ath10k::ChannelSwitchPhase::Restart && !s.csa.restartReply) ||
         (s.csa.phase==Ath10k::ChannelSwitchPhase::Barrier && !_connectionEcho.replyReceived)))
         return nowMs-s.csa.sinceMs>=5000?"cancel-channel-switch-response-timeout":nullptr;
@@ -696,6 +746,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
     }
     if(s.disconnect!=Ath10k::DisconnectStage::None)return serviceDisconnect(nowMs);
     if(s.stage==LinkStage::Connected && s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle)return serviceChannelSwitch(nowMs);
+    if(s.stage==LinkStage::Connected && s.pmfTXPending && !s.maintenance.step && !s.stats.step)return nullptr;
     if(s.stage==LinkStage::Connected && s.probe.active && !s.cancelRequested){
         if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || _wmi.credits.outstanding || !_wmiScan.completed ||
            s.radio.appliedPS || s.radio.step || s.radio.blocked || s.radio.powerBlocked)return nullptr;
@@ -717,6 +768,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(s.spectrum.pending){
                 auto &r=s.spectrum;if(!r.sinceMs)r.sinceMs=nowMs?nowMs:1;
                 if(nowMs>=r.sinceMs && nowMs-r.sinceMs>=5000){r.pending=false;r.length=0;++r.dropped;s.txWakePending=true;return nullptr;}
+                // Native PMF service owns protection, key epochs and the shared
+                // management PN lease. Never submit this robust report raw.
+                if(s.pmfRequired && s.pairInstalled)return nullptr;
                 if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.eapolPause || s.txPauseMask ||
                    _wmi.credits.outstanding || !_wmiScan.completed || _wmiScan.txOwned || s.radio.appliedPS || s.radio.blocked || s.radio.powerBlocked)return nullptr;
                 Ath10k::htcWriteLE16(r.frame+22,UInt16((s.sequence&4095)<<4));
@@ -731,6 +785,11 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!s.securityPhase || s.securityPhase>=5 || (s.securityPhase==3 && !s.authorizeRequested))return nullptr;
         if(!s.submitted){
             if(s.txOwned || s.wmiOwned || s.dataPending || !_wmiScan.completed || _wmiScan.txOwned || _wmi.credits.outstanding)return nullptr;
+#ifdef ATH10K_NATIVE
+            // Gate the firmware peer authorization as well as the later host
+            // controlled-port publication. PMF keys must be ready for both.
+            if(s.securityPhase==3 && !nativePMFPortReady())return "native-pmf-peer-not-ready";
+#endif
             UInt32 bytes=Ath10k::buildSecurityWMI(static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,_htcWMIControl.endpoint,s);
             if(!bytes)return "security-command-build";
             if(s.securityPhase==4){_connectionEcho={};_connectionEcho.cookie=0xa7100057;_connectionEcho.submitted=true;}
@@ -748,7 +807,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         }
         if(s.securityPhase<=2 && !s.securityAck)return nullptr;
         if(s.securityPhase==4 && (!_connectionEcho.replyReceived || (s.rekeyKind && _rxSetup.pendingMPDUs)))return nullptr;
-        if(s.securityPhase==1){bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;}
+        if(s.securityPhase==1){
+#ifdef ATH10K_NATIVE
+            if(!nativePMFPairwiseAcknowledged(s.temporalKey))return "native-pmf-pairwise-epoch";
+#endif
+            bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;
+        }
         if(s.securityPhase==2){bcopy(s.groupKey,s.installedGroups[s.groupIndex],32);s.groupInstalled[s.groupIndex]=true;}
         if(s.securityPhase==1 && s.rekeySkipGroup)s.securityPhase=2;
         if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,16);AthSecurity::wipe(s.groupKey,32);}
@@ -763,6 +827,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
                 if(!s.rekeySkipGroup){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN)v=pn;bzero(s.groupSeqValid,sizeof(s.groupSeqValid));}
                 s.rekeyKind=0;s.rekeySkipGroup=false;
             }
+#ifdef ATH10K_NATIVE
+            if(!nativePMFPortReady())return "native-pmf-port-not-ready";
+#endif
             ++s.securityGeneration;s.portAuthorized=true;networkLink(true);
             IOLog("Ath10kMac: WPA2 port authorized generation=%u peer=%u peers=%u channel=%u ap-step=%u\n",
                 s.securityGeneration,s.peerId,s.peerCount,s.operatingChannel,s.maintenance.step);
@@ -774,13 +841,42 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!_wmiScan.completed || !_networkEnabled)return nullptr;
         if(_rxSetup.major!=3 || (_wmi.serviceBitmap[76/4]&(1u<<(76%4))))return "management-tx-abi-not-supported";
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
+        s.firmwareMFPSupport=payload().kSupportsMFP;s.pmfQoSTransported=_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;
         s.rfChains=static_cast<UInt8>(_wmiInit.requestedChainMask==1?1:2);
         s.regulatory=_regulatory;
-        const char *error=Ath10k::selectOpenBSS(s,_wmiBSS);if(error)return error;
+#ifdef ATH10K_NATIVE
+        const char *error=nativeSelectBSS(nowMs);
+#else
+        const char *error=Ath10k::selectOpenBSS(s,_wmiBSS);
+#endif
+        if(error)return error;
         s.stage=LinkStage::Start;s.sinceMs=nowMs;
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return "connection-command-allocation";
     }
-    if(nowMs-s.sinceMs>=5000 && !s.wmiOwned && !s.txOwned){
+#ifdef ATH10K_NATIVE
+    if(s.stage==LinkStage::Auth && s.secure && (s.securityAKM==2 || s.securityAKM==6)){
+        const char *error=nullptr;
+        if(!nativePreparePersonalAuth(nowMs,error)){
+            if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();}return nullptr;
+        }
+    }
+    if(s.stage==LinkStage::Auth && s.securityAKM==8){
+        const char *error=serviceNativeSAE(nowMs);
+        if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();return nullptr;}
+        if(!s.authReply || s.txOwned || !s.txComplete)return nullptr;
+    }
+#endif
+    bool comebackWaiting=false;UInt64 comebackDeadline=0;
+#ifdef ATH10K_NATIVE
+    if(_nativeJoinPending)comebackDeadline=_nativeJoinDeadline;
+#endif
+    if(const char *error=Ath10k::serviceAssociationComeback(s,nowMs,comebackWaiting,comebackDeadline)){
+        Ath10k::connectionFailure(s,error);s.cancelRequested=true;return nullptr;
+    }
+    if(comebackWaiting)return nullptr;
+    const bool stageExpired=s.stage==LinkStage::Assoc && s.associationDeadlineMs?
+        nowMs>=s.associationDeadlineMs:nowMs-s.sinceMs>=5000;
+    if(stageExpired && !s.wmiOwned && !s.txOwned){
         Ath10k::connectionFailure(s,"connection-stage-timeout");s.cancelRequested=true;
         IOLog("Ath10kMac: CONNECTION timeout stage=%u cmd=0x%x start-reply=%u peer-mapped=%u echo-reply=%u peers=%u\n",
             static_cast<UInt32>(s.stage),s.diagnostics.lastCommand,s.startReply,s.peerMapped,_connectionEcho.replyReceived,s.peerCount);
@@ -796,7 +892,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(s.txOwned || s.wmiOwned)return nullptr;
         if(management){
             if(s.txPauseMask)return nullptr;
-            UInt8 frame[256];UInt32 length=Ath10k::buildStationManagement(frame,sizeof(frame),s);
+            UInt8 frame[256];UInt32 length=0;
+#ifdef ATH10K_NATIVE
+            if(s.stage==LinkStage::Assoc && s.securityAKM==8)length=buildNativeSAEAssociation(frame,sizeof(frame));
+            else
+#endif
+            length=Ath10k::buildStationManagement(frame,sizeof(frame),s);
             if(!length)return "management-build";
             s.submitted=true;
             const char *error=submitNetworkPacket(frame,length,true,nowMs);if(error)return error;
@@ -834,7 +935,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
     if(s.stage==LinkStage::Assoc && !s.assocReply)return nullptr;
     if(s.stage==LinkStage::Barrier && !_connectionEcho.replyReceived)return nullptr;
     s.stage=static_cast<LinkStage>(static_cast<UInt32>(s.stage)+1);s.submitted=false;s.sinceMs=nowMs;
-    s.managementAttempts=0;s.managementRetryMs=0;
+    s.managementAttempts=0;s.managementRetryMs=0;s.associationComeback={};s.associationDeadlineMs=0;
     if(s.stage==LinkStage::Connected){
         s.lastBeaconMs=nowMs;s.radio.appliedPower=s.radio.vdevPower=s.txPowerHalfDbm;
         s.maintenance.blocked=true;s.portAuthorized=!s.secure;networkLink(!s.secure);
@@ -847,11 +948,16 @@ const char *Ath10kPCIDevice::serviceAPMaintenance(UInt64 nowMs)
 {
     auto &s=_connection;auto &m=s.maintenance;
     if(!m.step){
-        if(s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None){m.blocked=false;return nullptr;}
+        if(s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None){m.blocked=false;m.draining=false;return nullptr;}
         if(s.stats.step || s.submitted || s.radio.step || s.radio.blocked || s.radio.powerBlocked || s.rekeyKind || s.eapolPause ||
            s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle || s.probe.active || !s.portAuthorized)return nullptr;
         const auto desired=Ath10k::desiredAPConfig(s);
-        if(m.valid && Ath10k::sameAPConfig(desired,m.applied)){m.blocked=false;return nullptr;}
+        if(m.valid && Ath10k::sameAPConfig(desired,m.applied)){m.blocked=false;m.draining=false;return nullptr;}
+        // Finish scan cancellation before starting the independent DMA drain
+        // deadline. Scan service retains its own bounded firmware timeout.
+        if(!m.draining && !_wmiScan.completed){
+            m.blocked=true;_wmiScan.cancelRequested=true;return nullptr;
+        }
         if(!m.draining){m.draining=true;m.blocked=true;m.sinceMs=nowMs;}
         if(nowMs-m.sinceMs>=5000)return "ap-maintenance-drain-timeout";
         if(s.wmiOwned || s.txOwned || s.dataPending || !_wmiScan.completed || _wmiScan.txOwned || _wmi.credits.outstanding)return nullptr;
@@ -946,7 +1052,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
         if(s.submitted || s.stats.step || s.maintenance.step || s.csa.submitted || s.csa.phase>Ath10k::ChannelSwitchPhase::Drain ||
            s.disconnect>Ath10k::DisconnectStage::Drain){r.blocked=false;return nullptr;}
         bool desired=r.requestedPS && s.disconnect==Ath10k::DisconnectStage::None && s.ap.timPresent && s.portAuthorized && !s.cancelRequested && !s.rekeyKind && !s.eapolPause &&
-            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
+            !s.probe.active && !s.spectrum.pending && !s.spectrum.inFlight && !s.pmfTXPending && !r.txWakeRequested && nowMs>=r.txWakeHoldUntilMs && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle && _wmiScan.completed;
         UInt8 power=Ath10k::stationOperationalPowerLimit(s);
         if(!power){s.error="ap-power-constraint-forbids-tx";s.cancelRequested=true;r.powerBlocked=true;desired=false;
             if(!r.appliedPS){r.blocked=false;return nullptr;}
@@ -958,9 +1064,15 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
             if(!s.cancelRequested){r.powerBlocked=false;}return nullptr;}
         if(!r.blocked){r.blocked=true;r.sinceMs=nowMs;}
         if(nowMs-r.sinceMs>=5000)return "radio-maintenance-drain-timeout";
-        if(s.wmiOwned || s.txOwned || s.dataPending || _wmi.credits.outstanding || _wmiScan.txOwned)return nullptr;
+        // A wake-only PS disable on CE3 must not wait for firmware-owned
+        // CE4 payloads: those payloads may be waiting for this very wake.
+        // Power reduction/timing updates still require the normal drain.
+        const bool wakeOnly=s.dataPending && r.appliedPS && !desired && !r.powerBlocked && power>=r.appliedPower;
+        if(s.wmiOwned || s.txOwned || (s.dataPending && !wakeOnly) || _wmi.credits.outstanding || _wmiScan.txOwned)return nullptr;
+        r.wakeOnly=wakeOnly;
         r.targetPS=desired;r.targetPower=power;r.targetDTIM=s.ap.dtimPeriod;r.targetBeacon=s.ap.beaconInterval;
-        r.submitted=false;r.step=timing?(r.appliedPS?10:9):(desired&&!r.configuredPS?1:6);
+        r.submitted=false;r.step=wakeOnly?6:(timing?(r.appliedPS?10:9):(desired&&!r.configuredPS?1:6));
+        if(wakeOnly){r.targetPower=r.appliedPower;r.targetDTIM=r.appliedDTIM;r.targetBeacon=r.appliedBeacon;}
         ++r.generation;r.sinceMs=nowMs;
     }
     if(nowMs-r.sinceMs>=5000)return "radio-maintenance-timeout";
@@ -984,7 +1096,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
         if(!_connectionEcho.replyReceived || _connectionEcho.cookie!=Ath10k::radioCookie(s))return nullptr;
         r.appliedPS=r.targetPS;r.configuredPS=r.configuredPS||r.targetPS;r.appliedPower=r.targetPower;
         r.appliedDTIM=r.targetDTIM;r.appliedBeacon=r.targetBeacon;s.txPowerHalfDbm=r.targetPower;
-        r.step=0;r.submitted=false;++r.completed;s.lastBeaconMs=nowMs;
+        r.step=0;r.submitted=false;r.wakeOnly=false;++r.completed;s.lastBeaconMs=nowMs;
         r.powerBlocked=!Ath10k::stationOperationalPowerLimit(s) || Ath10k::stationOperationalPowerLimit(s)<r.appliedPower;
         const bool stale=Ath10k::stationOperationalPowerLimit(s)!=r.targetPower ||
             (s.ap.timPresent && (s.ap.dtimPeriod!=r.targetDTIM || s.ap.beaconInterval!=r.targetBeacon));
@@ -995,7 +1107,7 @@ const char *Ath10kPCIDevice::serviceRadioMaintenance(UInt64 nowMs)
     if(r.step==10){r.appliedPS=false;r.step=9;}
     else if(r.step==9)r.step=11;
     else if(r.step==11){r.configuredPS=false;r.step=r.targetPS?1:6;}
-    else if(r.step==6 && !Ath10k::stationOperationalPowerLimit(s))r.step=8;
+    else if(r.step==6 && (r.wakeOnly || !Ath10k::stationOperationalPowerLimit(s)))r.step=8;
     else ++r.step;
     r.submitted=false;r.sinceMs=nowMs;return nullptr;
 }
@@ -1088,7 +1200,7 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
     if(nowMs-s.sinceMs>=5000)return "disconnect-stage-timeout";
     if(s.disconnect==DisconnectStage::Drain){
         if(!_wmiScan.completed){_wmiScan.cancelRequested=true;return nullptr;}
-        if(s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
+        if(_wmiScan.txOwned || s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
         const bool started=s.vdevStarted || (s.vdevStartIssued && !s.startReply) ||
             (s.stage>=Ath10k::LinkStage::Peer && s.stage<Ath10k::LinkStage::Failed);
         s.disconnect=started?(s.vdevUp || (s.stage>=Ath10k::LinkStage::Barrier && s.stage<Ath10k::LinkStage::Failed)?DisconnectStage::Down:DisconnectStage::ClearPair):
@@ -1137,7 +1249,14 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
     if(s.disconnect==DisconnectStage::Stop && !s.stopReply)return nullptr;
     if(s.disconnect==DisconnectStage::Stop){s.vdevStartIssued=s.vdevStarted=s.vdevUp=false;}
     if(s.disconnect==DisconnectStage::Barrier){
-        if(!_connectionEcho.replyReceived || _rxSetup.pendingMPDUs)return nullptr;
+        // A matching ECHO orders firmware commands, not independent CE/HTT
+        // owners. Never erase a surviving owner while exposing Disabled to
+        // common join admission (including a prepared roam).
+        if(!_connectionEcho.replyReceived ||
+           _connectionEcho.cookie!=(0xa7590000u|((s.disconnectCount+1)&0xffff)) ||
+           _rxSetup.pendingMPDUs || !_wmiScan.completed || _wmiScan.txOwned ||
+           s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding ||
+           s.peerCount || s.pmfTXPending)return nullptr;
         Ath10k::resetDisconnected(s);_connectionEcho={};_controlOwner=nullptr;
         IOLog("Ath10kMac: DISCONNECT complete count=%u; runtime and RX ring retained, ready to reconnect\n",s.disconnectCount);
     }else{
@@ -1154,8 +1273,7 @@ const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UIn
 {
     auto &s=_connection;
     if(powerIOBlocked() || !data || bytes<14 || bytes>Ath10k::kEthernetFrameMax || !Ath10k::ethernetFrameAllowed(data,bytes) || !_wmiLive.active || _dmaQuarantine ||
-       s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized || s.disconnect!=Ath10k::DisconnectStage::None ||
-       s.txOwned || s.maintenance.blocked || s.spectrum.pending || s.spectrum.inFlight || s.probe.active || s.txPauseMask || s.csa.blocked || (s.radio.blocked || s.radio.powerBlocked) || s.dataPending>=Ath10k::kDataTxSlots)return "data-tx-not-ready";
+       !Ath10k::dataTXAdmissionOpen(s))return "data-tx-not-ready";
     const UInt8 tid=Ath10k::txPriorityTID(s,data,bytes);
     if(tid==255){++s.txAdmissionDropped;return nullptr;}
     UInt32 index=0;while(index<Ath10k::kDataTxSlots && s.dataTX[index].owned)++index;
@@ -1201,7 +1319,10 @@ const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UIn
 const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
 {
     serviceRXReorder(nowMs);
-    auto &s=_connection;if(!s.dataPending){s.dataStallArmed=s.dataPauseArmed=false;return nullptr;}
+    auto &s=_connection;if(!s.dataPending){
+        if(s.radio.txWakeRequested){s.radio.txWakeRequested=false;s.radio.txWakeHoldUntilMs=nowMs>~UInt64(0)-1000?~UInt64(0):nowMs+1000;}
+        s.dataStallArmed=s.dataPauseArmed=false;return nullptr;
+    }
     const UInt32 entries=Ath10k::kCEHostConfig[4].srcEntries,mask=entries-1;
     Ath10k::CESnapshot snap{};
     if(!Ath10k::readCESnapshot(_regs,4,snap) || !validateBMIPipeStructure(4,snap) ||
@@ -1214,6 +1335,7 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
     UInt32 oldest=Ath10k::kDataTxSlots;UInt64 oldestAge=0;
     auto report=[&](const char *reason,UInt32 index,UInt64 age){
         const auto &slot=s.dataTX[index];
+        s.dataWatchdogReason=reason;s.dataWatchdogSlot=index;s.dataWatchdogID=slot.id;s.dataWatchdogAgeMs=age;
         IOLog("Ath10kMac: DATA TX watchdog reason=%s slot=%u id=%u age-ms=%llu bytes=%u pending=%u ce-consumed=%u htt-complete=%u ce-read=%u ce-write=%u pause=0x%x scan-active=%u stage=%u disconnect=%u channel=%u\n",
             reason,index,slot.id,age,slot.bytes,s.dataPending,slot.ceConsumed,slot.complete,
             snap.currentSrcRead,snap.srcWriteIndex,s.txPauseMask,!_wmiScan.completed,
@@ -1245,11 +1367,15 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
         }else{
             const UInt64 age=nowMs>=slot.sinceMs?nowMs-slot.sinceMs:0;
             if(oldest==Ath10k::kDataTxSlots || age>oldestAge){oldest=i;oldestAge=age;}
-            // CE must consume the command even when radio transmission is
-            // paused. Teardown also keeps its original bounded drain policy.
-            if(age>=5000 && (!slot.ceConsumed || s.disconnect!=Ath10k::DisconnectStage::None ||
-                            s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized)){
-                ++s.dataTimeouts;report(!slot.ceConsumed?"ce-timeout":"drain-timeout",i,age);
+            // CE consumption is bounded by command age even during pauses.
+            // A firmware-retained payload may legitimately predate teardown:
+            // give Drain its own stage deadline instead of failing immediately
+            // when an old payload's controlled port closes.
+            const bool ceTimeout=!slot.ceConsumed && age>=5000;
+            const bool drainTimeout=s.disconnect!=Ath10k::DisconnectStage::None &&
+                nowMs>=s.sinceMs && nowMs-s.sinceMs>=5000;
+            if(ceTimeout || drainTimeout){
+                ++s.dataTimeouts;report(ceTimeout?"ce-timeout":"drain-timeout",i,age);
                 return "data-tx-completion-timeout";
             }
             if(age>=5000 && !slot.waitReported){
@@ -1259,7 +1385,10 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
     }
     s.dataRead=snap.currentSrcRead;
     if(s.dataPending && oldest==Ath10k::kDataTxSlots)return "data-tx-slot-accounting";
-    if(!s.dataPending){s.dataStallArmed=s.dataPauseArmed=false;}
+    if(!s.dataPending){
+        if(s.radio.txWakeRequested){s.radio.txWakeRequested=false;s.radio.txWakeHoldUntilMs=nowMs>~UInt64(0)-1000?~UInt64(0):nowMs+1000;}
+        s.dataStallArmed=s.dataPauseArmed=false;
+    }
     else if(blocked){
         // STOP/Wake and scan can legitimately defer HTT replies. Do not charge
         // that interval to a full-queue stall; a stuck pause remains bounded.
@@ -1277,14 +1406,19 @@ const char *Ath10kPCIDevice::serviceDataTX(UInt64 nowMs)
         if(s.dataPending<Ath10k::kDataTxSlots)s.dataStallArmed=false;
         else{
             if(progress || !s.dataStallArmed){s.dataStallArmed=true;s.dataStallSinceMs=nowMs;}
+            if(s.radio.appliedPS && !s.radio.txWakeRequested && s.stage==Ath10k::LinkStage::Connected &&
+               s.portAuthorized && s.disconnect==Ath10k::DisconnectStage::None &&
+               nowMs>=s.dataStallSinceMs && nowMs-s.dataStallSinceMs>=1000){
+                s.radio.txWakeRequested=true;++s.radio.txWakeRequests;
+            }
             if(nowMs>=s.dataStallSinceMs && nowMs-s.dataStallSinceMs>=5000){
                 ++s.dataTimeouts;report("queue-stalled",oldest,oldestAge);
                 return "data-tx-completion-timeout";
             }
         }
     }
-    if(wake && _dataTXStalled && !s.probe.active && !s.txPauseMask && !s.csa.blocked && !(s.radio.blocked || s.radio.powerBlocked) && !s.txOwned &&
-       s.dataPending<=Ath10k::kDataTxSlots*3/4 && s.disconnect==Ath10k::DisconnectStage::None && getOutputQueue()){
+    if(wake && _dataTXStalled && Ath10k::dataTXAdmissionOpen(s) &&
+       s.dataPending<=Ath10k::kDataTxSlots*3/4 && getOutputQueue()){
         _dataTXStalled=false;++_perf.txWakeups;getOutputQueue()->service(1);
     }
     return nullptr;

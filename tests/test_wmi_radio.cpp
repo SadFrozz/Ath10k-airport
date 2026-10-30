@@ -7,7 +7,7 @@ public:
     bool onCE2=false;
     RadioDriver() {
         for(auto &radio:_wmiRadio)radio={};
-        for(unsigned i=2;i<5;++i){_wmiRadio[i].completed=true;_wmiRadio[i].txConsumed=true;}
+        for(unsigned i=2;i<Ath10k::kWMIRadioStepCount;++i){_wmiRadio[i].completed=true;_wmiRadio[i].txConsumed=true;}
         auto previous=_regs.tx3Consume;
         _regs.tx3Consume=[this,previous](){
             auto *p=static_cast<UInt8 *>(_wmiTxBuffer.virtualAddress());
@@ -20,7 +20,7 @@ public:
             assert(Ath10k::htcReadLE16(p+14)==82 && Ath10k::wmiReadLE32(p+16)==0);
             assert(Ath10k::wmiReadLE32(p+20)==param && Ath10k::wmiReadLE32(p+24)==3);
             assert(_wmi.credits.outstanding==1 && _wmiRadio[param-1].txOwned);
-            _wmiRadio[4].txNext=_wmiRadio[param-1].txNext;
+            _wmiRadio[Ath10k::kWMIPMFQoSIndex].txNext=_wmiRadio[param-1].txNext;
             if(hold!=param) deliver(onCE2?2:1,{UInt8(onCE2?2:0),2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
         };
     }
@@ -67,6 +67,11 @@ int main(){
     assert(!Ath10k::buildWMIRadio(f,28,255,1,3));
     assert(Ath10k::buildWMIRadio(f,28,2,3,3));
     assert(!Ath10k::buildWMIRadio(nullptr,28,2,1,3));
+    assert(Ath10k::buildWMIRadio(f,28,2,34,1));f[5]=11;
+    const UInt8 qos[28]={2,1,20,0,0,11,0,0,3,64,0,0,12,0,82,0,0,0,0,0,34,0,0,0,1,0,0,0};
+    assert(!memcmp(f,qos,28) && f[28]==0xaa);
+    for(unsigned value:{0u,2u,3u,7u,20u,0xffffffffu})assert(!Ath10k::buildWMIRadio(f,28,2,34,value) && !memcmp(f,qos,28));
+    assert(!Ath10k::buildWMIRadio(f,28,2,33,1));assert(!Ath10k::buildWMIRadio(f,27,2,34,1));
 }
 
 #endif

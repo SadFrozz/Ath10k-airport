@@ -102,11 +102,11 @@ jobs:
         run: |
           set -euo pipefail
           make clean
-          make -j"$(sysctl -n hw.logicalcpu)" kext
-          plutil -lint build/out/Ath10kMac.kext/Contents/Info.plist
-          xcrun lipo build/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
-          test "$(xcrun lipo build/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
-          xcrun dwarfdump --uuid build/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac
+          make NATIVE=1 DIAGNOSTIC_STAGE=0 -j"$(sysctl -n hw.logicalcpu)" kext
+          plutil -lint build/native/out/Ath10kMac.kext/Contents/Info.plist
+          xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
+          test "$(xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
+          xcrun dwarfdump --uuid build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac
 
       - name: Package kext, notices, and checksum
         env:
@@ -116,7 +116,7 @@ jobs:
           stage="build/release"
           archive="Ath10kMac-${PACKAGE_VERSION}-x86_64.zip"
           mkdir -p "$stage/Licenses" build/dist
-          ditto build/out/Ath10kMac.kext "$stage/Ath10kMac.kext"
+          ditto build/native/out/Ath10kMac.kext "$stage/Ath10kMac.kext"
           chmod 755 "$stage/Ath10kMac.kext/Contents/MacOS/Ath10kMac"
 
           if [[ -f README.md ]]; then
@@ -128,6 +128,7 @@ jobs:
             fi
           done
           cp MacKernelSDK/LICENSE.txt "$stage/Licenses/MacKernelSDK.txt"
+          cp vendor/itlwm/LICENSE "$stage/Licenses/itlwm.txt"
           cp firmware/LICENSE.QualcommAtheros_ath10k "$stage/Licenses/"
           cp firmware/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA6174-firmware-notice.txt"
           cp firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA9377-firmware-notice.txt"

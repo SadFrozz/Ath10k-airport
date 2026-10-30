@@ -111,6 +111,24 @@ int main(){
     {SwitchDriver d;deliverBeacon(d,11);d._wmi.credits.outstanding=1;
      assert(!d.serviceChannelSwitch(2000) && d._connection.csa.phase==P::Drain && !d.switches);
      d._wmi.credits.outstanding=0;assert(!d.serviceChannelSwitch(2010) && d.switches==1);d.releaseWMIRuntime();}
+    {SwitchDriver d;
+     // CSA must wait for scan completion AND release of its DMA ownership.
+     // Model these acknowledgements independently; no firmware reply is faked
+     // by serviceChannelSwitch itself.
+     d._wmiScan.completed=false;d._wmiScan.txOwned=true;
+     deliverBeacon(d,11);
+     assert(!d.serviceChannelSwitch(2000));
+     assert(d._wmiScan.cancelRequested && !d._wmiScan.completed);
+     assert(d._connection.csa.phase==P::Drain && !d.switches);
+     d._wmiScan.completed=true;
+     assert(!d.serviceChannelSwitch(2010) && !d.switches);
+     d._wmiScan.txOwned=false;
+     assert(!d.serviceChannelSwitch(2020) && d.switches==1);
+     for(unsigned t=2030;t<2250;t+=10)d.tick(t);
+     assert(d._connection.csa.phase==P::Confirm && d.networkUp);
+     deliverBeacon(d,11,0,0,false,11);d.tick(2260);
+     assert(d._connection.csa.phase==P::Idle && d._connection.csa.completed==1);
+     d.releaseWMIRuntime();}
     {SwitchDriver d;d.holdReply=true;deliverBeacon(d,11);for(unsigned t=2000;t<2100;t+=10)d.tick(t);
      assert(d._connection.csa.phase==P::Restart && !d._connection.csa.restartReply);
      d.tick(7200);assert(d._connection.cancelRequested && d._connection.csa.blocked && d._connection.operatingChannel==6);d.releaseWMIRuntime();}

@@ -67,15 +67,34 @@ private:
     IOUserClient *_controlOwner=nullptr;
     bool _reprobeRequested=false,_systemSuspended=false;
     bool requestDeviceRestart();
+    void drainControlWorkers();
     Ath10k::PowerState _power{};
-    // Atomic: 0 active, 1 suspending/suspended, 2 awake but clean restart required.
+    // Atomic low phase bits plus pending-suspend count; see Ath10kPower.hpp.
     volatile UInt32 _powerIOBlock=0;
     IONotifier *_powerNotifier=nullptr;
+    struct PowerMessage {UInt32 message=0;void *powerRef=nullptr;};
+    static constexpr UInt32 kPowerMessageCapacity=8;
+    PowerMessage _powerMessages[kPowerMessageCapacity]{};
+    UInt32 _powerMessageHead=0,_powerMessageCount=0;
+    IOLock *_powerMessageLock=nullptr;
+    thread_call_t _powerMessageCall=nullptr;
+    bool _powerMessageRunning=false,_powerMessageClosing=false;
+    bool queuePowerNotification(UInt32,void *);
+    static void powerMessageCall(thread_call_param_t,thread_call_param_t);
+    // Serializes deferred firmware/attach work with priority sleep quiescence.
+    // Never held across controller PM registration or notifier removal.
+    IOLock *_probePowerLock=nullptr;
     bool preparePowerNotifications();
     void releasePowerNotifications();
     bool powerIOBlocked();
     bool powerRestartAllowed();
-    void requestPowerEvent(Ath10k::PowerEvent);
+    void beginPowerSuspend();
+    void finishPowerSuspend();
+    void blockPowerIOForTermination();
+    bool controllerPowerClosed();
+    void drainControllerPowerCalls();
+    volatile UInt32 _controllerPowerClosed=0;
+    void requestPowerEvent(Ath10k::PowerEvent,bool suspendAlreadyQueued=false);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
     static IOReturn powerNotification(void *,void *,UInt32,IOService *,void *,vm_size_t);
@@ -129,7 +148,7 @@ private:
     struct DataBuffers {Ath10kDMABuffer payload{},command{},fragments{};};
     DataBuffers _dataBuffers[Ath10k::kDataTxSlots]{};
     const char *submitNetworkCE(UInt32,Ath10kDMABuffer &,UInt32,UInt32 &);
-    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64);
+    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64,AthSecurity::ManagementTX=AthSecurity::ManagementTX::Plain);
     IOWorkLoop *_networkWorkLoop=nullptr;
     IONetworkInterface *_networkInterface=nullptr;
     bool _networkEnabled=false,_networkLinkUp=false;
@@ -173,7 +192,7 @@ private:
     const char *serviceWMIScanChannels(UInt64 nowMs);
     Ath10k::WMIScanChannelsState _wmiScanChannels{};
     Ath10k::RegulatoryPolicy _regulatory{};
-    Ath10k::WMIScanChannelsState _wmiRadio[5]{};
+    Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
     const char *serviceWMIRadio(UInt64 nowMs, UInt32 index);
     const char *serviceRxSetup(UInt64 nowMs);
     const char *sampleHTTRxPool();
@@ -230,11 +249,22 @@ private:
 
     bool probeTarget();
     static void deferredProbeCall(thread_call_param_t, thread_call_param_t);
+    bool preparePoweredPCI();
+    void queueDeferredProbe();
     void runDeferredProbe();
     void cancelDeferredProbe();
+    void queueWakeRecovery();
+    void cancelWakeRecovery();
+    static void wakeRecoveryCall(thread_call_param_t,thread_call_param_t);
+    static IOReturn prepareWakeRecovery(OSObject *,void *,void *,void *,void *);
+    thread_call_t _wakeRecoveryCall=nullptr;
+    bool _wakeRecoveryPending=false;
+    UInt64 _wakeRecoveryGeneration=0;
     thread_call_t _deferredProbeCall=nullptr;
     IOLock *_deferredProbeLock=nullptr;
-    bool _deferredProbePending=false;
+    bool _deferredProbePending=false,_deferredProbeStarted=false,_deferredProbeStopping=false;
+    bool _pciConfigured=false;
+    void restoreOwnedPCICommand();
     bool wakeTarget(bool &assertedWake);
     void releaseTargetWake(bool assertedWake);
     bool coldResetTarget();

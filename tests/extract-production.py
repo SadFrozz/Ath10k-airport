@@ -34,7 +34,7 @@ start = s.index('bool Ath10kPCIDevice::quiesceTargetAfterBMI(')
 end = s.index('bool Ath10kPCIDevice::warmResetTarget(', start)
 Path(sys.argv[1]).with_name('quiesce_method.inc').write_text(s[start:end])
 start = s.index('bool Ath10kPCIDevice::stopDMAForRelease(')
-end = s.index('void Ath10kPCIDevice::stop(', start)
+end = s.index('void Ath10kPCIDevice::drainControlWorkers(', start)
 Path(sys.argv[1]).with_name('release_method.inc').write_text(s[start:end])
 start = s.index('bool Ath10kPCIDevice::htcRepostRuntimeReceive(')
 end = s.index('bool Ath10kPCIDevice::preparePCIeBringupParity(', start)
@@ -45,9 +45,12 @@ Path(sys.argv[1]).with_name('htc_methods.inc').write_text(s[start:end] + network
 start = s.index('bool Ath10kPCIDevice::prepareWMIRuntime(')
 end = s.index('bool Ath10kPCIDevice::htcRepostRuntimeReceive(', start)
 power = Path('src/kext/Ath10kPower.cpp').read_text()
-power_methods = power[power.index('bool Ath10kPCIDevice::powerIOBlocked('):power.index('IOReturn Ath10kPCIDevice::powerNotification(')]
+# Runtime models execute atomic admission and power actions; controller PM drain
+# is exercised separately by test_power, not included accidentally by adjacency.
+power_methods = power[power.index('bool Ath10kPCIDevice::powerIOBlocked('):power.index('void Ath10kPCIDevice::drainControllerPowerCalls(')]
+power_methods += power[power.index('void Ath10kPCIDevice::publishPowerState('):power.index('IOReturn Ath10kPCIDevice::powerNotification(')]
 Path(sys.argv[1]).with_name('wmi_runtime_methods.inc').write_text(power_methods + s[start:end])
-Path(sys.argv[1]).with_name('power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
+Path(sys.argv[1]).with_name('power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::powerIOBlocked('):])
 dma = Path('src/kext/Ath10kDMA.hpp').read_text()
 Path(sys.argv[1]).with_name('dma_methods.inc').write_text(dma[dma.index('class Ath10kDMABuffer'):])
 runtime = Path('src/kext/Ath10kRuntime.cpp').read_text()

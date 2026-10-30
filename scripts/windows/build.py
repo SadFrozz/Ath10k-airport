@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a complete Sequoia diagnostic kext on Windows with Zig and Apple ld64."""
+"""Build a complete Sequoia native kext on Windows with Zig and Apple ld64."""
 import argparse
 import concurrent.futures
 import hashlib
@@ -16,6 +16,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     for tool in ['zig', 'ld64', 'cygwin-bin', 'codesign']:
         p.add_argument('--' + tool, type=Path, required=True)
+    p.add_argument('--diagnostic-stage', type=int, choices=range(4), default=0)
     p.add_argument('--kernel-collection', type=Path)
     p.add_argument('--output', type=Path, default=ROOT / 'build/windows-native')
     args = p.parse_args()
@@ -56,7 +57,7 @@ def main():
                'HT_VHT': 1, 'DATA_TX_SLOTS': 64}
     flags += [f'-DATH10K_{k}={v}' for k, v in defines.items()]
     sources = ['native/Ath10kNative.cpp', 'Ath10kUserClient.cpp', 'Ath10kNetwork.cpp',
-               'Ath10kRuntime.cpp', 'Ath10kPower.cpp', 'Ath10kPCIDevice.cpp', 'kmod_info.c']
+               'Ath10kRuntime.cpp', 'Ath10kPower.cpp', 'Ath10kPowerNotifications.cpp', 'Ath10kRecovery.cpp', 'Ath10kPCIDevice.cpp', 'kmod_info.c']
 
     def compile_source(name):
         source = ROOT / 'src/kext' / name
@@ -70,7 +71,7 @@ def main():
     binary = bundle / 'Contents/MacOS/Ath10kMac'
     binary.parent.mkdir(parents=True)
     run('prepare-info', [sys.executable, ROOT / 'scripts/prepare-kext-info.py', '1',
-                         bundle / 'Contents/Info.plist', '--diagnostic-stage', '3'])
+                         bundle / 'Contents/Info.plist', '--diagnostic-stage', str(args.diagnostic_stage)])
 
     def cyg(path):
         path = Path(path).resolve()

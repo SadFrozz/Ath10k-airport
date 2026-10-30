@@ -98,7 +98,12 @@ static void runtimeCases(){
                     receive(d,capturedClear());assert(!s.peerCount && d._wmiLive.active);
                     if(hold==1){pending=s.disconnect;return;}
                 }else receive(d,sec(71,0x80));
-            }else if(s.disconnect==D::DeletePeer){++deleteCommands;assert(!s.peerCount && s.peerCreateIssued);}
+            }else if(s.disconnect==D::DeletePeer){
+                ++deleteCommands;assert(!s.peerCount && s.peerCreateIssued);
+                // A late abort arrives after software key retirement, while
+                // submitted now belongs to DELETE_PEER, not INSTALL_KEY.
+                s.cancelRequested=true;s.securityPhase=0;s.securityAck=false;
+            }
             else if(s.disconnect==D::Stop){
                 if(hold==2){pending=D::Stop;credit();}else d.deliver(2,stopped(true));return;
             }else if(s.disconnect==D::Barrier){
@@ -132,7 +137,38 @@ static void runtimeCases(){
         assert(d.networkUp && d._wmiLive.active && s.stage==LinkStage::Connected);d.releaseWMIRuntime();
     }
 }
+static void retirementOwners(){
+    // Invoke the production retirement routine with each independent owner
+    // held after ECHO. It must retain keys/state until that owner retires.
+    for(unsigned owner=0;owner<9;++owner){
+        ConnectionDriver d;auto &s=d._connection;
+        s.stage=LinkStage::Connected;s.disconnect=D::Barrier;s.submitted=true;
+        s.sinceMs=100;s.temporalKey[0]=0x5a;
+        d._wmiScan.completed=true;d._connectionEcho.replyReceived=true;
+        d._connectionEcho.cookie=0xa7590001;
+        if(owner==0)d._connectionEcho.cookie^=1;
+        if(owner==1)d._rxSetup.pendingMPDUs=1;
+        if(owner==2)d._wmiScan.completed=false;
+        if(owner==3)d._wmiScan.txOwned=true;
+        if(owner==4)s.txOwned=true;
+        if(owner==5)s.dataPending=1;
+        if(owner==6)d._wmi.credits.outstanding=1;
+        if(owner==7)s.peerCount=1;
+        if(owner==8)s.pmfTXPending=true;
+        assert(!d.serviceDisconnect(110));
+        assert(s.disconnect==D::Barrier && s.temporalKey[0]==0x5a && !s.disconnectCount);
+        d._connectionEcho.cookie=0xa7590001;d._rxSetup.pendingMPDUs=0;
+        d._wmiScan.completed=true;d._wmiScan.txOwned=false;s.txOwned=false;
+        s.dataPending=0;d._wmi.credits.outstanding=0;s.peerCount=0;s.pmfTXPending=false;
+        assert(!d.serviceDisconnect(120));
+        assert(s.stage==LinkStage::Disabled && s.disconnect==D::None && s.disconnectCount==1 && !s.temporalKey[0]);
+    }
+    ConnectionDriver d;auto &s=d._connection;
+    s.stage=LinkStage::Connected;s.disconnect=D::Drain;s.sinceMs=100;
+    d._wmiScan.completed=true;d._wmiScan.txOwned=true;
+    assert(!d.serviceDisconnect(110) && s.disconnect==D::Drain && !s.submitted);
+}
 int main(){
-    parserCases();runtimeCases();
+    parserCases();runtimeCases();retirementOwners();
     puts("SECURITY_IND teardown regression passed: captured 36 bytes, early unmaps, partial/reused peers, NONE/install isolation, credit/STOP/ECHO gates and reconnect without runtime restart.");
 }

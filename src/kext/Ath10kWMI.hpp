@@ -308,11 +308,15 @@ struct WMIScanChannelsState {
     UInt64 startedMs=0, elapsedMs=0;
     const char *status="not-run";
 };
-// TLV PDEV_SET_PARAM: pdev_id reserved zero, param 1=TX / 2=RX.
+// Linux v6.12 TLV pdev map: PMF_QOS=34. This is independent of the
+// firmware-file MFP_SUPPORT feature, which gates the peer association flag.
+static constexpr UInt32 kWMIPMFQoSParam=34,kWMIPMFQoSIndex=5,kWMIRadioStepCount=6;
+static_assert(kWMIPMFQoSIndex+1==kWMIRadioStepCount,"PMF QoS precedes scan-channel setup");
+// TLV PDEV_SET_PARAM: pdev_id reserved zero, 1=TX / 2=RX / 3,4=power.
 static constexpr UInt32 kWMIRadioFrameBytes=28;
 inline bool buildWMIRadio(UInt8 *f, UInt32 capacity, UInt8 endpoint, UInt32 param, UInt32 mask) {
     if (!f || capacity<kWMIRadioFrameBytes || !endpoint || endpoint==255 ||
-        (param<1 || param>4) || ((param<=2)?(mask!=1 && mask!=3 && mask!=7):(!mask || mask>20))) return false;
+        (param==kWMIPMFQoSParam?mask!=1:((param<1 || param>4) || ((param<=2)?(mask!=1 && mask!=3 && mask!=7):(!mask || mask>20))))) return false;
     htcZero(f,kWMIRadioFrameBytes);
     f[0]=endpoint;f[1]=1;f[5]=static_cast<UInt8>(param+5);
     htcWriteLE16(f+2,20);htcWriteLE32(f+8,0x4003);
@@ -330,7 +334,7 @@ inline bool buildWMIRegdomain(UInt8 *f,UInt32 capacity,UInt8 endpoint,const Regu
     htcWriteLE32(f+32,p.ctl2);htcWriteLE32(f+36,p.ctl5);return true;
 }
 static constexpr UInt32 kWMIScanChannelsFrameBytes=24+28*kWMIScanChannelCount;
-inline bool buildWMIScanChannels(UInt8 *f, UInt32 capacity, UInt8 endpoint,const RegulatoryPolicy *policy=nullptr) {
+inline bool buildWMIScanChannels(UInt8 *f, UInt32 capacity, UInt8 endpoint,const RegulatoryPolicy *policy=nullptr,bool allowActive=false) {
     const UInt32 count=regulatoryScanCount(policy),frameBytes=24+28*count;
     if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255) return false;
     htcZero(f,frameBytes);
@@ -345,7 +349,10 @@ inline bool buildWMIScanChannels(UInt8 *f, UInt32 capacity, UInt8 endpoint,const
         UInt8 *ch=f+24+28*slot++;
         htcWriteLE16(ch,24);htcWriteLE16(ch+2,80);
         htcWriteLE32(ch+4,wmiScanFrequency(i));htcWriteLE32(ch+8,wmiScanFrequency(i));
-        htcWriteLE32(ch+16,wmiScanFrequency(i)<3000?0x81:(channelNeedsDFS(wmiScanChannel(i))?0x480:0x80)); // PASSIVE | MODE_11G(1) / MODE_11A(0).
+        const UInt32 channel=wmiScanChannel(i);
+        const bool active=allowActive && policy && regulatoryActiveScanChannel(*policy,channel);
+        const UInt32 flags=(channel<=14?1u:0u)|(channelNeedsDFS(channel)?0x400u:0u)|(active?0u:0x80u);
+        htcWriteLE32(ch+16,flags); // Per-channel passive/DFS policy, independent of scan command.
         // wmi_channel reginfo0: min/max/reg/class; reginfo1: antenna/max_tx/reserved.
         writeChannelPower(ch+20,ch+24,policy?regulatoryPower(*policy,wmiScanChannel(i),wmiScanChannel(i),20,false):channelPowerHalfDbm(wmiScanChannel(i)));
         // min, antenna gain, regulatory class and reserved bytes remain zero.
@@ -382,27 +389,41 @@ inline bool buildWMIStopScan(UInt8 *f,UInt32 capacity,UInt8 endpoint,UInt32 id,U
     // wmi_stop_scan_cmd order is requestor, scan_id, req_type, vdev_id.
     return true;
 }
-inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr) {
-    const UInt32 count=regulatoryScanCount(policy),frameBytes=140+4*count;
-    if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255) return false;
+struct WMIScanSSID {
+    UInt32 length=0;
+    UInt8 bytes[32]{};
+};
+static constexpr UInt32 kWMIScanMaxSSIDs=16;
+inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs,UInt64 requested=~UInt64(0),const WMIScanSSID *ssids=nullptr,UInt32 ssidCount=0,bool active=false) {
+    if(ssidCount>kWMIScanMaxSSIDs || (ssidCount && !ssids))return false;
+    for(UInt32 i=0;i<ssidCount;++i)if(ssids[i].length>sizeof(ssids[i].bytes))return false;
+    const UInt32 count=regulatoryScanCount(policy,requested),ssidBytes=36*ssidCount,frameBytes=140+4*count+ssidBytes;
+    if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255 || passiveDwellMs<1 || passiveDwellMs>kWMIScanDwellMs) return false;
     htcZero(f,frameBytes);
     f[0]=endpoint;f[1]=1;f[5]=9;
     htcWriteLE16(f+2,frameBytes-8);htcWriteLE32(f+8,0x3001);
     htcWriteLE16(f+12,100);htcWriteLE16(f+14,77);
     // Fixed common: IDs, VDEV, priority, event mask, dwell/rest/probe times,
     // bounded firmware scan time, PASSIVE | CHAN_STAT_EVENT plus TLV filter inversion.
-    const UInt32 common[15]={id,kWMIScanRequestId,0,1,0x1ff,50,connected?100u:kWMIScanDwellMs,connected?150u:50u,500,0,0,0,kWMIScanFirmwareMs,5,0x31};
+    const UInt32 common[15]={id,kWMIScanRequestId,0,1,0x1ff,50,connected?(passiveDwellMs<100?passiveDwellMs:100u):passiveDwellMs,connected?150u:50u,500,0,0,0,kWMIScanFirmwareMs,5,active?0x30u:0x31u};
     for(UInt32 i=0;i<15;++i)htcWriteLE32(f+16+4*i,common[i]);
     htcWriteLE32(f+80,count); // num_channels; burst_duration at 76 remains zero.
-    htcWriteLE32(f+84,1); // num_bssids; num_ssids, IE length, probes and MAC/mask zero.
+    htcWriteLE32(f+84,1); // num_bssids; broadcast filter
+    htcWriteLE32(f+88,ssidCount);
+    htcWriteLE32(f+96,active?3u:0u); // num_probes; channel table enforces passive/DFS.
     htcWriteLE16(f+116,4*count);htcWriteLE16(f+118,16);
     UInt32 slot=0;for(UInt32 i=0;i<kWMIScanChannelCount;++i)
-        if(!policy || regulatoryScanChannel(*policy,wmiScanChannel(i)))htcWriteLE32(f+120+4*slot++,wmiScanFrequency(i));
+        if((requested & (UInt64(1)<<i)) && (!policy || regulatoryScanChannel(*policy,wmiScanChannel(i))))htcWriteLE32(f+120+4*slot++,wmiScanFrequency(i));
     const UInt32 tail=120+4*count;
-    htcWriteLE16(f+tail+2,19); // empty SSID ARRAY_FIXED_STRUCT
-    htcWriteLE16(f+tail+4,8);htcWriteLE16(f+tail+6,19);
-    for(UInt32 i=0;i<6;++i)f[tail+8+i]=255; // broadcast BSSID
-    htcWriteLE16(f+tail+18,17); // empty IE ARRAY_BYTE
+    htcWriteLE16(f+tail,ssidBytes);htcWriteLE16(f+tail+2,19);
+    for(UInt32 i=0;i<ssidCount;++i){
+        UInt8 *entry=f+tail+4+36*i;htcWriteLE32(entry,ssids[i].length);
+        for(UInt32 j=0;j<ssids[i].length;++j)entry[4+j]=ssids[i].bytes[j];
+    }
+    const UInt32 bssidTail=tail+4+ssidBytes;
+    htcWriteLE16(f+bssidTail,8);htcWriteLE16(f+bssidTail+2,19);
+    for(UInt32 i=0;i<6;++i)f[bssidTail+4+i]=255;
+    htcWriteLE16(f+bssidTail+14,17); // empty IE ARRAY_BYTE
     return true;
 }
 
@@ -415,10 +436,16 @@ struct WMIRuntimeState {
     const char *status = "not-run";
 };
 
+// Synchronous post-validation consumer; true means never pass to raw MLME.
+// The consumer must copy bytes before returning if it defers processing.
+struct WMIManagementConsumer {
+    void *context=nullptr;
+    bool (*receive)(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32)=nullptr;
+};
 // Accept READY on the negotiated WMI endpoint and trailer-only reports on
 // endpoint 0 or WMI. Credits are committed only after the entire frame validates.
 inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endpoint,
-                                      HTCCreditState &credits, WMIInitState &out, WMIEchoState *echo=nullptr, WMIScanState *scan=nullptr, WMIBSSCache *bss=nullptr, bool allowVdevDelete=false, ConnectionState *connection=nullptr) {
+                                      HTCCreditState &credits, WMIInitState &out, WMIEchoState *echo=nullptr, WMIScanState *scan=nullptr, WMIBSSCache *bss=nullptr, bool allowVdevDelete=false, ConnectionState *connection=nullptr,const WMIManagementConsumer *managementConsumer=nullptr) {
     if (!f || bytes < 8 || bytes > kWMIRxBytes) return "wmi-init-rx-size";
     if (f[0] != 0 && f[0] != endpoint) return "wmi-init-rx-endpoint";
     if (f[1] & ~(kHTCTrailerPresent | kHTCMoreBlock)) return "wmi-init-rx-flags";
@@ -480,7 +507,6 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
         if(eventId==0x5006 && !allowVdevDelete)return "vdev-delete-unsolicited";
         scanEvent=eventId==0x3001;mgmt=eventId==0x7001;channelInfo=eventId==0x4002;
         if ((scanEvent || mgmt || channelInfo) && (!scan || (!scan->submitted && !scan->generation))) return "scan-unsolicited-event";
-        if (scanEvent && scan->terminal) return "scan-event-after-terminal";
         if (echoEvent && !rollbackEcho && (!echo || !echo->submitted || echo->replyReceived || echo->completed))
             return "wmi-echo-unexpected-reply";
         informational=eventId!=2 && !diagnostic && !package && !supported && !echoEvent && !scanEvent && !mgmt && !channelInfo && !deleteEvent && !startEvent && !stopEvent && !statsEvent && !peerDeleteEvent && !peerStateEvent && !pauseEvent && !roamEvent && !kickout && !temperatureEvent && !rfKillEvent;
@@ -602,6 +628,9 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
                        wmiReadLE32(f+p+20)!=0 || (wmiReadLE32(f+p+16)&0xf000)!=0xa000)return "scan-event-id-mismatch";
                     scanStale=true;
                 }
+                // Classify the generation before applying current-scan state.
+                // A delayed old completion cannot invalidate a finished newer scan.
+                if(!scanStale && scan->terminal)return "scan-event-after-terminal";
                 if(!scanStale && !scan->submitted)return "scan-unsolicited-event";
                 if (!scanType || (scanType&(scanType-1)) || scanType>256)
                     return "scan-event-value";
@@ -739,8 +768,10 @@ inline const char *parseWMIInitResponse(const UInt8 *f, UInt32 bytes, UInt8 endp
             connectionFailure(*connection,"vdev-start-rejected");
             if(!rollbackStart)connection->stage=LinkStage::Failed;}}
     if(mgmt && connection){
-        receiveStationManagement(*connection,mgmtData,mgmtLen,mgmtStatus,mgmtChannel);
-        if(mgmtLen>=24 && sameMAC(mgmtData+16,connection->bssid) && mgmtSnr<=95)
+        const bool consumed=managementConsumer && managementConsumer->receive &&
+            managementConsumer->receive(managementConsumer->context,mgmtData,mgmtLen,mgmtStatus,mgmtChannel,mgmtSnr);
+        if(!consumed)receiveStationManagement(*connection,mgmtData,mgmtLen,mgmtStatus,mgmtChannel);
+        if(!consumed && mgmtLen>=24 && sameMAC(mgmtData+16,connection->bssid) && mgmtSnr<=95)
             connection->signalDbm=static_cast<int32_t>(mgmtSnr)-95;
     }
     if(scanEvent || mgmt || channelInfo)*scan=scanNext;

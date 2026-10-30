@@ -19,6 +19,43 @@ public:
 };
 
 int main(){
+    { WatchdogDriver d;d.fill();auto &s=d._connection;
+      s.radio.appliedPS=s.radio.configuredPS=true;s.radio.requestedPS=false;d._regs.tx3Consume=[](){};
+      assert(!d.serviceRadioMaintenance(3000));
+      assert(s.radio.step==6 && s.dataPending==Ath10k::kDataTxSlots); // Wake must not wait for the payloads it is supposed to release.
+      d.releaseWMIRuntime(); }
+
+    // Reproduce the incident's full queue while station PS is applied. Wake
+    // uses CE3 and the real credit/ECHO barrier, retaining every CE4 payload.
+    { WatchdogDriver d;d.fill();auto &s=d._connection;
+      s.radio.appliedPS=s.radio.configuredPS=s.radio.requestedPS=true;
+      s.ap.timPresent=true;s.radio.appliedDTIM=s.ap.dtimPeriod;s.radio.appliedBeacon=s.ap.beaconInterval;
+      const auto previous=d._regs.tx3Consume;std::vector<UInt32> wakeCommands;
+      d._regs.tx3Consume=[&](){
+        if(!s.radio.step){previous();return;}
+        const auto *f=static_cast<const UInt8 *>(d._connectionCommand.virtualAddress());wakeCommands.push_back(Ath10k::wmiReadLE32(f+8));
+        if(s.radio.step==8)d.deliver(2,echoPacket(Ath10k::radioCookie(s)));
+        else d.deliver(1,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
+      };
+      assert(!d.serviceDataTX(2809) && !s.radio.txWakeRequested);
+      assert(!d.serviceDataTX(2810) && s.radio.txWakeRequested && s.radio.txWakeRequests==1);
+      for(unsigned t=2820;t<=3020;t+=10)d.tick(t);
+      assert(d._wmiLive.active && !s.radio.appliedPS && !s.radio.step && !s.radio.wakeOnly);
+      assert(wakeCommands==std::vector<UInt32>({0x9001,0x1d001}));
+      assert(s.dataPending==Ath10k::kDataTxSlots && !s.dataTimeouts);
+      for(const auto &slot:s.dataTX){assert(slot.owned && slot.ceConsumed && !slot.complete);d.complete(slot.id);}
+      assert(!d.serviceDataTX(3030) && !s.dataPending && !s.radio.txWakeRequested && s.radio.txWakeHoldUntilMs==4030);
+      assert(!d.serviceRadioMaintenance(4029) && !s.radio.step && !s.radio.appliedPS);
+      assert(!d.serviceRadioMaintenance(4030) && s.radio.step==6 && s.radio.targetPS);d.releaseWMIRuntime(); }
+    // Waking does not disable the original full-queue timeout if the firmware
+    // never returns HTT completions, and explicit pauses never trigger it early.
+    { WatchdogDriver d;d.fill();auto &s=d._connection;s.radio.appliedPS=s.radio.requestedPS=true;
+      assert(!d.serviceDataTX(2810) && s.radio.txWakeRequested);
+      assert(!strcmp(d.serviceDataTX(6810),"data-tx-completion-timeout") && !strcmp(s.dataWatchdogReason,"queue-stalled"));d.releaseWMIRuntime(); }
+    { WatchdogDriver d;d.fill();auto &s=d._connection;s.radio.appliedPS=s.radio.requestedPS=true;s.txPauseMask=1;
+      assert(!d.serviceDataTX(5000) && !s.radio.txWakeRequested);s.txPauseMask=0;
+      assert(!d.serviceDataTX(5010));assert(!d.serviceDataTX(6009) && !s.radio.txWakeRequested);
+      assert(!d.serviceDataTX(6010) && s.radio.txWakeRequested);d.releaseWMIRuntime(); }
     // Firmware retains one payload while newer traffic completes normally.
     // Age alone must not reset the driver, free DMA, or reuse this ID/buffer.
     {
@@ -92,7 +129,26 @@ int main(){
     {
         WatchdogDriver d;d.submit(1800);assert(!d.serviceDataTX(1810));
         assert(Ath10k::requestDisconnect(d._connection,2000));
-        assert(d.serviceDataTX(6800) && d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        assert(!d.serviceDataTX(6999));
+        assert(d.serviceDataTX(7000) && d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        d.releaseWMIRuntime();
+    }
+    // Closing a long-lived link starts a fresh drain window. An old payload
+    // may still complete safely; packet age alone must not force quarantine.
+    for(bool complete:{false,true}){
+        WatchdogDriver d;const auto id=d.submit(1800);assert(!d.serviceDataTX(1810));
+        assert(!d.serviceDataTX(60000));
+        assert(Ath10k::requestDisconnect(d._connection,60001));
+        assert(!d.serviceDataTX(60001));
+        assert(d._connection.dataPending==1 && d._connection.dataTX[0].owned);
+        if(complete){
+            d.complete(id);assert(!d.serviceDataTX(60002));
+            assert(!d._connection.dataPending && !d._connection.dataTX[0].owned);
+        }else{
+            assert(!d.serviceDataTX(65000));
+            assert(!strcmp(d.serviceDataTX(65001),"data-tx-completion-timeout"));
+            assert(d._connection.dataTX[0].owned && d._connection.dataPending==1);
+        }
         d.releaseWMIRuntime();
     }
     std::puts("TX watchdog passed: late HTT ownership, progressing traffic, CE stalls, full-queue stalls, bounded pauses, ID retention, wakeup and teardown.");

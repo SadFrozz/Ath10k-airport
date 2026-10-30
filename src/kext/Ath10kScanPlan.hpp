@@ -66,10 +66,28 @@ inline UInt8 channelDefinitionPowerHalfDbm(UInt32 primary,UInt32 center,UInt32 w
 inline bool regulatoryScanChannel(const RegulatoryPolicy &p,UInt32 c){
     return wmiScanChannelAllowed(c) && regulatoryPower(p,c,c,20,false)!=0;
 }
-inline UInt32 regulatoryScanCount(const RegulatoryPolicy *p){
-    if(!p)return kWMIScanChannelCount;
+// Active probes initiate radiation; association permission on DFS/NO-IR
+// channels is insufficient. Require firmware bounds and both country rules.
+inline bool regulatoryActiveScanChannel(const RegulatoryPolicy &p,UInt32 c){
+    return p.firmwareCapsValid && wmiScanChannelAllowed(c) && !channelNeedsDFS(c) &&
+        regulatoryPower(p,c,c,20,true,true)!=0;
+}
+// Translate a caller's 256-channel bitmap into physical-plan slots. A null
+// bitmap means an unrestricted scan; unknown channels never expand the plan.
+inline UInt64 wmiRequestedScanMask(const UInt8 *channels,UInt32 bytes){
+    if(!channels)return ~UInt64(0);
+    if(bytes<32)return 0;
+    UInt64 mask=0;
+    for(UInt32 i=0;i<kWMIScanChannelCount;++i){
+        const UInt32 channel=kWMIScanPlan[i].channel;
+        if(channels[channel/8] & (1u<<(channel%8)))mask|=UInt64(1)<<i;
+    }
+    return mask;
+}
+inline UInt32 regulatoryScanCount(const RegulatoryPolicy *p,UInt64 requested=~UInt64(0)){
     UInt32 count=0;
-    for(const auto &c:kWMIScanPlan)if(regulatoryScanChannel(*p,c.channel))++count;
+    for(UInt32 i=0;i<kWMIScanChannelCount;++i)
+        if((requested & (UInt64(1)<<i)) && (!p || regulatoryScanChannel(*p,kWMIScanPlan[i].channel)))++count;
     return count;
 }
 // WMI channel packed power bytes: min, max, regulatory, class;

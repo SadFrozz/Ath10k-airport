@@ -1,4 +1,4 @@
-# Build the Sequoia stage-3 kext in Windows
+# Build the native Sequoia kext in Windows
 
 Tested locally: Windows x86_64, Python 3.13, Zig 0.16.0 / Clang 21.1,
 Apple ld64 253.9 in Cygwin, and rcodesign 0.29.0. No administrator, macOS,
@@ -42,8 +42,8 @@ Output: `build/windows-native/Ath10kMac.kext`. To preserve an earlier build, use
 An optional `--kernel-collection C:/path/BootKernelExtensions.kc` checks import names
 against that local collection. This file is not downloaded, uploaded or committed.
 
-The builder regenerates and validates firmware, compiles all seven translation
-units, links a real `MH_KEXT_BUNDLE`, generates the exact Lunnen stage-3 personality,
+The builder regenerates and validates firmware, compiles all eight translation
+units, links a real `MH_KEXT_BUNDLE`, generates the Lunnen native personality,
 signs it ad-hoc, and validates the resulting file. Commands, tool exits and hashes
 are saved alongside the bundle. A stack-frame limit is enforced.
 
@@ -68,3 +68,5 @@ actual boot test remain outstanding.
 
 These scripts have no EFI install, rollback or reboot operation. A successful build
 does not establish that the native Wi-Fi menu, connections or WPA3 work.
+
+The default is the full native driver (diagnostic stage 0). For the isolated controller diagnostic use `--diagnostic-stage 3`. No companion application is built or required. Cross-building the merged revision on Windows still requires a fresh Windows validation run.

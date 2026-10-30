@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include "Ath10kDiagnostics.hpp"
 // The runner includes the three actual driver method bodies from the .cpp.
 // This ROM/CE0 model is NOT a macOS kernel or physical hardware test.
 #include "Ath10kBMI.hpp"
@@ -193,7 +194,13 @@ public:
     void *_powerNotifier=nullptr;
     bool powerIOBlocked();
     bool powerRestartAllowed();
-    void requestPowerEvent(Ath10k::PowerEvent);
+    void beginPowerSuspend();void finishPowerSuspend();void blockPowerIOForTermination();
+    bool controllerPowerClosed();volatile UInt32 _controllerPowerClosed=0;
+    IOLock *_probePowerLock=nullptr;bool _deferredProbeStarted=true;
+    unsigned firstProbes=0,wakeRecoveries=0;
+    void queueDeferredProbe(){++firstProbes;}
+    void queueWakeRecovery(){++wakeRecoveries;}
+    void requestPowerEvent(Ath10k::PowerEvent,bool suspendAlreadyQueued=false);
     void publishPowerState();
     static IOReturn controlPowerState(OSObject *,void *,void *,void *,void *);
     const char *serviceRuntime();
@@ -243,7 +250,7 @@ public:
     const char *serviceWMIScanChannels(UInt64 nowMs);
     Ath10k::WMIScanChannelsState _wmiScanChannels{};
     Ath10k::RegulatoryPolicy _regulatory{};
-    Ath10k::WMIScanChannelsState _wmiRadio[5]{};
+    Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
     const char *serviceWMIRadio(UInt64 nowMs, UInt32 index);
     const char *serviceRxSetup(UInt64 nowMs);
     const char *sampleHTTRxPool();
@@ -269,7 +276,7 @@ public:
     struct DataBuffers {Buffer payload{},command{},fragments{};};
     DataBuffers _dataBuffers[Ath10k::kDataTxSlots]{};
     const char *submitNetworkCE(UInt32,Buffer &,UInt32,UInt32 &);
-    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64);
+    const char *submitNetworkPacket(const UInt8 *,UInt32,bool,UInt64,AthSecurity::ManagementTX=AthSecurity::ManagementTX::Plain);
     void networkLink(bool up){networkUp=up;}
     void publishConnection(){}
     unsigned receivedFrames=0;

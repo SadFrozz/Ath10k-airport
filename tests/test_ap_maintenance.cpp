@@ -79,6 +79,28 @@ int main(){
      assert(s.maintenance.blocked && s.maintenance.applied.wmmCount==15);d.pump(2610,2900);
      assert(s.maintenance.generation==generation+1 && s.maintenance.applied.wmmCount==0 && !s.maintenance.blocked);
      d.releaseWMIRuntime();}
+    {APDriver d;d.enableQoS();auto &s=d._connection;d.announce(15,4);
+     d._wmiScan.completed=false;
+     assert(!d.serviceAPMaintenance(2500));
+     // Scan ownership has its own bounded stop path, not the AP drain clock.
+     assert(!d.serviceAPMaintenance(8500));
+     assert(d._wmiScan.cancelRequested && s.maintenance.blocked && !s.maintenance.draining && d.wire.empty());
+     d._wmiScan.completed=true;s.dataPending=1;
+     assert(!d.serviceAPMaintenance(8510));
+     assert(s.maintenance.draining && s.maintenance.sinceMs==8510);
+     assert(!d.serviceAPMaintenance(13509));
+     const char *error=d.serviceAPMaintenance(13510);
+     assert(error && !strcmp(error,"ap-maintenance-drain-timeout"));
+     s.dataPending=0;d.releaseWMIRuntime();}
+    {APDriver d;d.enableQoS();auto &s=d._connection;d.announce(15,4);
+     s.dataPending=1;assert(!d.serviceAPMaintenance(2500) && s.maintenance.draining);
+     // AP reverts before any command: release the pending transaction, so
+     // native scan admission and a later update do not inherit stale state.
+     d.announce(14,3);assert(!d.serviceAPMaintenance(2600));
+     assert(!s.maintenance.blocked && !s.maintenance.draining && !s.maintenance.step);
+     d.announce(15,4);assert(!d.serviceAPMaintenance(9000));
+     assert(s.maintenance.draining && s.maintenance.sinceMs==9000);
+     s.dataPending=0;d.releaseWMIRuntime();}
     {APDriver d;d.enableQoS();auto &s=d._connection;d.holdCredit=true;d.announce(15,4);d.pump(2500,2570);
      assert(s.wmiOwned && s.maintenance.step==1 && s.maintenance.applied.wmmCount==14);
      d.tick(7600);assert(!d._wmiLive.active && d.resets==1);d.releaseWMIRuntime();}

@@ -100,4 +100,45 @@ inline PersonalSelection selectPersonal(const uint8_t *ie, size_t n, PersonalMod
     result.akm = akm; result.pairwise = 4; result.group = ap.group; result.pmf = protectedManagement;
     return result;
 }
+// Decoded BIP-CMAC-128 IGTK KDE. Caller owns key lifetime/zeroization.
+// Parsing alone never installs a key or advances replay state.
+struct IGTKCMAC128 {
+    uint16_t keyID=0;uint64_t ipn=0;uint8_t key[16]{};
+};
+inline bool parseIGTKCMAC128(const uint8_t *element,size_t bytes,IGTKCMAC128 &out){
+    // Vendor IE: RSN OUI/type 9, LE KeyID, six-byte LE IPN, 16-byte IGTK.
+    if(!element || bytes!=30 || element[0]!=221 || element[1]!=28 ||
+       element[2]!=0 || element[3]!=15 || element[4]!=172 || element[5]!=9)return false;
+    const uint16_t id=rsnLE16(element+6);
+    if(id!=4 && id!=5)return false;
+    uint64_t ipn=0;for(unsigned i=0;i<6;++i)ipn|=uint64_t(element[8+i])<<(8*i);
+    out.keyID=id;out.ipn=ipn;
+    for(unsigned i=0;i<16;++i)out.key[i]=element[14+i];
+    return true;
+}
+
+// Input must already have passed EAPOL MIC and key-unwrapping checks.
+// Scan the entire IE sequence before publishing any key material.
+inline bool findIGTKCMAC128(const uint8_t *data,size_t bytes,IGTKCMAC128 &out){
+    if(!data || !bytes || bytes>512)return false;
+    const uint8_t *found=nullptr;size_t foundBytes=0;
+    for(size_t at=0;at<bytes;){
+        // AES key-wrap padding uses 0xdd followed by zero octets.
+        if(data[at]==221 && (at+1==bytes || data[at+1]==0)){
+            for(size_t j=at+1;j<bytes;++j)if(data[j])return false;
+            break;
+        }
+        if(bytes-at<2)return false;
+        const size_t length=size_t(data[at+1])+2;
+        if(length>bytes-at)return false;
+        if(data[at]==221 && length>=6 && data[at+2]==0 &&
+           data[at+3]==15 && data[at+4]==172 && data[at+5]==9){
+            if(found)return false;
+            found=data+at;foundBytes=length;
+        }
+        at+=length;
+    }
+    return found && parseIGTKCMAC128(found,foundBytes,out);
+}
+
 }

@@ -18,7 +18,7 @@ struct Profile {
     UInt32 kOTPSize=0;
     const char *kOTPSHA256="unavailable";
     const UInt8 *kOTP=nullptr;
-    bool kOTPIgnoreResult=false, kSupportsSkipClockInit=false;
+    bool kOTPIgnoreResult=false, kSupportsSkipClockInit=false, kSupportsMFP=false;
     const FirmwareSegment *kFirmwareSegments=nullptr;
     UInt32 kFirmwareSegmentCount=0, kFirmwareSegmentDataBytes=0, kFirmwareEntryAddress=0;
     bool matchesTarget(UInt32 version, UInt32 type, UInt32 bytes) const {

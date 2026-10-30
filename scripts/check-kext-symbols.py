@@ -9,7 +9,8 @@ import sys
 def rejected_symbols(listing):
     return [line.strip() for line in listing.splitlines()
             if '(undefined)' in line.lower() and
-            ('weak' in line.lower() or 'chkstk' in line or 'stack_chk' in line)]
+            ('weak' in line.lower() or 'chkstk' in line or 'stack_chk' in line or
+             '_thread_call_cancel_wait' in line)]
 
 
 def main():
@@ -35,7 +36,7 @@ def main():
         print('\n'.join(errors), file=sys.stderr)
         print('Do not load this binary. Rebuild with the kernel flags and inspect nm output.', file=sys.stderr)
         return 1
-    print('Kext symbols OK: no weak undefined imports or undefined stack runtime probes.')
+    print('Kext symbols OK: no weak/runtime imports or known unavailable thread-call wait export.')
     return 0
 
 

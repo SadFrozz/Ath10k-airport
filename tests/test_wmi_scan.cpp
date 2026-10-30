@@ -40,40 +40,55 @@ public:
     }
     void launch(){tick(1000);tick(1010);tick(1020);assert(!_wmiScan.attempted);tick(1030);assert(_wmiScan.submitted);}
 };
-[[maybe_unused]] static void reusableScanTests(){
+[[maybe_unused]] static void reusableScanTests(bool delayedStopCredit=false){
     ScanDriver d;d.launch();d.deliver(2,scanPacket(1));d.tick(1040);d.deliver(2,scanPacket(2));d.tick(1050);
     assert(d._wmiScan.completed);
     d._wmiScan={};d._wmiScan.generation=1;d._wmiScan.id=0xa037;
-    d._connection.stage=Ath10k::LinkStage::Connected;d._connection.portAuthorized=true;
+    d._connection.stage=Ath10k::LinkStage::Disabled;d._connection.portAuthorized=false;
     unsigned starts=0,stops=0;
     d._regs.tx3Consume=[&](){
         const auto *f=static_cast<const UInt8 *>(d._wmiTxBuffer.virtualAddress());
         const UInt32 cmd=Ath10k::wmiReadLE32(f+8);
         if(cmd==0x3001){
             ++starts;assert(Ath10k::wmiReadLE32(f+16)==0xa037);
-            assert(Ath10k::wmiReadLE32(f+40)==100 && Ath10k::wmiReadLE32(f+44)==150);
+            assert(Ath10k::wmiReadLE32(f+40)==500 && Ath10k::wmiReadLE32(f+44)==50);
         }else{
             ++stops;assert(cmd==0x3002 && f[14]==78 && Ath10k::htcReadLE16(f+2)==24);
             assert(Ath10k::wmiReadLE32(f+16)==0xa001 && Ath10k::wmiReadLE32(f+20)==0xa037);
             assert(!Ath10k::wmiReadLE32(f+24) && !Ath10k::wmiReadLE32(f+28));
         }
-        d.deliver(1,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
+        if(cmd==0x3001 || !delayedStopCredit)d.deliver(1,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
     };
     // A delayed previous COMPLETED arriving before the new START submission
     // must not kill runtime or complete the next generation.
     d.deliver(2,scanPacket(2));d.tick(1060);
     assert(d._wmiLive.active && d._wmiScan.submitted && !d._wmiScan.terminal && !d._wmiScan.eventCount);
-    auto start=scanPacket(1);Ath10k::htcWriteLE32(start.data()+32,0xa037);d.deliver(2,start);d.tick(1070);
+    auto start=scanPacket(1);Ath10k::htcWriteLE32(start.data()+32,0xa037);d.deliver(2,start);d.tick(1070);d.tick(1080);
     assert(d._wmiScan.started && !d._wmiScan.txOwned && starts==1);
-    d._wmiScan.cancelRequested=true;d.tick(1080);assert(d._wmiScan.stopSubmitted && d._wmiScan.txOwned && stops==1);
-    auto canceled=scanPacket(2,1);Ath10k::htcWriteLE32(canceled.data()+32,0xa037);d.deliver(2,canceled);d.tick(1090);
+    d._wmiScan.cancelRequested=true;d.tick(1100);assert(d._wmiScan.stopSubmitted && d._wmiScan.txOwned && stops==1);
+    auto canceled=scanPacket(2,1);Ath10k::htcWriteLE32(canceled.data()+32,0xa037);d.deliver(2,canceled);d.tick(1120);d.tick(1140);
+    assert(stops==1);
+    if(delayedStopCredit){
+        assert(d._wmiScan.stopConsumed && d._wmiScan.txOwned && !d._wmiScan.completed);
+        d.deliver(1,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});d.tick(1160);d.tick(1180);
+    }
     assert(d._wmiScan.completed && d._wmiScan.stopConsumed && !d._wmiScan.txOwned && !d._wmiScan.failed && d._wmiLive.active);
     d.releaseWMIRuntime();
 }
 
 #ifndef ATH10K_WMI_BSS_TEST
 int main() {
-    reusableScanTests();
+    {
+        ScanDriver cancelled;
+        cancelled._wmiScan.cancelRequested=true;
+        assert(!cancelled.serviceWMIScan(1000));
+        assert(cancelled._wmiScan.completed && cancelled._wmiScan.terminal);
+        assert(!cancelled._wmiScan.attempted && !cancelled._wmiScan.txOwned);
+        assert(!cancelled.scans && !cancelled._wmi.credits.outstanding);
+        assert(!strcmp(cancelled._wmiScan.status,"scan-cancelled-before-start"));
+        cancelled.releaseWMIRuntime();
+    }
+    reusableScanTests();reusableScanTests(true);
     ScanDriver d;d.launch();d.deliver(2,scanPacket(1));d.tick(1040);
     assert(d._wmiScan.started && d._wmiScan.creditReturned && !d._wmiScan.completed);
     d.deliver(2,scanPacket(8));d.tick(1050);
@@ -202,6 +217,12 @@ int main() {
     }
     UInt8 frame[293];memset(frame,0xaa,sizeof(frame));
     assert(Ath10k::buildWMIScan(frame,292,2) && frame[292]==0xaa);
+    assert(Ath10k::wmiReadLE32(frame+40)==500);
+    assert(Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,120));
+    assert(Ath10k::wmiReadLE32(frame+40)==120 && frame[292]==0xaa);
+    assert(Ath10k::wmiReadLE32(frame+80)==Ath10k::kWMIScanChannelCount);
+    assert(!Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,0));
+    assert(!Ath10k::buildWMIScan(frame,292,2,0xa036,false,nullptr,501));
     assert(!Ath10k::buildWMIScan(frame,291,2));assert(!Ath10k::buildWMIScan(frame,292,0));
     assert(!Ath10k::buildWMIScan(frame,292,255));assert(!Ath10k::buildWMIScan(nullptr,292,2));
 }

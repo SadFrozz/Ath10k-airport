@@ -79,7 +79,8 @@ const char *Ath10kPCIDevice::idleRuntimePower(bool pending,bool &asleep)
     const bool permitted=enabled && !pending && s.stage==Ath10k::LinkStage::Connected && s.portAuthorized &&
         !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None && !s.wmiOwned && !s.txOwned && !s.dataPending &&
         !s.rekeyKind && !s.eapolPause && !s.txPauseMask && !s.radio.step && !s.radio.blocked && !s.radio.powerBlocked &&
-        !s.stats.step && !s.maintenance.step && !s.maintenance.blocked && !s.probe.active && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle &&
+        !s.stats.step && !s.maintenance.step && !s.maintenance.blocked && !s.probe.active &&
+        !s.pmfTXPending && !s.spectrum.pending && !s.spectrum.inFlight && s.csa.phase==Ath10k::ChannelSwitchPhase::Idle &&
         _wmiScan.completed && !_wmiScan.txOwned && !_wmi.credits.outstanding && !_rxSetup.pendingMPDUs && !_rxSetup.rxDoneConsecutiveWaits && !_dmaQuarantine;
     const IOInterruptState state=IOSimpleLockLockDisableInterrupt(_runtimeWakeLock);
     const bool idle=_runtimePower.idle(Ath10k::uptimeNS()/1000000u,permitted,s.rxPackets,s.txPackets,_wmiLive.rxCount);
