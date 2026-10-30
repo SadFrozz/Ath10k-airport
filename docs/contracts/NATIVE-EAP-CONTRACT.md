@@ -233,3 +233,41 @@ Enterprise remains default-disabled. Precise live kernel join envelope, downstre
 AF_NDRV delivery, stale OS callback provenance, system/login-window startup,
 Enterprise roaming and radio interoperability remain open. Source integration and
 local tests do not advertise support or establish native operation on other OSes.
+
+## Enterprise roam boundary
+
+EAPOLSocket.c blob a82591c5bd96afe2bf98057b261c225759596577 retains cached BSSID
+on a non-RX wireless-info update while it remains valid. RX from a new source can
+update it, but the inspected update method does not clear the cached EAP response.
+Receive may retransmit that cached response on matching request identifier; the
+inactive-link notification explicitly clears it. Therefore current Personal
+retained-link roaming cannot simply admit AKM1: establish system EAP cache/session
+retirement before new-BSS EAP, without claiming a guessed delay drains callbacks.
+This is a public-source boundary, not installed consumer or radio evidence.
+
+Roam admission and teardown must wait for pending PTK notification, EAP TX/queue
+and replacement authentication as well as existing firmware/key owners. Local
+production-path tests cover the added pending reply/PTK/EAP-TX guards. Enterprise
+candidate selection remains rejected until the complete OS handoff is implemented.
+
+A complete source call-site review also found cache clearing on socket destruction,
+non-EAP packet transmission, and receipt that does not match the cached request
+identifier. These are alternative causes, not guaranteed roam acknowledgements.
+The ordinary RX path updates the new BSSID before comparing only the EAP request
+identifier against the prior response. Therefore a new-BSS RX alone is not a cache
+retirement fence. Do not synthesize EAP traffic or rely on a timed link-down pulse
+to force an assumed userspace restart. The installed-client notification path and
+its relationship to new association admission still require evidence.
+
+Installed 24G90 eapolclient x86_64 UUID FAC5670D-77C2-3A38-9DE9-37B8A150A96B
+now corroborates that boundary: RX updates wireless information at 0x10000a42c;
+0x10000a6ba–0x10000a6dd compares cached response by packet type/request code/ID;
+0x10000a75e retransmits. The link callback returns without notifying the supplicant
+if refreshed active state is unchanged (0x10000a0d7–0x10000a0e1). Observed inactive
+state frees the cached packet before invoking the supplicant (0x10000a1ee–0x10000a220).
+Consequently posting Down then immediately making the next BSSID visible does not
+prove userspace processed the inactive association. The next integration must
+establish an observable session transition, not just accepted kernel event enqueue.
+Initial and pairwise-update key-done producers are already recovered in the audit;
+this finding does not require duplicate property-change notification.
+Evidence: outputs/NATIVE-enterprise-roam-contract-20261030/installed-eap-roam-cache.json.

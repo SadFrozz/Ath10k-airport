@@ -33,7 +33,7 @@ Those results describe 826c310, not untested subsequent changes.
 | Host-requested roaming | Integrated and covered by production-path fixtures | Physical inter-AP test unavailable with one router |
 | Autonomous roam cache/offload | Enable/nonempty requests rejected | Implementation remains |
 | Ordinary WPA2-Enterprise | Default-disabled AKM1/CCMP, EAP transport/MSK/four-way integrated in 1.0.106 | System startup/pre-link delivery, late MSK serialization and radio evidence |
-| Enterprise reauthentication/roaming | Same-association replacement integrated locally with deferred owners and bounded completion; roaming unimplemented | Final batch validation, OS provenance and radio evidence |
+| Enterprise reauthentication/roaming | Same-association replacement published in 45335d8; sanitized regression and native/offline build passed; Enterprise roaming unimplemented | OS provenance, roam session handoff and radio evidence |
 | Sleep/wake | Lifecycle implemented; possibly working | Platform sleep deferred by user |
 | macOS 11–14, 15.0–15.1, 26 | Separate adapters unfinished | ABI recovery, implementation and per-OS verification |
 | AWDL/AirDrop | Not implemented | Separate protocol/interface/channel integration stage |
@@ -43,10 +43,11 @@ Those results describe 826c310, not untested subsequent changes.
 Uncontrolled EAP port lifecycle was published as
 862ed1f0bba3df83732eb68860ad95edcd72ce69. Its 68-test sanitized regression and
 exact-UUID offline linking are saved under NATIVE-eap-port-lifecycle-20261030.
-Only after publication was source version advanced to 1.0.107. Version metadata
-and code changelog remain local until the next grouped publication.
+Only after publication was source version advanced to 1.0.107. Version 1.0.107 metadata was included in 45335d8. After that publication was
+verified, source metadata advanced to 1.0.108; that next metadata/changelog edit
+remains local.
 
-Current local batch adds same-association Enterprise reauthentication: bounded
+Published batch 45335d8 adds same-association Enterprise reauthentication: bounded
 restart, retained queue and old transport ownership, deferred PMK replacement
 without wiping established key/replay history, early key-frame admission, and
 completion after firmware/M4/macOS notification barriers. Restart during an existing
@@ -72,3 +73,14 @@ exact-UUID airportd/CoreWLAN. Initial empty MSK reset preserves the current empt
 owner and original deadline. Expiry in a key callback explicitly cancels; service
 retires orphaned EAP queue ownership without stopping authorized data. See the
 EAP contract and audit for precise evidence and unresolved boundaries.
+
+## Pending roam ownership batch
+
+Local admission/teardown guards retain pending PTK notification, EAP TX/queue and
+replacement-authentication owners. Dispatcher waits allow the old link's key
+completion to progress instead of returning before its producer. Added fixtures
+cover residual EAP owners and notification retry ordering. The full 68-test regression passed with ASan/UBSan; native compilation, strict
+isolated signature and exact-UUID offline inclusion passed. Candidate UUID
+CB30D84D-5AAB-3595-AFD4-F259BD9CB5AA, source version 1.0.108. These changes
+are unpublished and not installed. Enterprise
+roam admission is still unsupported until the OS session handoff is implemented.

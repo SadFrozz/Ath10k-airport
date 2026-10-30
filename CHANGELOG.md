@@ -6,6 +6,17 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.108 — 2026-10-30
+
+- Add bounded experimental same-association Enterprise reauthentication. Preserve
+  queued EAP and prior TX/key ownership while waiting to replace the master key.
+- Replace Enterprise PMK without resetting established keys or replay history;
+  defer new key frames until handoff and reject stale or unauthenticated updates.
+- Coordinate restart with an existing firmware rekey without opening its port
+  early. Finish only after key-generation/M4 barriers and accepted macOS update
+  notification; retain the deadline through retries and cancel expired work.
+- Keep Enterprise disabled by default pending live integration and radio evidence.
+
 ## 1.0.107 — 2026-10-30
 
 - Start the experimental Enterprise EAP output queue before controlled-port

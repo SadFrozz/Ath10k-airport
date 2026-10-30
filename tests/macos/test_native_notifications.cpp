@@ -222,6 +222,24 @@ static void prepareRoam(Ath10kPCIDevice &d){
 }
 static void roamDispatcher(){
     using namespace AthNative::RoamEvents;
+    // Roam backpressure must still service the old link's key completion.
+    // Otherwise the teardown guard waits for an event this dispatcher starves.
+    for(unsigned wait=0;wait<4;++wait){
+        auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);
+        auto &sec=d->security;auto &link=d->_connection;
+        d->_nativeBeaconSent=true;link.securityPhase=5;link.securityGeneration=8;
+        sec.ptkUpdatePending=true;sec.ptkUpdateGeneration=8;sec.ptkUpdateSince=1;
+        d->disconnectResult=kIOReturnBusy;
+        if(wait<2)d->failAt=wait+1; // Start or Prep enqueue fails once.
+        if(wait==3){sec.preparedRoam.clear();d->failAt=2;} // Failed Complete retry.
+        d->serviceNativeNotifications(100);
+        unsigned updates=0;for(const auto &e:d->events)if(e.id==AirportWCL::SupplicantEvent)++updates;
+        assert(updates==(wait==2?1u:0u) && sec.ptkUpdatePending==(wait!=2) && d->_nativeRoamPending);
+        assert(!sec.roamRetirement && !d->continueCalls && link.portAuthorized);
+        d->serviceNativeNotifications(110);
+        updates=0;for(const auto &e:d->events)if(e.id==AirportWCL::SupplicantEvent)++updates;
+        assert(updates==1 && !sec.ptkUpdatePending); // Retry after enqueue failure; no replay after acceptance.
+    }
     const std::vector<UInt32> expected={StartID,PrepID,ReassocID,AirportWCL::ScanResult,AirportWCL::LinkStatus,AirportWCL::FirstBeacon,CompleteID};
     for(unsigned failure=0;failure<=expected.size();++failure){
         auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);

@@ -2400,3 +2400,54 @@ NATIVE-eap-reauth-contract-20261030. No installed image change or live Enterpris
 claim. Pending post-publication release notes: bounded same-association restart,
 queued-owner drain, replay-preserving PMK replacement, early key RX admission,
 existing firmware rekey coordination and accepted macOS completion.
+
+
+Published the complete reauthentication package as
+45335d8aad632b603660c2ef73cd423e6f18ccd4; remote head and exact local tree matched.
+Only after this publication was source metadata advanced to 1.0.108 and its
+code-only changelog assigned. Metadata remains local to avoid a second push.
+Validated image remains 1.0.107 UUID94767F02; installed image remains unchanged.
+
+
+## 2026-10-30 — roam security owners and EAP client cache boundary
+
+Added missing pending PTK notification and EAP owner guards to roam request and
+firmware retirement admission; pending reply also blocks request admission. Real
+roam request/disconnect fixture passed ASan/UBSan for held reply/PTK/EAP TX and
+subsequent admission after drain. No full-suite rerun yet; this starts a grouped
+roam integration review. Public EAPOLSocket source shows cached BSSID retention
+and identifier-based cached response retransmission; inactive-link notification
+clears cached EAP TX. Do not enable Enterprise in Personal retained-link roam
+without establishing that system session/cache boundary. Evidence in
+NATIVE-enterprise-roam-contract-20261030; no installation or publication.
+
+## 2026-10-30 — installed EAP roam cache and asynchronous link observation
+
+Fresh disassembly of installed eapolclient matches the earlier local image exactly.
+UUID FAC5670D-77C2-3A38-9DE9-37B8A150A96B confirms the public-source cache boundary:
+BSSID RX update precedes identifier-only response reuse. Link notification re-reads
+current wireless state; an unchanged active value skips supplicant notification.
+Only an observed inactive transition clears the primary cached response on this
+path. A rapid Down/Up enqueue therefore is not sufficient evidence of session
+retirement. Evidence with exact addresses and installed file SHA256 is preserved
+in NATIVE-enterprise-roam-contract-20261030/installed-eap-roam-cache.json and SD.
+Previously recovered initial Up=2 and PTK reason21 key-done routes remain valid;
+no duplicate property-change producer added. Enterprise roam stays unimplemented
+pending a complete session transition; existing Personal roam behavior retained.
+
+## 2026-10-30 — roam wait must service the pending key notification
+
+Review of the combined local changes found a circular wait: the new teardown
+barrier rejects a pending PTK update, but serviceNativeNotifications returned on
+that Busy result before reaching the PTK event producer later in the same method.
+The notification could consequently remain blocked until roam timeout. Roam stage
+advancement now pauses without exiting the notification dispatcher. Start/Prep,
+teardown, continuation and failed completion retain their ordered retry state;
+the old association's independent notifications still get service. Global enqueue
+failure backpressure remains intact: a failed post suppresses further posts for
+that tick, then retries on the next tick.
+
+Production-fragment fixtures cover teardown Busy plus pending PTK notification,
+Start and Prep enqueue failures, failed Complete retry, no premature retirement,
+and exactly one accepted key-update notification. This fixes the local batch
+before publication; it is not an observed failure of installed 1.0.106.

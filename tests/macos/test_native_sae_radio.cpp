@@ -168,12 +168,50 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
     d->_nativeWasUp=d->_nativeLinkUpSent=true;
     std::array<uint8_t,188> wire{};memcpy(wire.data()+0x64,w_ap,6);
     Ath10k::htcWriteLE32(wire.data()+0x90,1);wire[0xb9]=oldLink.ssidLength;memcpy(wire.data()+0x99,oldLink.ssid,oldLink.ssidLength);
+    for(bool *pendingOwner:{&sec->replyPending,&sec->ptkUpdatePending,&sec->eapTXInFlight}){
+     *pendingOwner=true;assert(d->nativeRoamRequest(wire.data())==kIOReturnBusy && !d->_nativeRoamPending);
+     assert(s.portAuthorized && !sec->roamRetirement);*pendingOwner=false;
+    }
+    // Exercise residual EAP ownership independently of the Personal profile:
+    // retirement must not discard work merely because the profile changed.
+    auto holdEAP=[&](bool replacement){
+     auto &owner=sec->eapOwner;
+     assert(owner.begin(w_sta,oldLink.bssid,0,30000));
+     if(replacement){
+      uint8_t key[32]{},taken[32]{};const auto generation=owner.generation();
+      assert(owner.setMSK(generation,w_sta,oldLink.bssid,9,key,sizeof(key),0)==AthNative::EAPOwner::KeyResult::Accepted);
+      assert(owner.takePMK(generation,w_sta,oldLink.bssid,0,taken));
+      assert(owner.beginReplacement(generation,w_sta,oldLink.bssid,1,30001));
+     }else{
+      uint8_t start[18]{};memcpy(start,oldLink.bssid,6);memcpy(start+6,w_sta,6);
+      start[12]=0x88;start[13]=0x8e;start[14]=2;start[15]=1;
+      assert(owner.enqueuePacket(owner.generation(),w_sta,oldLink.bssid,start,sizeof(start),0)==AthNative::EAPOwner::Enqueue::Queued);
+     }
+    };
+    for(bool replacement:{false,true}){
+     holdEAP(replacement);const auto generation=sec->eapOwner.generation();
+     assert(d->nativeRoamRequest(wire.data())==kIOReturnBusy && !d->_nativeRoamPending);
+     assert(s.portAuthorized && sec->eapOwner.generation()==generation);
+     assert(replacement?sec->eapOwner.replacementPending():sec->eapOwner.pending());
+     sec->eapOwner.clear();
+    }
     assert(d->nativeRoamRequest(wire.data())==kIOReturnSuccess);
     assert(d->_nativeRoamPending && d->nativeRoamRequest(wire.data())==kIOReturnBusy);
     assert(d->nativeJoinRequest(input.data())==kIOReturnBusy);
     const auto delivery=sec->roamDelivery.generation();
     auto post=[](uint32_t,void *,size_t){return true;};
     assert(sec->roamDelivery.sendStart(delivery,post) && sec->roamDelivery.sendPrep(delivery,post));
+    for(bool *pendingOwner:{&sec->ptkUpdatePending,&sec->eapTXInFlight}){
+     *pendingOwner=true;assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
+     *pendingOwner=false;
+    }
+    for(bool replacement:{false,true}){
+     holdEAP(replacement);const auto generation=sec->eapOwner.generation();
+     assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
+     assert(sec->eapOwner.generation()==generation);
+     assert(replacement?sec->eapOwner.replacementPending():sec->eapOwner.pending());
+     sec->eapOwner.clear();
+    }
     s.txOwned=true;
     assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
     s.txOwned=false;sec->keysPending=true;

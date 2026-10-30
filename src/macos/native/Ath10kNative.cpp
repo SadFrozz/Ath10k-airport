@@ -1412,7 +1412,8 @@ IOReturn Ath10kPCIDevice::nativeRoamRequest(void *data){
     if(_nativeRoamPending || _nativeRoamJoinGeneration || _nativeJoinPending || _nativeScanPending || _nativeAbortRequested ||
        !_nativeWasUp || !_nativeLinkUpSent || !Ath10k::connectionAssociated(s) || !s.portAuthorized ||
        !_wmiScan.completed || _wmiScan.txOwned || s.rekeyKind || sec->keysPending || sec->authorizePending ||
-       sec->supplicant.pairwisePending())return kIOReturnBusy;
+       sec->replyPending || sec->ptkUpdatePending || sec->eapTXInFlight || sec->eapOwner.pending() ||
+       sec->eapOwner.replacementPending() || sec->supplicant.pairwisePending())return kIOReturnBusy;
     const UInt64 now=Ath10k::uptimeNS()/1000000u;
     if(!sec->preparedRoam.prepare(sec->profile,s,request,sec->candidates,now))return kIOReturnNotReady;
     UInt8 target[6]{};
@@ -1454,7 +1455,8 @@ IOReturn Ath10kPCIDevice::nativeDisconnectForRoam(UInt64 now){
     if(sec->roamRetirement || _nativeJoinPending || _nativeScanPending || _nativeAbortRequested ||
        !_nativeWasUp || !_nativeLinkUpSent || !_wmiScan.completed || _wmiScan.txOwned ||
        _wmi.credits.outstanding || s.wmiOwned || s.txOwned || s.dataPending || s.pmfTXPending ||
-       s.rekeyKind || sec->replyPending || sec->keysPending || sec->authorizePending || sec->supplicant.pairwisePending() ||
+       s.rekeyKind || sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending ||
+       sec->eapTXInFlight || sec->eapOwner.pending() || sec->eapOwner.replacementPending() || sec->supplicant.pairwisePending() ||
        s.cancelRequested || s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized ||
        s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnBusy;
     // requestDisconnect only closes the data port and queues Drain. No wait,
@@ -1995,25 +1997,31 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             _wmiEvents.rfKill || !_networkEnabled || now>=_nativeRoamDeadline ||
             s.cancelRequested || s.stage==Ath10k::LinkStage::Failed ||
             !sec->preparedRoam.validate(sec->profile,_nativeMACCurrent,now);
-        if(sec->roamDelivery.phase()==Phase::StartPending && !sec->roamDelivery.sendStart(token,post))return;
-        if(!failed && sec->roamDelivery.phase()==Phase::Started && !sec->roamDelivery.sendPrep(token,post))return;
-        if(!failed && !sec->roamRetirement){
+        // Roam waits must not starve the old association's completion events
+        // below: a pending PTK notification is itself a teardown barrier.
+        bool advance=true;
+        if(sec->roamDelivery.phase()==Phase::StartPending)advance=sec->roamDelivery.sendStart(token,post);
+        if(advance && !failed && sec->roamDelivery.phase()==Phase::Started)advance=sec->roamDelivery.sendPrep(token,post);
+        if(advance && !failed && !sec->roamRetirement){
             const IOReturn result=nativeDisconnectForRoam(now);
-            if(result==kIOReturnBusy)return;
-            failed=result!=kIOReturnSuccess;
+            advance=result!=kIOReturnBusy;
+            if(advance)failed=result!=kIOReturnSuccess;
         }
-        if(!failed){
+        if(advance && !failed){
             const IOReturn result=nativeContinueRoam(now);
-            if(result==kIOReturnBusy)return;
-            failed=result!=kIOReturnSuccess;
-            if(!failed)_nativeRoamPending=0;
+            advance=result!=kIOReturnBusy;
+            if(advance){
+                failed=result!=kIOReturnSuccess;
+                if(!failed)_nativeRoamPending=0;
+            }
         }
         if(failed){
             sec->preparedRoam.clear();
-            if(!sec->roamDelivery.sendComplete(token,1,false,post))return;
-            const bool retired=sec->roamRetirement!=0;
-            _nativeRoamPending=0;sec->roamRetirement=0;
-            if(retired || _nativeDeferredLinkDown)networkLink(false);
+            if(advance && sec->roamDelivery.sendComplete(token,1,false,post)){
+                const bool retired=sec->roamRetirement!=0;
+                _nativeRoamPending=0;sec->roamRetirement=0;
+                if(retired || _nativeDeferredLinkDown)networkLink(false);
+            }
         }
     }
     const bool associated=Ath10k::connectionAssociated(s);
