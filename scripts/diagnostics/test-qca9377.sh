@@ -4,7 +4,7 @@ set -u
 cd "$(dirname "$0")/../.."
 date
 echo '== Ath10kMac 0.0.89 boot diagnostics =='
-binary="${ATH10K_TEST_KEXT:-build/out/Ath10kMac.kext}"
+binary="${ATH10K_TEST_KEXT:-build/native/out/Ath10kMac.kext}"
 if [ -f "$binary/Contents/Info.plist" ]; then
     /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$binary/Contents/Info.plist" || true
 fi

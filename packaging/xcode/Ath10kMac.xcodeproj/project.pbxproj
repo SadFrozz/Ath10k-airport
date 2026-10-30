@@ -19,7 +19,7 @@
 		A10000B /* Ath10kDMA.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = src/core/Ath10kDMA.hpp; sourceTree = "<group>"; };
 		A10000C /* Ath10kCERing.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = src/core/Ath10kCERing.hpp; sourceTree = "<group>"; };
 		A10000D /* Ath10kBMI.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = src/core/Ath10kBMI.hpp; sourceTree = "<group>"; };
-		A100200 /* Ath10kMac.kext */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = build/out/Ath10kMac.kext; sourceTree = "<group>"; };
+		A100200 /* Ath10kMac.kext */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = build/native/out/Ath10kMac.kext; sourceTree = "<group>"; };
 		A10000E /* Ath10kPayload.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = src/core/Ath10kPayload.hpp; sourceTree = "<group>"; };
         A100011 /* Ath10kNetwork.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/macos/controller/Ath10kNetwork.cpp; sourceTree = "<group>"; };
         A100012 /* Ath10kConnection.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = src/core/Ath10kConnection.hpp; sourceTree = "<group>"; };
@@ -48,7 +48,7 @@
 /* End PBXProject section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A500000 = {isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647; files = (); inputFileListPaths = (); inputPaths = (); name = "Build Ath10kMac via Makefile"; outputFileListPaths = (); outputPaths = ("$(SRCROOT)/build/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac"); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "set -e\ncd \"$SRCROOT\"\nmake kext\n"; showEnvVarsInLog = 0; };
+		A500000 = {isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647; files = (); inputFileListPaths = (); inputPaths = (); name = "Build Ath10kMac via Makefile"; outputFileListPaths = (); outputPaths = ("$(SRCROOT)/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac"); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "set -e\ncd \"$SRCROOT\"\nmake kext\n"; showEnvVarsInLog = 0; };
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
