@@ -43,3 +43,13 @@ commit with the compatible reorganized layout. Old layouts may fail validation.
 
 Manual dispatch becomes available in GitHub's Actions UI once these workflows
 are present on the default branch; this reorganization PR has not yet merged.
+
+## Version numbering
+
+The native series uses `major.minor.build`: `1.0.105` retains build number 105
+from `0.0.105`. The third component is a build number, not a patch-release
+classification. Both plist version fields and kmod_info.c must agree. A normal
+release tag is `v1.0.105`; existing NIGHTLY/PR suffixes label artifacts only.
+Changelog headings put version before date and describe driver code changes;
+repository/CI/documentation work belongs in PR descriptions and the journal.
+The 1.0 series name does not remove the documented experimental limitations.

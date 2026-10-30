@@ -17,8 +17,13 @@ changes. User instructions override these conventions.
 - docs/development/NATIVE-BATCH-PLAN.json contains current grouped work and remaining gates.
 - docs/development/NATIVE-CONNECTION-AUDIT.md records dated findings; docs/history preserves old
   investigations. Old unsupported/uninstalled statements are historical.
-- CHANGELOG.md records meaningful integrated changes. Update affected documents
-  together with code, including build UUID, exact evidence and limitations.
+- CHANGELOG.md contains driver code changes only. Headings use version first,
+  then date: `## 1.0.105 — 2026-10-30`. Do not include repository organization,
+  documentation or CI changes. Keep build UUIDs, checks and limitations in the
+  implementation map/journal instead.
+- Version format is major.minor.build; the third number is the build number.
+  Current native series starts at 1.0.105 (formerly 0.0.105); keep plist and
+  kmod_info.c versions synchronized. Do not rewrite historical evidence versions.
 - PMF and SAE already exist. Pending AP-driven rekey/group BIP evidence is not
   permission to reimplement them or claim they are absent.
 - A remaining integration gap must name the exact missing behavior (for example,

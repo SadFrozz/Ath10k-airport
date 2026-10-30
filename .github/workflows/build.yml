@@ -86,7 +86,7 @@ jobs:
           info = plistlib.loads(Path("packaging/Ath10kMac.kext/Contents/Info.plist").read_bytes())
           version = info["CFBundleVersion"]
           if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-              raise SystemExit("CFBundleVersion must use the major.minor.patch format.")
+              raise SystemExit("CFBundleVersion must use the major.minor.build format.")
           if info.get("CFBundleShortVersionString") != version:
               raise SystemExit("The two Info.plist version fields must match.")
           source = Path("src/macos/controller/kmod_info.c").read_text()
