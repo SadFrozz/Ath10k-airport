@@ -21,6 +21,8 @@ struct Ath10kNativeSAEKernelBackend {
 using IOReturn=int;
 constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNotReady=2,kIOReturnUnsupported=3,kIOReturnBusy=4;
 #include "../src/kext/native/Ath10kNativeSAEJoinStart.hpp"
+#include "../src/kext/native/Ath10kNativeMAC.hpp"
+#include "../src/kext/native/Ath10kNativeProfile.hpp"
 #include "native_join_request.inc"
 #include "native_security_snapshot.inc"
 
@@ -74,7 +76,7 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
    unsigned expectedGeneration=1;
    if(!scenario){
     const auto valid=input;auto worker=sec->saeWorker;const auto cached=sec->candidates;
-    for(unsigned bad=0;bad<20;++bad){
+    for(unsigned bad=0;bad<27;++bad){
      int expected=kIOReturnNotReady;
      switch(bad){
       case 0:d->experimentalSAE=false;expected=kIOReturnUnsupported;break;
@@ -94,20 +96,119 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
       case 16:sec->saeWorker=nullptr;break;
       case 17:sec->nextSAEGeneration=0xffffffffu;break;
       case 18:d->_wmiRadio[Ath10k::kWMIPMFQoSIndex].txConsumed=false;break;
-      case 19:failObjectInit=true;break; // PMF initialization failure consumes its identity.
+      case 19:s.wmiOwned=true;expected=kIOReturnBusy;break;
+      case 20:s.txOwned=true;expected=kIOReturnBusy;break;
+      case 21:s.dataPending=1;expected=kIOReturnBusy;break;
+      case 22:s.peerCount=1;expected=kIOReturnBusy;break;
+      case 23:s.pmfTXPending=true;expected=kIOReturnBusy;break;
+      case 24:d->_wmiScan.txOwned=true;expected=kIOReturnBusy;break;
+      case 25:d->_wmi.credits.outstanding=1;expected=kIOReturnBusy;break;
+      case 26:failObjectInit=true;break; // PMF initialization failure consumes its identity.
      }
      ownerGate=true;assert(d->nativeJoinRequest(input.data())==expected);ownerGate=false;
      assert(!sec->saePreparation.active() && !sec->pmfSession && !sec->saeSession && !sec->saeRadio && !sec->ready);
-     if(bad==19){assert(sec->nextSAEGeneration==1);sec->reset();assert(sec->nextSAEGeneration==1);expectedGeneration=2;}
+     if(bad==26){assert(sec->nextSAEGeneration==1);sec->reset();assert(sec->nextSAEGeneration==1);expectedGeneration=2;}
      else if(bad==17){assert(sec->nextSAEGeneration==0xffffffffu);sec->nextSAEGeneration=0;}
      else assert(sec->nextSAEGeneration==0);
      input=valid;d->experimentalSAE=admissionBackendReady=d->_nativeRadioOn=d->_networkEnabled=d->_wmiScan.completed=true;
      d->blocked=d->_wmiEvents.rfKill=d->_nativeJoinPending=d->_nativeScanPending=d->_nativeAbortRequested=d->_nativeWasUp=d->_nativeLinkUpSent=false;
+     s.wmiOwned=s.txOwned=s.pmfTXPending=d->_wmiScan.txOwned=false;
+     s.dataPending=s.peerCount=d->_wmi.credits.outstanding=0;
      s.stage=Ath10k::LinkStage::Disabled;sec->saeWorker=worker;sec->candidates=cached;
      d->_wmiRadio[Ath10k::kWMIPMFQoSIndex].txConsumed=true;
     }
    }
-   const auto original=input;const auto ownerRandomBefore=nativeOwnerRandomCalls;ownerGate=true;assert(d->nativeJoinRequest(input.data())==kIOReturnSuccess);ownerGate=false;
+   // The internal entry point must validate bounds independently of the wire
+   // decoder and consume secret copies on rejected, stopped and accepted paths.
+   if(!scenario)for(unsigned bad=0;bad<6;++bad){
+    AirportWCL::JoinRequest decoded{};assert(AirportWCL::decodeJoin(input.data(),input.size(),decoded));
+    int expected=kIOReturnBadArgument;
+    switch(bad){case 0:decoded.ssidLength=33;break;case 1:decoded.keyLength=65;break;
+     case 2:decoded.rsnLength=258;break;case 3:decoded.bssid[0]=1;break;
+     case 4:d->_nativeStopping=true;expected=kIOReturnNotReady;break;
+     case 5:s.wmiOwned=true;expected=kIOReturnBusy;break;}
+    const auto stateBefore=s;
+    ownerGate=true;assert(d->nativeBeginJoin(decoded)==expected);ownerGate=false;
+    for(auto byte:reinterpret_cast<const unsigned char (&)[sizeof(decoded)]>(decoded))assert(!byte);
+    assert(!memcmp(&stateBefore,&s,sizeof(s)) && !sec->saePreparation.active());
+    d->_nativeStopping=false;s.wmiOwned=false;
+   }
+   const auto original=input;const auto ownerRandomBefore=nativeOwnerRandomCalls;ownerGate=true;
+   if(scenario&1){
+    AirportWCL::JoinRequest decoded{};assert(AirportWCL::decodeJoin(input.data(),input.size(),decoded));
+    // Exercise the real preparation -> common admission -> crypto path. The
+    // retained profile belongs to a different former AP with the same SSID.
+    decoded.bssid[5]^=1;auto &retained=sec->profile;
+    assert(retained.replace(decoded,w_sta,true));
+    auto oldLink=s;oldLink.secure=oldLink.pmfRequired=true;oldLink.securityAKM=8;
+    oldLink.regulatory=regulatory;oldLink.ssidLength=decoded.ssidLength;
+    memcpy(oldLink.ssid,decoded.ssid,decoded.ssidLength);memcpy(oldLink.local,w_sta,6);memcpy(oldLink.bssid,decoded.bssid,6);
+    NativeReassocRequest roam{};roam.ssidLength=decoded.ssidLength;memcpy(roam.ssid,decoded.ssid,decoded.ssidLength);memcpy(roam.bssid,w_ap,6);
+    auto &pending=sec->preparedRoam;AthSecurity::wipe(&decoded,sizeof(decoded));
+    assert(pending.prepare(retained,oldLink,roam,sec->candidates,0));
+    if(scenario==1){
+     // Terminal cancellation must destroy the controller-owned secret copy,
+     // not merely make a later take fail its generation check.
+     AirportWCL::JoinRequest saved{};
+     assert(retained.snapshot(retained.generation(),w_sta,oldLink.ssid,oldLink.ssidLength,NativeJoinAuth::SAE,saved));
+     sec->reset();assert(!pending.generation() && !retained.generation());
+     assert(!pending.take(retained,w_sta,1,decoded));
+     assert(retained.replace(saved,w_sta,true));AthSecurity::wipe(&saved,sizeof(saved));
+     assert(pending.prepare(retained,oldLink,roam,sec->candidates,0));
+    }
+    s=oldLink;s.stage=Ath10k::LinkStage::Connected;s.portAuthorized=true;
+    d->_nativeWasUp=d->_nativeLinkUpSent=true;
+    std::array<uint8_t,188> wire{};memcpy(wire.data()+0x64,w_ap,6);
+    Ath10k::htcWriteLE32(wire.data()+0x90,1);wire[0xb9]=oldLink.ssidLength;memcpy(wire.data()+0x99,oldLink.ssid,oldLink.ssidLength);
+    assert(d->nativeRoamRequest(wire.data())==kIOReturnSuccess);
+    assert(d->_nativeRoamPending && d->nativeRoamRequest(wire.data())==kIOReturnBusy);
+    assert(d->nativeJoinRequest(input.data())==kIOReturnBusy);
+    const auto delivery=sec->roamDelivery.generation();
+    auto post=[](uint32_t,void *,size_t){return true;};
+    assert(sec->roamDelivery.sendStart(delivery,post) && sec->roamDelivery.sendPrep(delivery,post));
+    s.txOwned=true;
+    assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
+    s.txOwned=false;sec->keysPending=true;
+    assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
+    sec->keysPending=false;d->_wmiScan.completed=false;
+    assert(d->nativeDisconnectForRoam(0)==kIOReturnBusy && !sec->roamRetirement && s.portAuthorized);
+    d->_wmiScan.completed=true;
+    assert(d->nativeDisconnectForRoam(0)==kIOReturnSuccess);
+    assert(s.disconnect==Ath10k::DisconnectStage::Drain && !s.portAuthorized && !d->linkUp);
+    assert(d->_nativeWasUp && d->_nativeLinkUpSent && d->nativeRetainSystemLink()); // Preserve WCL and BSD publication.
+    assert(d->nativeContinueRoam(1)==kIOReturnBusy);
+    Ath10k::resetDisconnected(s); // Firmware teardown is separately exercised by reconnect tests.
+    const auto preparedGeneration=pending.generation();
+    for(unsigned held=0;held<8;++held){
+     if(held==0)d->_rxSetup.pendingMPDUs=1;
+     if(held==1)s.vdevStarted=true;
+     if(held==2)s.vdevStartIssued=true;
+     if(held==3)s.peerCreateIssued=true;
+     if(held==4)d->_wmiScan.txOwned=true;
+     if(held==5)s.dataPending=1;
+     if(held==6)d->_wmi.credits.outstanding=1;
+     if(held==7)s.disconnect=Ath10k::DisconnectStage::Barrier;
+     assert(d->nativeContinueRoam(1)==kIOReturnBusy && pending.generation()==preparedGeneration);
+     assert(retained.generation()==preparedGeneration && !sec->saePreparation.active());
+     d->_rxSetup.pendingMPDUs=0;s.vdevStarted=s.vdevStartIssued=s.peerCreateIssued=false;
+     d->_wmiScan.txOwned=false;s.dataPending=0;d->_wmi.credits.outstanding=0;
+     s.disconnect=Ath10k::DisconnectStage::None;
+    }
+    assert(d->nativeContinueRoam(1)==kIOReturnSuccess && !pending.generation() && !sec->roamRetirement);
+    d->_nativeRoamPending=0; // The production notification dispatcher performs this transfer.
+    assert(d->_nativeRoamJoinGeneration==delivery && !memcmp(s.bssid,w_ap,6));
+    uint8_t cacheRequest[128]{};cacheRequest[0x7b]=cacheRequest[0x7c]=1;
+    assert(d->nativeRoamCacheRequest(cacheRequest)==kIOReturnSuccess);
+    cacheRequest[0x7a]=1;assert(d->nativeRoamCacheRequest(cacheRequest)==kIOReturnUnsupported);
+    assert(d->nativeContinueRoam(1)==kIOReturnNotReady); // Already consumed.
+    for(auto byte:reinterpret_cast<const unsigned char (&)[sizeof(decoded)]>(decoded))assert(!byte);
+   }else assert(d->nativeJoinRequest(input.data())==kIOReturnSuccess);
+   ownerGate=false;
+   AirportWCL::JoinRequest retainedCheck{};
+   assert(sec->profile.generation() && sec->profile.snapshot(sec->profile.generation(),s.local,s.ssid,s.ssidLength,NativeJoinAuth::SAE,retainedCheck));
+   AirportWCL::JoinRequest originalCheck{};assert(AirportWCL::decodeJoin(original.data(),original.size(),originalCheck));
+   assert(retainedCheck.keyLength==originalCheck.keyLength && !memcmp(retainedCheck.key,originalCheck.key,originalCheck.keyLength));
+   AthSecurity::wipe(&retainedCheck,sizeof(retainedCheck));AthSecurity::wipe(&originalCheck,sizeof(originalCheck));
    assert(nativeOwnerRandomCalls==ownerRandomBefore && input==original && !passwordRandomCalls && s.securityAKM==8 && s.secure && s.pmfRequired);
    assert(s.stage==Ath10k::LinkStage::Scan && sec->nextSAEGeneration==expectedGeneration && sec->pmfSession && sec->saePreparation.active());
    assert(!sec->saeRadio && !sec->saeSession && !sec->ready && d->_nativeJoinPending);
@@ -125,7 +226,7 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
     if(scenario==7){run(latest);s.ssid[0]^=1;} // Completed work cannot bypass current-profile validation.
     // Fail through the real common Auth caller, which resets retained owners.
     ownerGate=true;assert(!d->advanceSAEAuth(scenario==8?5000:1));ownerGate=false;assert(s.cancelRequested && d->saeDiscards==1);
-    assert(!sec->saePreparation.active() && !sec->saeRadio && !sec->saeSession && d->transmitted.empty());stop(d);continue;
+    assert(!sec->profile.generation() && !sec->saePreparation.active() && !sec->saeRadio && !sec->saeSession && d->transmitted.empty());stop(d);continue;
    }
    run(latest);assert(!tick(d,1));assert(!sec->saePreparation.active() && sec->saeRadio && sec->saeSession);
    assert(sec->saeSession->usingH2E()==h2e && d->transmitted.size()==1 && !s.authReply && !sec->ready);

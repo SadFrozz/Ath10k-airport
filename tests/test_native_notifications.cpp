@@ -9,10 +9,13 @@
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../src/kext/native/Ath10kNativeWire.hpp"
+#include "../src/kext/native/Ath10kNativeProfile.hpp"
+#include "../src/kext/native/Ath10kNativeRoamEvents.hpp"
 #include "../vendor/itlwm/Airport/apple80211_ioctl.h"
 #include "../src/kext/Ath10kWMI.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
 using IOReturn=int;using SInt64=int64_t;
+constexpr IOReturn kIOReturnNotReady=5,kIOReturnBusy=6;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnError=1,kIOReturnAborted=2,kIOReturnNoMemory=3,kIOReturnBadArgument=4;
 enum class N {setWCL_JOIN_ABORT,setWCL_LEAVE_NETWORK,PowerSet};
 class Ath10kPCIDevice {
@@ -33,9 +36,15 @@ public:
                 if(!pending.length || !AthSecurity::equal(pending.station,local,6) || !AthSecurity::equal(pending.bssid,ap,6))return false;
                 out=pending;pending={};return true;}} supplicant;
         AthSecurity::TransitionDisableDelivery transitionPolicy;
+        AthNative::ProfileCredentials profile;
+        AthNative::PreparedRoam preparedRoam;
+        AthNative::RoamEvents::Delivery roamDelivery;
         bool replyPending=false,keysPending=false,authorizePending=false;
+        UInt64 roamRetirement=0;
+        bool preserve=false;
+        template<class State> bool preserveRoamRetirement(const State &,UInt64){return preserve;}
         unsigned resets=0;
-        void reset(){++resets;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
+        void reset(){++resets;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
     } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
@@ -44,9 +53,29 @@ public:
     bool _nativeAbortRequested=false,_nativeScanPending=false,_nativeJoinPending=false;
     bool _nativeAssocSent=false,_nativeBeaconSent=false,_nativeJoinBSSSent=false;
     bool _nativeLinkUpSent=false,_nativeWasUp=false,_nativeDeauthSent=false,_nativeJoinFailed=false;
-    bool _networkLinkUp=true;
+    bool _networkLinkUp=true,_networkEnabled=true;
+    struct {bool rfKill=false;} _wmiEvents;UInt8 _nativeMACCurrent[6]{};
+    bool powerIOBlocked(){return false;}
+    IOReturn disconnectResult=kIOReturnNotReady,continueResult=kIOReturnNotReady;
+    bool continueAuthorize=true;
+    unsigned disconnectCalls=0,continueCalls=0;
+    IOReturn nativeDisconnectForRoam(UInt64){
+        ++disconnectCalls;if(disconnectResult==kIOReturnSuccess){security.roamRetirement=security.roamDelivery.generation();security.preserve=true;}
+        return disconnectResult;
+    }
+    IOReturn nativeContinueRoam(UInt64){
+        ++continueCalls;if(continueResult==kIOReturnSuccess){
+            _nativeJoinPending=true;_nativeRoamJoinGeneration=security.roamDelivery.generation();
+            security.roamRetirement=0;security.preserve=false;
+            _nativeWasUp=_nativeLinkUpSent=false;_nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=false;
+            _connection.stage=Ath10k::LinkStage::Connected;_connection.portAuthorized=_networkLinkUp=continueAuthorize;
+            security.preparedRoam.target(_connection.bssid);memcpy(_connection.ap.bssid,_connection.bssid,6);
+            memcpy(_nativeJoin.bssid,_connection.bssid,6);
+        }return continueResult;
+    }
     bool _nativeScanStreamed=false;
     UInt32 _nativeScanResultIndex=0,_nativeScanResultsEmitted=0,_nativeReportedBeacon=0;
+    UInt64 _nativeRoamPending=0,_nativeRoamDeadline=0;UInt64 _nativeRoamJoinGeneration=0;
     UInt64 _nativeJoinDeadline=10000,_nativePostFailures=0;
     IOReturn _nativePostError=kIOReturnSuccess;
     int _nativeReportedQuality=-2;
@@ -63,7 +92,7 @@ public:
         Event e{id,{}};if(bytes)e.data.assign(static_cast<UInt8 *>(data),static_cast<UInt8 *>(data)+bytes);
         events.push_back(e);return kIOReturnSuccess;
     }
-    bool _nativeRadioOn=true;
+    bool _nativeRadioOn=true,_nativeDeferredLinkDown=false;
     void discardNativeSecurity(){security.reset();AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));}
     IOReturn power(apple80211_power_data *data){auto &s=_connection;switch(N::PowerSet){
 #include "native_radio_power.inc"
@@ -102,6 +131,22 @@ static void policyJoin(Ath10kPCIDevice &d){
     memcpy(u.station,s.local,6);memcpy(u.bssid,s.bssid,6);
 }
 static void policyNotifications(){
+    { auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);auto &s=d->_connection;
+      d->security.transitionPolicy.clear();assert(d->security.transitionPolicy.bind(s.local,s.bssid,91,0));
+      AirportWCL::JoinRequest request{};request.lowerAuth=1;request.upperAuth=1u<<12;
+      request.keyCipher=10;request.keyLength=8;memcpy(request.key,"password",8);
+      request.ssidLength=4;memcpy(request.ssid,"test",4);memcpy(request.bssid,s.bssid,6);
+      assert(d->security.profile.replace(request,s.local,true));
+      const auto original=d->security.profile.generation();AthSecurity::wipe(&request,sizeof(request));
+      d->serviceNativeNotifications(100);
+      const auto restricted=d->security.profile.generation();assert(restricted && restricted!=original);
+      assert(d->security.profile.snapshot(restricted,s.local,reinterpret_cast<const UInt8 *>("test"),4,NativeJoinAuth::SAE,request));
+      assert(request.transitionDisable==1);AthSecurity::wipe(&request,sizeof(request));
+      auto &u=d->security.supplicant.pending;u.length=1;u.bitmap[0]=2;u.replay=3;
+      memcpy(u.station,s.local,6);memcpy(u.bssid,s.bssid,6);
+      d->serviceNativeNotifications(110);assert(!d->security.profile.generation());
+    }
+
     const std::vector<UInt32> expected={49,55,201,201,237,211,201,216,212,213,76,39};
     for(unsigned fail=0;fail<=expected.size();++fail){
         auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);d->failAt=fail;
@@ -157,7 +202,76 @@ static void policyNotifications(){
         for(const auto &e:d->events)delivered|=e.id==76;assert(delivered);
     }
 }
+static void prepareRoam(Ath10kPCIDevice &d){
+    connected(d);auto &s=d._connection;d._nativeWasUp=d._nativeLinkUpSent=true;
+    d._nativeReportedBeacon=s.beaconFrameSerial;
+    memcpy(d._nativeLastBSSID,s.bssid,6);s.ssidLength=4;memcpy(s.ssid,"test",4);
+    const UInt8 station[]={2,0,0,0,0,1};memcpy(s.local,station,6);memcpy(d._nativeMACCurrent,station,6);
+    AirportWCL::JoinRequest profile{};profile.lowerAuth=1;profile.ssidLength=4;memcpy(profile.ssid,"test",4);memcpy(profile.bssid,s.bssid,6);
+    assert(d.security.profile.replace(profile,station,false));
+    auto ap=s.ap;ap.bssid[5]=0x66;ap.capabilities=1;ap.beaconInterval=100;
+    ap.rateCount=1;ap.rates[0]=0x82;ap.rxChannel=ap.advertisedChannel=6;
+    auto cache=std::make_unique<AthNative::CandidateCache>();cache->add(ap,0);
+    NativeReassocRequest request{};request.ssidLength=4;memcpy(request.ssid,"test",4);memcpy(request.bssid,ap.bssid,6);
+    assert(d.security.preparedRoam.prepare(d.security.profile,s,request,*cache,0));
+    assert(d.security.roamDelivery.begin(0,ap.bssid));
+    d._nativeRoamPending=d.security.roamDelivery.generation();d._nativeRoamDeadline=30000;
+}
+static void roamDispatcher(){
+    using namespace AthNative::RoamEvents;
+    const std::vector<UInt32> expected={StartID,PrepID,ReassocID,AirportWCL::ScanResult,AirportWCL::LinkStatus,AirportWCL::FirstBeacon,CompleteID};
+    for(unsigned failure=0;failure<=expected.size();++failure){
+        auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);
+        d->disconnectResult=d->continueResult=kIOReturnSuccess;d->failAt=failure;
+        d->serviceNativeNotifications(100);d->serviceNativeNotifications(110);
+        assert(ids(*d)==expected && !d->_nativeRoamPending && !d->_nativeRoamJoinGeneration && !d->_nativeJoinPending);
+        assert(d->disconnectCalls==1 && d->continueCalls==1);
+        assert(d->events.back().data.size()==168 && AirportWCL::read32(d->events.back().data.data())==0);
+        assert(d->_nativeLastBSSID[5]==0x66);
+        d->serviceNativeNotifications(120);assert(ids(*d)==expected);
+    }
+    {auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);auto &s=d->_connection;
+     s.securityAKM=8;s.secure=true;s.securityPhase=5;
+     assert(d->security.transitionPolicy.bind(s.local,s.bssid,91,0));
+     auto &update=d->security.supplicant.pending;update.length=1;update.bitmap[0]=2;update.replay=1;
+     memcpy(update.station,s.local,6);memcpy(update.bssid,s.bssid,6);
+     d->disconnectResult=d->continueResult=kIOReturnSuccess;
+     d->serviceNativeNotifications(100);
+     assert(!d->_nativeRoamPending && !d->disconnectCalls && !d->continueCalls);
+     assert(d->events[0].id==StartID && d->events[1].id==CompleteID && AirportWCL::read32(d->events[1].data.data())!=0);
+    }
+    for(auto op:{N::setWCL_JOIN_ABORT,N::setWCL_LEAVE_NETWORK})for(bool afterJoin:{false,true}){
+        auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);
+        if(afterJoin){
+            d->disconnectResult=d->continueResult=kIOReturnSuccess;d->continueAuthorize=false;
+            d->serviceNativeNotifications(100);assert(d->_nativeRoamJoinGeneration && d->_nativeJoinPending);
+        }
+        assert(d->leave(op)==kIOReturnSuccess);d->serviceNativeNotifications(110);
+        assert(!d->_nativeRoamPending && !d->_nativeRoamJoinGeneration && !d->_nativeJoinPending);
+        unsigned completed=0;for(const auto &event:d->events){
+            assert(event.id!=AirportWCL::ConnectComplete && event.id!=AirportWCL::JoinAbortComplete);
+            if(event.id==CompleteID){++completed;assert(AirportWCL::read32(event.data.data())!=0);}
+        }assert(completed==1);
+        d->serviceNativeNotifications(120);
+        if(op==N::setWCL_JOIN_ABORT)assert(d->events.back().id==AirportWCL::JoinAbortComplete);
+        const auto count=d->events.size();d->serviceNativeNotifications(130);assert(d->events.size()==count);
+    }
+    for(unsigned failure=0;failure<4;++failure){
+        auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);
+        d->disconnectResult=kIOReturnSuccess;d->continueResult=kIOReturnBusy;
+        if(failure==0)d->security.preparedRoam.clear();
+        if(failure==1)d->disconnectResult=kIOReturnNotReady;
+        if(failure==2)d->continueResult=kIOReturnNotReady;
+        d->serviceNativeNotifications(100);
+        if(failure==3){assert(d->_nativeRoamPending);d->security.preparedRoam.clear();d->serviceNativeNotifications(110);}
+        assert(!d->_nativeRoamPending && d->events.back().id==CompleteID);
+        assert(AirportWCL::read32(d->events.back().data.data())!=0);
+        assert(!d->security.preparedRoam.generation());
+        const auto count=d->events.size();d->serviceNativeNotifications(120);assert(d->events.size()==count);
+    }
+}
 int main(){
+    roamDispatcher();
     policyNotifications();
     // Independent expected WCL sequence. Every single enqueue can fail once:
     // the exact production notification method must resume without duplicates.
@@ -353,6 +467,18 @@ int main(){
         d->_connection.cancelRequested=true;d->_connection.portAuthorized=false;
         d->_connection.rekeyKind=2;d->serviceNativeNotifications(140);
         assert((ids(*d)==std::vector<UInt32>{203,216}) && !d->_nativeWasUp);
+    }
+    { // Intentional roam retirement retains the old WCL BSS. Losing that
+      // entitlement must restore ordinary terminal notification exactly once.
+      auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);d->serviceNativeNotifications(100);
+      d->events.clear();d->_connection={};d->_networkLinkUp=false;d->security.preserve=true;
+      d->serviceNativeNotifications(110);d->serviceNativeNotifications(120);
+      assert(d->events.empty() && d->_nativeWasUp && d->_nativeLinkUpSent && !d->security.resets);
+      d->security.preserve=false;d->serviceNativeNotifications(130);
+      assert((ids(*d)==std::vector<UInt32>{203,216}) && !d->_nativeWasUp);
+      auto link=reinterpret_cast<const AirportWCL::LinkStatusEvent *>(d->events.back().data.data());
+      assert(link->bssid[5]==0x55 && !link->up);
+      d->serviceNativeNotifications(140);assert(d->events.size()==2);
     }
     for(unsigned failDown=1;failDown<=2;++failDown){ // Retain old BSSID after radio reset.
         auto d=std::make_unique<Ath10kPCIDevice>();bootJoin(*d);d->serviceNativeNotifications(100);

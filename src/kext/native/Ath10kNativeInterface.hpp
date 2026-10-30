@@ -148,11 +148,11 @@ public:
     IOReturn setSENSING_DISABLE(apple80211_sensing_disable_t* data) override { return kIOReturnUnsupported; }
     IOReturn set6G_MODE(apple80211_6G_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network* data) override { return perform(AthNativeOp::setWCL_LEAVE_NETWORK,data); }
-    IOReturn setWCL_REASSOC(apple80211_reassoc* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_REASSOC(apple80211_reassoc* data) override { return perform(AthNativeOp::setWCL_REASSOC,data); }
     IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config* data) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache* data) override { return kIOReturnUnsupported; }
+    IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache* data) override { return perform(AthNativeOp::setWCL_ROAM_USER_CACHE,data); }
     IOReturn setWCL_SCAN_ABORT(void* data) override { return perform(AthNativeOp::setWCL_SCAN_ABORT,data); }
     IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode* data) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode* data) override { return kIOReturnUnsupported; }

@@ -6,8 +6,8 @@
   "hardware_validation": false,
   "counts": {
     "total": 190,
-    "forwarded": 32,
-    "unsupported": 158
+    "forwarded": 34,
+    "unsupported": 156
   },
   "callbacks": [
     {
@@ -1180,10 +1180,10 @@
     {
       "callback": "setWCL_REASSOC",
       "parameters": "apple80211_reassoc* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "stock caller confirmed; request partially reconstructed; roaming implementation and completion contract pending",
+      "implementation": "forwarded",
+      "operation": "setWCL_REASSOC",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "host-requested cached-candidate reassociation integrated with retirement and ordered success/failure completion; local production-path tests only; physical inter-AP validation unavailable",
       "stock_consumer_evidence": [
         {
           "module": "IO80211Family",
@@ -1232,11 +1232,21 @@
     {
       "callback": "setWCL_ROAM_USER_CACHE",
       "parameters": "apple80211_user_roam_cache* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "caller evidence required; do not classify as optional",
-      "stock_consumer_evidence": []
+      "implementation": "forwarded",
+      "operation": "setWCL_ROAM_USER_CACHE",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "mandatory post-roam clear/disable and empty readback implemented; nonempty autonomous firmware cache and override enable explicitly unsupported",
+      "stock_consumer_evidence": [
+        {
+          "module": "IO80211Family",
+          "uuid": "0D5AC570-04D4-38B6-8577-9F21350CDD50",
+          "consumer": "WCLAdaptiveRoam::configureUserRoamCache",
+          "address": "0xffffff80022dee46",
+          "command": 431,
+          "input_bytes": 128,
+          "semantics": "successful roam issues empty clear plus override disable; channel-offload policy remains a separate unsupported capability"
+        }
+      ]
     },
     {
       "callback": "setWCL_SCAN_ABORT",

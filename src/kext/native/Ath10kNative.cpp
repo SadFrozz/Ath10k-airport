@@ -6,6 +6,9 @@
 #include "Ath10kNativeWire.hpp"
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
+#include "Ath10kNativeProfile.hpp"
+#include "Ath10kNativeRoamEvents.hpp"
+#include "Ath10kNativeRoamCache.hpp"
 #include "Ath10kNativeMAC.hpp"
 #include "Ath10kSAEWorker.hpp"
 #include "Ath10kSAESession.hpp"
@@ -124,6 +127,10 @@ public:
     AthSecurity::Supplicant<Ath10kKernelCrypto,true,true> supplicant;
     AthSecurity::IGTKCMAC128 pendingManagement{};
     AthSecurity::TransitionDisableDelivery transitionPolicy;
+    AthNative::ProfileCredentials profile;
+    AthNative::PreparedRoam preparedRoam;
+    AthNative::RoamEvents::Delivery roamDelivery;
+    UInt64 roamRetirement=0;
     // Borrowed only beneath the radio gate from this NativeSecurity's owned
     // one-shot PMF session. Reset clears this binding before releasing it.
     Ath10kPMFSession *managementOwner=nullptr;
@@ -150,7 +157,10 @@ public:
     }
     // Stop/free only, outside radio and WCL. Sleep/reset use nonblocking cancel.
     void drainSAEWorker(){if(saeWorker)saeWorker->shutdown();}
-    void reset(){
+private:
+    // Software association owners only. Firmware DELETE/STOP/ECHO and DMA
+    // retirement remain the radio worker's responsibility.
+    void resetAssociation(){
         transitionPolicy.clear();
         pskPreparation.cancel();saePreparation.cancel();
         if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
@@ -168,6 +178,27 @@ public:
         if(saeWorker)saeWorker->cancel();
         supplicant.reset();AthSecurity::wipe(reply,sizeof(reply));AthSecurity::wipe(keys,sizeof(keys));
         ready=replyPending=keysPending=authorizePending=false;replyLength=keyOperation=0;pairDeadline=0;}
+public:
+    // Explicit handoff boundary: a stale prepared request cannot retire the
+    // current connection's keys. Terminal reset never preserves credentials.
+    bool retireForRoam(UInt64 expectedProfile){
+        if(!expectedProfile || profile.generation()!=expectedProfile)return false;
+        resetAssociation();return true;
+    }
+    bool beginRoamRetirement(UInt64 expectedProfile,UInt64 deliveryGeneration,const UInt8 *local,UInt64 now){
+        if(roamRetirement || !deliveryGeneration || deliveryGeneration!=roamDelivery.generation() ||
+           roamDelivery.phase()!=AthNative::RoamEvents::Delivery::Phase::Prepared ||
+           expectedProfile!=profile.generation() || !preparedRoam.validate(profile,local,now))return false;
+        if(!retireForRoam(expectedProfile))return false;
+        roamRetirement=deliveryGeneration;return true;
+    }
+    template<class State> bool preserveRoamRetirement(const State &s,UInt64 now){
+        return roamRetirement && roamRetirement==roamDelivery.generation() &&
+            roamDelivery.phase()==AthNative::RoamEvents::Delivery::Phase::Prepared &&
+            !s.cancelRequested && s.stage!=Ath10k::LinkStage::Failed &&
+            preparedRoam.validate(profile,s.local,now);
+    }
+    void reset(){roamRetirement=0;preparedRoam.clear();profile.clear();resetAssociation();}
     ~NativeSecurity(){reset();if(saeWorker){saeWorker->release();saeWorker=nullptr;}}
 };
 
@@ -1026,6 +1057,7 @@ void Ath10kPCIDevice::releaseNativeInterface() {
     _nativeStarted=_nativeAttached=_nativeControllerAttached=_nativeReadyPublished=false;
     if(_nativeServiceLock){IOLockFree(_nativeServiceLock);_nativeServiceLock=nullptr;}
     if(_nativeSecurity){delete _nativeSecurity;_nativeSecurity=nullptr;}
+    _nativeRoamPending=_nativeRoamJoinGeneration=_nativeRoamDeadline=0;
     AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
     if(_nativeGate){getWorkLoop()->removeEventSource(_nativeGate);OSSafeReleaseNULL(_nativeGate);}
     if(_nativeBSDGate){
@@ -1156,12 +1188,122 @@ IOReturn Ath10kPCIDevice::nativePHYCapabilities(AthNativeOp op,void *data) {
     }else return kIOReturnUnsupported;
     bcopy(reply,data,length);return kIOReturnSuccess;
 }
+bool Ath10kPCIDevice::nativeRetainSystemLink(){
+    if(!_nativeSecurity || _nativeStopping || !_nativeRadioOn || !_wmiLive.active || powerIOBlocked() ||
+       !_networkEnabled || _wmiEvents.rfKill || _connection.cancelRequested || _connection.stage==Ath10k::LinkStage::Failed)return false;
+    const UInt64 now=Ath10k::uptimeNS()/1000000u;
+    if(_nativeRoamJoinGeneration)return _nativeJoinPending && !_nativeJoinFailed && now<_nativeJoinDeadline &&
+        _nativeRoamJoinGeneration==_nativeSecurity->roamDelivery.generation();
+    return _nativeRoamPending && now<_nativeRoamDeadline && _nativeSecurity->preserveRoamRetirement(_connection,now);
+}
+
+// This adapter has no autonomous firmware roam channel cache. Support its
+// empty-state readback and the mandatory post-roam clear/disable transaction;
+// reject enabling/changing offload policy rather than acknowledging a no-op.
+IOReturn Ath10kPCIDevice::nativeRoamCacheRequest(void *data){
+    AthNative::RoamCacheRequest request{};
+    if(!AthNative::decodeRoamCache(data,128,request))return kIOReturnBadArgument;
+    if(request.count || (request.updateOverride && request.overrideEnabled))return kIOReturnUnsupported;
+    AthNative::UserRoamCache empty;
+    return empty.exchange(data,128,[](const AthNative::RoamCacheChannel &){return false;})?
+        kIOReturnSuccess:kIOReturnBadArgument;
+}
+
+IOReturn Ath10kPCIDevice::nativeRoamRequest(void *data){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!data)return kIOReturnBadArgument;
+    NativeReassocRequest request{};
+    if(!nativeDecodeReassoc(data,188,request))return kIOReturnBadArgument;
+    if(!sec || _nativeStopping || !_nativeRadioOn || powerIOBlocked() || !_wmiLive.active || _wmiEvents.rfKill || !_networkEnabled)return kIOReturnNotReady;
+    if(_nativeRoamPending || _nativeRoamJoinGeneration || _nativeJoinPending || _nativeScanPending || _nativeAbortRequested ||
+       !_nativeWasUp || !_nativeLinkUpSent || !Ath10k::connectionAssociated(s) || !s.portAuthorized ||
+       !_wmiScan.completed || _wmiScan.txOwned || s.rekeyKind || sec->keysPending || sec->authorizePending ||
+       sec->supplicant.pairwisePending())return kIOReturnBusy;
+    const UInt64 now=Ath10k::uptimeNS()/1000000u;
+    if(!sec->preparedRoam.prepare(sec->profile,s,request,sec->candidates,now))return kIOReturnNotReady;
+    UInt8 target[6]{};
+    if(!sec->preparedRoam.target(target) || !sec->roamDelivery.begin(0,target)){
+        sec->preparedRoam.clear();return kIOReturnBusy;
+    }
+    _nativeRoamPending=sec->roamDelivery.generation();_nativeRoamDeadline=now+30000;
+    requestNativeService();return kIOReturnSuccess;
+}
+
 IOReturn Ath10kPCIDevice::nativeJoinRequest(void *data){
     if(!data)return kIOReturnBadArgument;
     if(!_nativeSecurity || _nativeStopping)return kIOReturnNotReady;
-    auto &s=_connection;AirportWCL::JoinRequest join{};
-        setProperty("Ath10kNativeJoinReason","decode-request");
-        if(!AirportWCL::decodeJoin(data,0x2cc,join))return kIOReturnBadArgument;
+    if(_nativeRoamPending || _nativeRoamJoinGeneration)return kIOReturnBusy;
+    AirportWCL::JoinRequest join{};
+    setProperty("Ath10kNativeJoinReason","decode-request");
+    if(!AirportWCL::decodeJoin(data,0x2cc,join))return kIOReturnBadArgument;
+    return nativeBeginJoin(join);
+}
+
+// Both ordinary joins and the handoff continuation use the same ownership
+// boundary. Disabled alone does not certify firmware or RX retirement.
+bool Ath10kPCIDevice::nativeJoinOwnersRetired(bool retainedPublication) const {
+    const auto &s=_connection;
+    return !_nativeJoinPending && !_nativeScanPending && !_nativeAbortRequested &&
+        (retainedPublication || (!_nativeWasUp && !_nativeLinkUpSent)) && _wmiScan.completed && !_wmiScan.txOwned &&
+        !_wmi.credits.outstanding && !s.wmiOwned && !s.txOwned && !s.dataPending &&
+        !s.peerCount && !s.pmfTXPending && !_rxSetup.pendingMPDUs &&
+        !s.vdevStarted && !s.vdevStartIssued && !s.peerCreateIssued &&
+        s.stage==Ath10k::LinkStage::Disabled && s.disconnect==Ath10k::DisconnectStage::None;
+}
+// Start the existing asynchronous firmware teardown only after Start/Prep were
+// accepted. All checks and mutations run under the same radio/WCL gates.
+IOReturn Ath10kPCIDevice::nativeDisconnectForRoam(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || _nativeStopping || !_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled)return kIOReturnNotReady;
+    if(!sec->preparedRoam.validate(sec->profile,_nativeMACCurrent,now) ||
+       sec->roamDelivery.phase()!=AthNative::RoamEvents::Delivery::Phase::Prepared)return kIOReturnNotReady;
+    if(sec->roamRetirement || _nativeJoinPending || _nativeScanPending || _nativeAbortRequested ||
+       !_nativeWasUp || !_nativeLinkUpSent || !_wmiScan.completed || _wmiScan.txOwned ||
+       _wmi.credits.outstanding || s.wmiOwned || s.txOwned || s.dataPending || s.pmfTXPending ||
+       s.rekeyKind || sec->replyPending || sec->keysPending || sec->authorizePending || sec->supplicant.pairwisePending() ||
+       s.cancelRequested || s.stage!=Ath10k::LinkStage::Connected || !s.portAuthorized ||
+       s.disconnect!=Ath10k::DisconnectStage::None)return kIOReturnBusy;
+    // requestDisconnect only closes the data port and queues Drain. No wait,
+    // command submission or callback can race the following software retirement.
+    if(!Ath10k::requestDisconnect(s,now))return kIOReturnBusy;
+    if(!sec->beginRoamRetirement(sec->profile.generation(),sec->roamDelivery.generation(),_nativeMACCurrent,now)){
+        s.cancelRequested=true;discardNativeSecurity();networkLink(false);return kIOReturnNotReady;
+    }
+    networkLink(false);return kIOReturnSuccess;
+}
+
+// Radio/WCL gates held. Caller must finish ordered roam notifications before
+// dropping old-link publication flags; this function does not fabricate them.
+// Busy preserves the one-shot request, but expired/cancelled work is wiped.
+IOReturn Ath10kPCIDevice::nativeContinueRoam(UInt64 now){
+    auto sec=_nativeSecurity;
+    if(!sec)return kIOReturnNotReady;
+    if(_nativeStopping || !_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){
+        sec->preparedRoam.clear();return kIOReturnNotReady;
+    }
+    if(!sec->preparedRoam.validate(sec->profile,_nativeMACCurrent,now))return kIOReturnNotReady;
+    if(!sec->preserveRoamRetirement(_connection,now))return kIOReturnNotReady;
+    if(!nativeJoinOwnersRetired(true))return kIOReturnBusy;
+    AirportWCL::JoinRequest join{};
+    if(!sec->preparedRoam.take(sec->profile,_nativeMACCurrent,now,join))return kIOReturnNotReady;
+    sec->roamRetirement=0;
+    const bool wasUp=_nativeWasUp,linkSent=_nativeLinkUpSent;
+    _nativeWasUp=_nativeLinkUpSent=false;
+    const IOReturn result=nativeBeginJoin(join);
+    if(result==kIOReturnSuccess)_nativeRoamJoinGeneration=sec->roamDelivery.generation();
+    else {_nativeWasUp=wasUp;_nativeLinkUpSent=linkSent;}
+    return result;
+}
+
+// Shared radio-gated admission for decoded macOS requests and prepared roaming
+// requests. Consumes/wipes the supplied credential copy on every return path.
+IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
+    if(!_nativeSecurity || _nativeStopping){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
+    if(!join.ssidLength || join.ssidLength>sizeof(join.ssid) ||
+       join.keyLength>sizeof(join.key) || join.rsnLength>sizeof(join.rsn) || !AthNative::validMAC(join.bssid)){
+        AthSecurity::wipe(&join,sizeof(join));return kIOReturnBadArgument;
+    }
+    auto &s=_connection;
         setProperty("Ath10kNativeJoinAuth",UInt64(join.upperAuth),32);
         setProperty("Ath10kNativeJoinAuthExt",UInt64(join.upperAuthExt),32);
         setProperty("Ath10kNativeJoinAllowAuths",UInt64(join.allowAuths),32);
@@ -1185,7 +1327,15 @@ IOReturn Ath10kPCIDevice::nativeJoinRequest(void *data){
                 "native-sae-not-admitted":"unsupported-authentication");
             AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;}
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
-        if(_nativeJoinPending || _nativeScanPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || !_wmiScan.completed || s.stage!=Ath10k::LinkStage::Disabled || s.disconnect!=Ath10k::DisconnectStage::None){AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
+        // Disabled alone is not evidence that old transport/peer ownership has
+        // retired. A queued join must not overwrite state still used by CE/HTT,
+        // PMF TX or scan completion; the teardown worker owns those barriers.
+        if(!nativeJoinOwnersRetired()){
+            AthSecurity::wipe(&join,sizeof(join));return kIOReturnBusy;}
+        // An admitted replacement retires the previous credential generation
+        // before candidate/security setup can fail. Busy requests leave it intact.
+        _nativeSecurity->preparedRoam.clear();
+        _nativeSecurity->profile.clear();
         s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal || sae;s.pmfRequired=sae;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
@@ -1218,6 +1368,10 @@ IOReturn Ath10kPCIDevice::nativeJoinRequest(void *data){
                 _nativeSecurity->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){_nativeSecurity->supplicant.reset();setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
+        if(!_nativeSecurity->profile.replace(join,s.local,sae)){
+            _nativeSecurity->reset();setProperty("Ath10kNativeJoinReason","profile-retention-failed");
+            AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
+        }
         _nativeJoin=join;AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));AthSecurity::wipe(&join,sizeof(join));
         setProperty("Ath10kNativeJoinReason","accepted");
         _nativeJoinPending=true;_nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=_nativeJoinFailed=false;_nativeJoinDeadline=Ath10k::uptimeNS()/1000000u+30000;
@@ -1246,6 +1400,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
            _nativeScanPending || _nativeJoinPending || _nativeAbortRequested || _nativeWasUp || _nativeLinkUpSent || s.stage!=Ath10k::LinkStage::Disabled ||
            s.disconnect!=Ath10k::DisconnectStage::None || s.peerCount || s.wmiOwned || s.txOwned || _wmi.credits.outstanding)return kIOReturnBusy;
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return kIOReturnNoMemory;
+        if(_nativeSecurity){_nativeSecurity->preparedRoam.clear();_nativeSecurity->profile.clear();}
         bcopy(address,_nativeMACRequested,6);_nativeMACResult=kIOReturnNotReady;
         _nativeMACStep=1;_nativeMACSubmitted=false;_nativeMACActive=_nativeMACWaiting=true;
         _nativeMACSince=Ath10k::uptimeNS()/1000000u;++_nativeMACGeneration;
@@ -1329,7 +1484,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
             (s.wmiOwned?8u:0u)|(s.txOwned?16u:0u)|(_wmi.credits.outstanding?32u:0u)|
             ((s.stage!=Ath10k::LinkStage::Disabled && (!s.portAuthorized || s.stage!=Ath10k::LinkStage::Connected))?64u:0u)|
             ((_nativeWasUp || _nativeLinkUpSent) && s.stage==Ath10k::LinkStage::Disabled?128u:0u)|
-            (_nativeAbortRequested?256u:0u)|
+            (_nativeAbortRequested?256u:0u)|((_nativeRoamPending || _nativeRoamJoinGeneration)?2048u:0u)|
             (s.csa.phase!=Ath10k::ChannelSwitchPhase::Idle?512u:0u)|
             ((s.maintenance.blocked || s.maintenance.draining || s.maintenance.step)?1024u:0u);
         setProperty("Ath10kNativeScanBusyMask",UInt64(busy),32);
@@ -1345,6 +1500,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativeScanStreamed=false;
         return kIOReturnSuccess;}
     case N::setWCL_SCAN_ABORT:{if(_nativeScanPending)_wmiScan.cancelRequested=true;return kIOReturnSuccess;}
+    case N::setWCL_ROAM_USER_CACHE:return nativeRoamCacheRequest(data);
+    case N::setWCL_REASSOC:return nativeRoamRequest(data);
     case N::setWCL_ASSOCIATE:return nativeJoinRequest(data);
     case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:{
         // airportd leaves even an idle interface before a new association.
@@ -1358,7 +1515,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         s.portAuthorized=false;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;networkLink(false);
         if(_nativeSecurity)_nativeSecurity->reset();
         if(op==N::setWCL_JOIN_ABORT){
-            _nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
+            if(!_nativeRoamJoinGeneration){_nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));}
             _nativeAbortRequested=true;requestNativeService();
         }
         return kIOReturnSuccess;}
@@ -1419,7 +1576,7 @@ IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *
     // Do not progress crypto or publish join success in that handoff window.
     // Once radio quiescence completes, inactive-runtime terminal events still run.
     if(self->powerIOBlocked() && self->_wmiLive.active)return kIOReturnNotReady;
-    if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending && !self->_nativeLinkUpSent && !self->_nativeAbortRequested))return kIOReturnNotReady;
+    if(self->_nativeStopping || (!self->_wmiLive.active && !self->_nativeWasUp && !self->_nativeJoinPending && !self->_nativeScanPending && !self->_nativeLinkUpSent && !self->_nativeAbortRequested && !self->_nativeRoamPending))return kIOReturnNotReady;
     self->serviceNative(Ath10k::uptimeNS()/1000000u);
     if(self->_nativePostError!=kIOReturnSuccess){
         self->_nativeServicePending=true;return kIOReturnNoMemory;
@@ -1440,10 +1597,10 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     const bool associated=Ath10k::connectionAssociated(s);
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
-    if(sec && (sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
+    if(sec && (sec->profile.generation() || sec->preparedRoam.generation() || sec->roamRetirement || sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
                sec->pskPreparation.active() || sec->saePreparation.active() || sec->saeSession || sec->saeRadio || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
-        s.disconnect!=Ath10k::DisconnectStage::None))discardNativeSecurity();
+        s.disconnect!=Ath10k::DisconnectStage::None) && !sec->preserveRoamRetirement(s,now))discardNativeSecurity();
     // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
         // Retire an expired candidate before transmitting its M2 or consuming
@@ -1561,7 +1718,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             }
         }
     }
-    if(_nativeAbortRequested && post(AirportWCL::JoinAbortComplete,nullptr,0))_nativeAbortRequested=false;
+    if(_nativeAbortRequested && !_nativeRoamPending && !_nativeRoamJoinGeneration && post(AirportWCL::JoinAbortComplete,nullptr,0))_nativeAbortRequested=false;
 
     if(_nativeScanPending){
         // Publish discoveries while firmware visits the remaining channels.
@@ -1594,13 +1751,57 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             }
         }
     }
+    // An authenticated old-AP policy update may arrive after REASSOC admission.
+    // Apply it before retiring the supplicant so a prepared profile cannot
+    // bypass stricter policy merely because this tick also starts teardown.
+    if(_nativeRoamPending && sec && s.securityAKM==8 && Ath10k::connectionAssociated(s) &&
+       s.portAuthorized && s.securityPhase==5 && !s.rekeyKind && sec->pmfSession && sec->pmfSession->portReady() &&
+       !sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->supplicant.pairwisePending()){
+        const UInt64 generation=sec->pmfSession->activeGeneration();
+        auto &policy=sec->transitionPolicy;AthSecurity::TransitionDisableUpdate update{};
+        if(policy.matches(s.local,s.bssid,generation) && sec->supplicant.takeTransitionDisable(s.local,s.bssid,update) && policy.observe(update,generation)){
+            const auto previous=sec->profile.generation();sec->profile.restrictPolicy(previous,update.bitmap[0]);
+            if(previous!=sec->profile.generation())sec->preparedRoam.clear();
+        }
+    }
+    if(_nativeRoamPending && sec){
+        using Phase=AthNative::RoamEvents::Delivery::Phase;
+        const UInt64 token=_nativeRoamPending;
+        bool failed=_nativeStopping || !_nativeRadioOn || !_wmiLive.active || powerIOBlocked() ||
+            _wmiEvents.rfKill || !_networkEnabled || now>=_nativeRoamDeadline ||
+            s.cancelRequested || s.stage==Ath10k::LinkStage::Failed ||
+            !sec->preparedRoam.validate(sec->profile,_nativeMACCurrent,now);
+        if(sec->roamDelivery.phase()==Phase::StartPending && !sec->roamDelivery.sendStart(token,post))return;
+        if(!failed && sec->roamDelivery.phase()==Phase::Started && !sec->roamDelivery.sendPrep(token,post))return;
+        if(!failed && !sec->roamRetirement){
+            const IOReturn result=nativeDisconnectForRoam(now);
+            if(result==kIOReturnBusy)return;
+            failed=result!=kIOReturnSuccess;
+        }
+        if(!failed){
+            const IOReturn result=nativeContinueRoam(now);
+            if(result==kIOReturnBusy)return;
+            failed=result!=kIOReturnSuccess;
+            if(!failed)_nativeRoamPending=0;
+        }
+        if(failed){
+            sec->preparedRoam.clear();
+            if(!sec->roamDelivery.sendComplete(token,1,false,post))return;
+            const bool retired=sec->roamRetirement!=0;
+            _nativeRoamPending=0;sec->roamRetirement=0;
+            if(retired || _nativeDeferredLinkDown)networkLink(false);
+        }
+    }
     const bool associated=Ath10k::connectionAssociated(s);
+    const bool roamJoin=_nativeRoamJoinGeneration!=0;
     const bool joinFailed=_nativeJoinPending && (_nativeJoinFailed || s.cancelRequested ||
         s.stage==Ath10k::LinkStage::Failed || s.disconnect!=Ath10k::DisconnectStage::None || now>=_nativeJoinDeadline);
     if(_nativeJoinPending && !joinFailed && associated && !_nativeAssocSent){
         AirportWCL::AssociationEvent event{};bcopy(s.bssid,event.bssid,6);event.status=s.associationStatus;
         event.driverStatus=event.status?kIOReturnError:kIOReturnSuccess;
-        if(post(AirportWCL::AssocComplete,&event,sizeof(event)))_nativeAssocSent=event.status==0;
+        if(roamJoin){
+            if(!event.status && sec && sec->roamDelivery.sendReassoc(_nativeRoamJoinGeneration,post))_nativeAssocSent=true;
+        }else if(post(AirportWCL::AssocComplete,&event,sizeof(event)))_nativeAssocSent=event.status==0;
     }
     if(_nativeJoinPending && !joinFailed && associated && _nativeAssocSent && s.beaconFrameBytes && !_nativeBeaconSent){
         if(!_nativeJoinBSSSent){
@@ -1630,7 +1831,12 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             }
             AirportWCL::ConnectionEvent event{};event.status=success?0:1;
             bcopy(_nativeJoin.bssid,event.peers[0].bssid,6);event.peers[0].driverStatus=success?kIOReturnSuccess:kIOReturnError;
-            if(post(AirportWCL::ConnectComplete,&event,sizeof(event))){
+            const bool delivered=roamJoin?
+                (sec && sec->roamDelivery.sendComplete(_nativeRoamJoinGeneration,event.status,
+                    _nativeJoinBSSSent && _nativeLinkUpSent && _nativeBeaconSent,post)):
+                post(AirportWCL::ConnectComplete,&event,sizeof(event));
+            if(delivered){
+                _nativeRoamJoinGeneration=0;
                 _nativeJoinPending=false;AthSecurity::wipe(&_nativeJoin,sizeof(_nativeJoin));
             }
         }
@@ -1652,7 +1858,11 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
                 !_nativeJoinPending && !_nativeJoinFailed && _nativeLinkUpSent && _nativeBeaconSent &&
                 sec->pmfSession->portReady()){
             AthSecurity::TransitionDisableUpdate update{};
-            if(sec->supplicant.takeTransitionDisable(s.local,s.bssid,update))policy.observe(update,generation);
+            if(sec->supplicant.takeTransitionDisable(s.local,s.bssid,update) && policy.observe(update,generation)){
+                const auto previousProfile=sec->profile.generation();
+                sec->profile.restrictPolicy(previousProfile,update.bitmap[0]);
+                if(sec->profile.generation()!=previousProfile)sec->preparedRoam.clear();
+            }
             AthSecurity::TransitionDisableDelivery::Ticket ticket{};
             if(policy.snapshot(s.local,s.bssid,generation,ticket)){
                 auto event=AirportWCL::completedSupplicantPolicy(ticket.flags);
@@ -1670,7 +1880,8 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
         AirportWCL::SequoiaLqmUpdate update{};update.rssiValid=1;update.rssi=s.signalDbm;
         if(post(AirportWCL::LqmUpdate,&update,sizeof(update)))_nativeReportedBeacon=s.beaconFrameSerial;
     }
-    if((_nativeWasUp || (_nativeLinkUpSent && !_nativeJoinPending)) && !up){
+    if((_nativeWasUp || (_nativeLinkUpSent && !_nativeJoinPending)) && !up &&
+       !(sec && sec->preserveRoamRetirement(s,now))){
         if(!_nativeDeauthSent){
             AirportWCL::DeauthEvent event{};bcopy(_nativeLastBSSID,event.bssid,6);event.reason=3;event.deauthentication=1;
             if(s.apDisconnect.valid && Ath10k::sameMAC(s.apDisconnect.bssid,_nativeLastBSSID)){

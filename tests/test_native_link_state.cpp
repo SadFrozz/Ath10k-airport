@@ -77,6 +77,29 @@ int main(){
     assert(d->interface.addressCalls==1 && !d->interface.linkCalls);
     update[8]=0;update[7]=1;assert(d->nativeLinkStateUpdate(update)==kIOReturnSuccess);
     assert(d->interface.addressCalls==1 && d->interface.linkCalls==1);
+    // Reassociation ordering: WCL handles link-up by querying current BSS.
+    // A queued update for AP A must not overwrite AP B after radio commit,
+    // and scan scratch containing AP A must not leak into the queried beacon.
+    const auto oldAP=d->_connection.ap;UInt8 oldUpdate[16]{};
+    memcpy(oldUpdate,oldAP.bssid,6);oldUpdate[6]=oldUpdate[7]=oldUpdate[8]=1;
+    for(UInt8 suffix: {UInt8(9),UInt8(10),UInt8(11)}){
+        auto &state=d->_connection;state.ap.bssid[5]=state.bssid[5]=suffix;
+        state.operatingChannel=state.ap.rxChannel=11;
+        memcpy(state.beaconFrame+10,state.bssid,6);memcpy(state.beaconFrame+16,state.bssid,6);
+        assert(nativeBSSMessage(oldAP,d->_nativeBSSMessage,sizeof(d->_nativeBSSMessage)));
+        const auto calls=d->interface.linkCalls;
+        assert(d->nativeLinkStateUpdate(oldUpdate)==kIOReturnBadArgument);
+        assert(d->interface.linkCalls==calls);
+        UInt8 bss[0x840]{},beacon[0x808]{};
+        assert(d->nativeCurrentAPInfo(AthNativeOp::getWCL_BSS_INFO,bss)==kIOReturnSuccess);
+        assert(!memcmp(bss+offsetof(AirportWCL::BeaconMetadata,bssid),state.bssid,6));
+        assert(d->nativeCurrentAPInfo(AthNativeOp::getBEACON_INFO,beacon)==kIOReturnSuccess);
+        assert(!memcmp(beacon+4+16,state.bssid,6));
+        UInt8 newUpdate[16]{};memcpy(newUpdate,state.bssid,6);newUpdate[6]=newUpdate[7]=newUpdate[8]=1;
+        assert(d->nativeLinkStateUpdate(newUpdate)==kIOReturnSuccess);
+        assert(!memcmp(d->interface.ap,state.bssid,6));
+        memcpy(oldUpdate,newUpdate,sizeof(oldUpdate));
+    }
     d->_connection.beaconFrameBytes=0;UInt8 output[0x900];memset(output,0xa5,sizeof(output));
     assert(d->nativeCurrentAPInfo(queries[0],output)==kIOReturnNotReady && output[0]==0xa5);
     for(auto op:queries)assert(d->nativeCurrentAPInfo(op,nullptr)==kIOReturnBadArgument);

@@ -70,13 +70,20 @@ def inventory():
                 address='0xffffff80021e7220' if name == 'getHT_CAPABILITY' else '0xffffff80021e7452',
                 failure_effect='clears cached HT capability length' if name == 'getHT_CAPABILITY' else 'clears cached VHT-capable flag')]
         if name == 'setWCL_REASSOC':
-            row['requirement_audit'] = 'stock caller confirmed; request partially reconstructed; roaming implementation and completion contract pending'
+            row['requirement_audit'] = 'host-requested cached-candidate reassociation integrated with retirement and ordered success/failure completion; local production-path tests only; physical inter-AP validation unavailable'
             row['stock_consumer_evidence'] = [dict(
                 module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
                 consumer='WCLNetManager::sendReassocCommand',
                 address='0xffffff800212933e', command=0x1aa, input_bytes=0xbc,
                 observed_fields=dict(channel_count=0x94, flags=0x98, ssid=0x99, ssid_length=0xb9),
                 failure_effect='nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established')]
+        if name == 'setWCL_ROAM_USER_CACHE':
+            row['requirement_audit'] = 'mandatory post-roam clear/disable and empty readback implemented; nonempty autonomous firmware cache and override enable explicitly unsupported'
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='WCLAdaptiveRoam::configureUserRoamCache', address='0xffffff80022dee46',
+                command=0x1af, input_bytes=128,
+                semantics='successful roam issues empty clear plus override disable; channel-offload policy remains a separate unsupported capability')]
         if name in ('getRSN_XE', 'setRSN_XE'):
             row['requirement_audit'] = ('read-only native association encoder integrated; host lifecycle/ABI tests, pending hardware verification' if name == 'getRSN_XE' else 'stock setter reconstructed; next-join binding and update/cancellation semantics pending; still explicitly unsupported')
             row['stock_producer_evidence'] = [dict(

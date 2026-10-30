@@ -35,6 +35,7 @@ public:
     unsigned drains=0;void *_nativeServiceLock=nullptr;
     bool _nativeStarted=false,_nativeAttached=false,_nativeControllerAttached=false,_nativeReadyPublished=true;
     Native *_nativeInterface=nullptr;BSD *_networkInterface=nullptr;Security *_nativeSecurity=nullptr;
+    uint64_t _nativeRoamPending=3,_nativeRoamJoinGeneration=4,_nativeRoamDeadline=5;
     uint8_t _nativeJoin[48]{};
     Loop radio,wcl;Gate *_nativeGate=nullptr,*_nativeBSDGate=nullptr;
     void stopNativeRequests(){++drains;events.push_back(0);}
@@ -66,6 +67,7 @@ int main(){
         assert(!d._nativeInterface && !d._networkInterface && !d._nativeGate && !d._nativeBSDGate && !d._nativeSecurity);
         assert(!d._nativeStarted && !d._nativeAttached && !d._nativeControllerAttached && !d._nativeReadyPublished);
         for(auto v:d._nativeJoin)assert(!v);
+        assert(!d._nativeRoamPending && !d._nativeRoamJoinGeneration && !d._nativeRoamDeadline);
         assert(events.front()==0 && events[1]==1 && events[2]==2);
         auto release=std::find(events.begin(),events.end(),6),remove=std::find(events.begin(),events.end(),8);
         assert(release<remove);

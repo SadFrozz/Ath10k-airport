@@ -13,6 +13,7 @@ struct Driver {
     struct Security {unsigned resets=0;void reset(){++resets;}} security;
     Security *_nativeSecurity=&security;
     bool _nativeJoinPending=false,_nativeAbortRequested=false,_nativeJoinFailed=false;
+    unsigned _nativeRoamJoinGeneration=0;
     unsigned _nativeJoin=123,services=0,links=0;
     void networkLink(bool up){assert(!up);++links;}
     void requestNativeService(){++services;}
@@ -39,6 +40,8 @@ int main(){
         assert(!retired.s.cancelRequested); // Do not poison the next radio owner.
         if(op==N::setWCL_LEAVE_NETWORK)assert(retired._nativeJoinPending);
         else assert(!retired._nativeJoinPending && retired._nativeAbortRequested);
+        Driver roaming;roaming._nativeRoamJoinGeneration=7;roaming._nativeJoinPending=true;
+        assert(roaming.leave(op)==0 && roaming._nativeJoinPending && roaming._nativeJoinFailed && roaming._nativeRoamJoinGeneration==7);
         Driver teardown;teardown.s.disconnect=Ath10k::DisconnectStage::DeletePeer;
         assert(teardown.leave(op)==0 && teardown.s.cancelRequested);
     }

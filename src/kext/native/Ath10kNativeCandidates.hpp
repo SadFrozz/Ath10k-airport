@@ -35,10 +35,19 @@ inline const char *prepareRoamCandidate(const Ath10k::ConnectionState &live,
     if(request.ssidLength!=live.ssidLength)return "roam-request-ssid-mismatch";
     for(UInt32 i=0;i<request.ssidLength;++i)
         if(request.ssid[i]!=live.ssid[i])return "roam-request-ssid-mismatch";
-    bool broadcast=true,nonzero=false;
-    for(UInt32 i=0;i<6;++i){broadcast&=request.bssid[i]==255;nonzero|=request.bssid[i]!=0;}
-    if(!broadcast && (!nonzero || (request.bssid[0]&1)))return "roam-target-invalid";
-    if(!broadcast && !Ath10k::sameMAC(request.bssid,ap.bssid))return "roam-target-mismatch";
+    if(!request.bssidCount || request.bssidCount>7)return "roam-target-invalid";
+    bool matches=false;
+    for(UInt32 target=0;target<request.bssidCount;++target){
+        const auto address=target?request.additionalBSSIDs[target-1]:request.bssid;
+        bool broadcast=true,nonzero=false;
+        for(UInt32 i=0;i<6;++i){broadcast&=address[i]==255;nonzero|=address[i]!=0;}
+        // A wildcard is supported only as the single-target request form.
+        if((broadcast && request.bssidCount!=1) || (!broadcast && (!nonzero || (address[0]&1))))return "roam-target-invalid";
+        matches|=broadcast || Ath10k::sameMAC(address,ap.bssid);
+    }
+    if(!matches)return "roam-target-mismatch";
+    bool apNonzero=false;for(UInt32 i=0;i<6;++i)apNonzero|=ap.bssid[i]!=0;
+    if(!apNonzero || (ap.bssid[0]&1))return "roam-candidate-address-invalid";
     const UInt32 primary=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
     if(!Ath10k::wmiScanChannelAllowed(primary))return "bss-channel-unsupported";
     const UInt16 spec=UInt16(primary|(primary>14?0xd000:0x1000));
@@ -50,7 +59,7 @@ inline const char *prepareRoamCandidate(const Ath10k::ConnectionState &live,
 // hysteresis/force policy and the firmware/security transaction.
 inline bool chooseRoamCandidate(const Ath10k::ConnectionState &live,
     const NativeReassocRequest &request,const CandidateCache &cache,UInt64 now,
-    Ath10k::CandidateConfiguration &out){
+    Ath10k::CandidateConfiguration &out,UInt64 *observedOut=nullptr){
     if(cache.bss.count>64)return false;
     bool found=false;UInt64 bestObserved=0;
     Ath10k::CandidateConfiguration prepared{};
@@ -71,6 +80,7 @@ inline bool chooseRoamCandidate(const Ath10k::ConnectionState &live,
         }
         if(better){out=prepared;bestObserved=cache.observed[i];found=true;}
     }
+    if(found && observedOut)*observedOut=bestObserved;
     return found;
 }
 

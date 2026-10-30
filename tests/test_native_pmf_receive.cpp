@@ -8,6 +8,9 @@
 #include "../src/shared/Ath10kSHA256.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
+#include "../src/kext/native/Ath10kNativeProfile.hpp"
+#include "../src/kext/native/Ath10kNativeRoamEvents.hpp"
+#include "../src/kext/native/Ath10kNativeRoamCache.hpp"
 #include "../src/kext/native/Ath10kNativePMFInbox.hpp"
 #include "common_crypto_personal.hpp"
 #include "pmf_ccmp_vectors.inc"
@@ -54,6 +57,7 @@ public:
  class NativeSecurity;NativeSecurity *_nativeSecurity=nullptr;Ath10k::ConnectionState _connection;
  static bool nativePMFManagement(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32);
  struct {bool completed=true,txOwned=false,cancelRequested=false;} _wmiScan;
+ struct {unsigned pendingMPDUs=0;} _rxSetup;
  struct {struct {unsigned outstanding=0;} credits;UInt32 htCapability=0,vhtCapability=0;} _wmi;
  struct {bool active=true;} _wmiLive;
  Ath10k::WMIScanChannelsState _wmiRadio[Ath10k::kWMIRadioStepCount]{};
@@ -71,14 +75,23 @@ public:
  struct Payload {bool kSupportsMFP=false;} payloadData;
  const Payload &payload() const {return payloadData;}
  Ath10k::RegulatoryPolicy _regulatory;
- UInt8 _nativeMACCurrent[6]{};AirportWCL::JoinRequest _nativeJoin{};UInt64 _nativeJoinDeadline=0;
+ UInt8 _nativeMACCurrent[6]{};AirportWCL::JoinRequest _nativeJoin{};UInt64 _nativeRoamPending=0,_nativeRoamDeadline=0;UInt64 _nativeRoamJoinGeneration=0;
+    UInt64 _nativeJoinDeadline=0;
  std::map<std::string,uint64_t> numericProperties;std::map<std::string,std::string> stringProperties;
  void setProperty(const char *k,const char *v){++propertyWrites;stringProperties[k]=v;}
  void setProperty(const char *k,bool v){++propertyWrites;numericProperties[k]=v;
   if(!strcmp(k,"Ath10kNativePMFStartupQueryStarted")){assert(v);++pmfProbeAnnouncements;}}
  void setProperty(const char *k,UInt64 v,unsigned){++propertyWrites;numericProperties[k]=v;}
+ bool linkUp=true;void networkLink(bool up){linkUp=up;}
  bool nativeSAEEnabled() const {return experimentalSAE;}
- int nativeJoinRequest(void *);
+ int nativeJoinRequest(void *);int nativeRoamRequest(void *);
+    int nativeRoamCacheRequest(void *);
+    bool nativeRetainSystemLink();
+ void requestNativeService(){}
+ int nativeBeginJoin(AirportWCL::JoinRequest &);
+    bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
+    int nativeContinueRoam(UInt64);
+    int nativeDisconnectForRoam(UInt64);
  void publishNativeSecurityState(UInt64);
  UInt64 _nativeSecurityPublished[10]{},_nativeSecuritySnapshotMS=0;bool _nativeSecuritySnapshotPublished=false;
  unsigned propertyWrites=0;

@@ -94,9 +94,22 @@ void Ath10kPCIDevice::networkLink(bool up)
 {
     up=up && _networkEnabled && _wmiLive.active && _connection.disconnect==Ath10k::DisconnectStage::None;
     if(!up){_dataTXStalled=false;flushNetworkRX();_rxReorder.reset([](Ath10k::RXBatch *b){IOFree(b,sizeof(*b));});_rxDefrag.reset();_rxBatch.reset();}
+#ifdef ATH10K_NATIVE
+    const bool wasDeferred=_nativeDeferredLinkDown;
+    const bool retain=!up && nativeRetainSystemLink();
+    _nativeDeferredLinkDown=retain;
+    if(_networkLinkUp==up && !wasDeferred)return;
+#else
     if(_networkLinkUp==up)return;
+#endif
     _networkLinkUp=up;
     if(!up && getOutputQueue()){getOutputQueue()->stop();getOutputQueue()->flush();}
+#ifdef ATH10K_NATIVE
+    // Data admission and queues are closed above. Preserve BSD carrier only
+    // for the admitted roam; later failure must publish even if internal up
+    // was already false while the notification was deferred.
+    if(retain)return;
+#endif
     setLinkStatus(kIONetworkLinkValid|(up?kIONetworkLinkActive:0));
     if(up && getOutputQueue())getOutputQueue()->start();
 }
@@ -1183,7 +1196,7 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
     if(nowMs-s.sinceMs>=5000)return "disconnect-stage-timeout";
     if(s.disconnect==DisconnectStage::Drain){
         if(!_wmiScan.completed){_wmiScan.cancelRequested=true;return nullptr;}
-        if(s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
+        if(_wmiScan.txOwned || s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
         const bool started=s.vdevStarted || (s.vdevStartIssued && !s.startReply) ||
             (s.stage>=Ath10k::LinkStage::Peer && s.stage<Ath10k::LinkStage::Failed);
         s.disconnect=started?(s.vdevUp || (s.stage>=Ath10k::LinkStage::Barrier && s.stage<Ath10k::LinkStage::Failed)?DisconnectStage::Down:DisconnectStage::ClearPair):
@@ -1232,7 +1245,14 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
     if(s.disconnect==DisconnectStage::Stop && !s.stopReply)return nullptr;
     if(s.disconnect==DisconnectStage::Stop){s.vdevStartIssued=s.vdevStarted=s.vdevUp=false;}
     if(s.disconnect==DisconnectStage::Barrier){
-        if(!_connectionEcho.replyReceived || _rxSetup.pendingMPDUs)return nullptr;
+        // A matching ECHO orders firmware commands, not independent CE/HTT
+        // owners. Never erase a surviving owner while exposing Disabled to
+        // common join admission (including a prepared roam).
+        if(!_connectionEcho.replyReceived ||
+           _connectionEcho.cookie!=(0xa7590000u|((s.disconnectCount+1)&0xffff)) ||
+           _rxSetup.pendingMPDUs || !_wmiScan.completed || _wmiScan.txOwned ||
+           s.txOwned || s.dataPending || s.wmiOwned || _wmi.credits.outstanding ||
+           s.peerCount || s.pmfTXPending)return nullptr;
         Ath10k::resetDisconnected(s);_connectionEcho={};_controlOwner=nullptr;
         IOLog("Ath10kMac: DISCONNECT complete count=%u; runtime and RX ring retained, ready to reconnect\n",s.disconnectCount);
     }else{

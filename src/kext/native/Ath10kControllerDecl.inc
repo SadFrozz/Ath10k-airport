@@ -27,6 +27,13 @@ public:
     static IOReturn nativeAction(OSObject *,void *,void *,void *,void *);
     IOReturn nativeRequestGated(AthNativeOp,void *);
     IOReturn nativeJoinRequest(void *);
+    IOReturn nativeRoamRequest(void *);
+    IOReturn nativeRoamCacheRequest(void *);
+    bool nativeRetainSystemLink();
+    IOReturn nativeBeginJoin(AirportWCL::JoinRequest &);
+    bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
+    IOReturn nativeContinueRoam(UInt64);
+    IOReturn nativeDisconnectForRoam(UInt64);
     bool nativePreparePersonalAuth(UInt64,const char *&);
     bool nativeSAEEnabled() const;
     bool nativePMFStartupQueryEnabled() const;
@@ -107,6 +114,9 @@ private:
     UInt32 _nativeReportedBeacon=0;
     int _nativeReportedQuality=-2;
     bool _nativeReadyPublished=false,_nativeReadyRequested=false,_nativeAbortRequested=false,_nativeReadyResetSent=false;
+    bool _nativeDeferredLinkDown=false;
+    UInt64 _nativeRoamPending=0,_nativeRoamDeadline=0;
+    UInt64 _nativeRoamJoinGeneration=0;
     UInt64 _nativeJoinDeadline=0;
     AirportWCL::JoinRequest _nativeJoin{};
     AirportWCL::ScanRequest _nativeScan{};

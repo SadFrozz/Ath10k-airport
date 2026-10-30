@@ -58,6 +58,7 @@ public:
  static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
  void discardNativeSecurity(){++securityDiscards;}unsigned securityDiscards=0;
  bool _nativeWasUp=false,_nativeJoinPending=false,_nativeScanPending=false;
+ unsigned _nativeRoamPending=0;
  bool _nativeLinkUpSent=false,_nativeAbortRequested=false,failPost=false;
  IOReturn _nativePostError=kIOReturnSuccess;
  bool _nativeStarted=true,_nativeReadyRequested=true,_nativeReadyPublished=false;

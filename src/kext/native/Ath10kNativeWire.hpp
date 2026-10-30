@@ -185,18 +185,25 @@ inline UInt32 nativeScanDwellBudget(UInt32 maximumAwayMs){
 // direct producers. This decoder does not imply a working roaming backend.
 struct NativeReassocRequest {
     UInt16 channels[50]{};UInt32 channelCount=0;
-    UInt8 bssid[6]{},flags=0,ssid[32]{},ssidLength=0;
+    UInt8 bssid[6]{},additionalBSSIDs[6][6]{};UInt32 bssidCount=1;
+    // Bit0 follows WCL 6GHz channel filtering; it is not a force-roam bit.
+    UInt8 flags=0,ssid[32]{},ssidLength=0;
 };
 inline bool nativeDecodeReassoc(const void *data,size_t bytes,NativeReassocRequest &out){
     if(!data || bytes!=0xbc)return false;
     const auto *p=static_cast<const UInt8 *>(data);
     const UInt32 count=AirportWCL::read32(p+0x94);
-    // +0x90 is always 1 in the observed producers. Do not infer arbitrary
-    // BSSID-list semantics from unused bytes or accept unknown forms.
-    if(AirportWCL::read32(p+0x90)!=1 || count>50 || p[0xb9]>32 || (p[0x98]&~1u))return false;
+    // Stock V3 consumer copies up to seven six-byte BSSIDs from +0x64.
+    // Reject overlong/empty lists rather than silently truncating requests.
+    const UInt32 bssids=AirportWCL::read32(p+0x90);
+    if(!bssids || bssids>7 || count>50 || p[0xb9]>32 || (p[0x98]&~1u))return false;
     NativeReassocRequest decoded{};decoded.channelCount=count;
     for(UInt32 i=0;i<count;++i)decoded.channels[i]=Ath10k::htcReadLE16(p+2*i);
-    for(UInt32 i=0;i<6;++i)decoded.bssid[i]=p[0x64+i];
+    decoded.bssidCount=bssids;
+    for(UInt32 target=0;target<bssids;++target){
+        auto address=target?decoded.additionalBSSIDs[target-1]:decoded.bssid;
+        for(UInt32 i=0;i<6;++i)address[i]=p[0x64+6*target+i];
+    }
     decoded.flags=p[0x98];decoded.ssidLength=p[0xb9];
     for(UInt32 i=0;i<decoded.ssidLength;++i)decoded.ssid[i]=p[0x99+i];
     out=decoded;return true;

@@ -1,4 +1,6 @@
 #include <cassert>
+#include <array>
+#include <vector>
 #include <cstring>
 #include <cstdint>
 #include <initializer_list>
@@ -7,7 +9,119 @@
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
 #include "../src/kext/native/Ath10kNativeMAC.hpp"
+#include "../src/kext/native/Ath10kNativeRoamEvents.hpp"
+#include "../src/kext/native/Ath10kNativeRoamCache.hpp"
 int main(){
+ {using namespace AthNative::RoamEvents;
+  const uint8_t target[]={2,1,2,3,4,5};
+  for(unsigned failureStage=0;failureStage<4;++failureStage){
+   Delivery delivery;uint64_t generation=0;std::vector<uint32_t> accepted;bool reject=true;
+   auto post=[&](uint32_t id,void *payload,size_t bytes){
+    assert(bytes==(id==CompleteID?168u:id==ReassocID?8u:12u));
+    // Mutation of a rejected payload cannot damage later retry metadata.
+    if(reject){memset(payload,0xcc,bytes);return false;}
+    const auto p=static_cast<const uint8_t *>(payload);
+    if(id==PrepID){assert(!memcmp(p+4,target,6));assert(AirportWCL::read32(p)==7);}
+    if(id==CompleteID)assert(AirportWCL::read32(p)==(failureStage?1u:0u));
+    accepted.push_back(id);return true;
+   };
+   assert(!delivery.sendPrep(generation,post) && !delivery.sendReassoc(generation,post));
+   assert(!delivery.sendComplete(generation,1,false,post));
+   assert(delivery.begin(7,target) && !delivery.begin(7,target));
+   generation=delivery.generation();assert(generation);
+   assert(!delivery.sendStart(generation,post));reject=false;
+   assert(delivery.sendStart(generation,post) && !delivery.sendStart(generation,post));
+   assert(!delivery.sendComplete(generation,0,true,post));
+   if(failureStage!=1){
+    reject=true;assert(!delivery.sendPrep(generation,post));reject=false;
+    assert(delivery.sendPrep(generation,post) && !delivery.sendPrep(generation,post));
+    assert(!delivery.sendComplete(generation,0,true,post));
+    if(failureStage!=2){
+     reject=true;assert(!delivery.sendReassoc(generation,post));reject=false;
+     assert(delivery.sendReassoc(generation,post) && !delivery.sendReassoc(generation,post));
+     assert(!delivery.sendComplete(generation,0,false,post));
+    }
+   }
+   reject=true;assert(!delivery.sendComplete(generation,failureStage?1:0,true,post));reject=false;
+   assert(delivery.sendComplete(generation,failureStage?1:0,true,post));
+   assert(!delivery.sendComplete(generation,1,true,post) && !delivery.sendPrep(generation,post));
+   assert(accepted.front()==StartID && accepted.back()==CompleteID);
+   assert(accepted.size()==(failureStage==1?2u:failureStage==2?3u:4u));
+   const uint8_t invalid[]={1,1,2,3,4,5};assert(!delivery.begin(7,invalid));
+   assert(delivery.phase()==Delivery::Phase::Completed && delivery.begin(7,target));
+   const auto current=delivery.generation();assert(current!=generation);
+   assert(!delivery.sendStart(generation,post));
+   assert(delivery.sendStart(current,post));
+   assert(!delivery.sendPrep(generation,post) && !delivery.sendComplete(generation,1,false,post));
+   assert(delivery.sendPrep(current,post));
+   assert(!delivery.sendReassoc(generation,post));
+   assert(delivery.sendReassoc(current,post));
+   assert(!delivery.sendComplete(generation,0,true,post));
+   assert(delivery.sendComplete(current,failureStage?1:0,true,post));
+  }
+ }
+
+ { UInt8 wire[128]{};wire[0x7b]=wire[0x7c]=1;AthNative::RoamCacheRequest request{};
+   assert(AthNative::decodeRoamCache(wire,sizeof(wire),request));
+   assert(!request.count && request.clear && request.updateOverride && !request.overrideEnabled);
+   AthNative::UserRoamCache cache;
+   auto valid=[](const AthNative::RoamCacheChannel &c){return c.version==1 && c.channel==6 && c.flags==10;};
+   assert(cache.apply(request,valid));
+   Ath10k::htcWriteLE32(wire,1);Ath10k::htcWriteLE32(wire+4,6);Ath10k::htcWriteLE32(wire+8,10);
+   wire[0x78]=1;wire[0x7a]=1;assert(AthNative::decodeRoamCache(wire,128,request));
+   assert(cache.apply(request,valid) && cache.count==1 && cache.overrideEnabled && cache.channels[0].channel==6);
+   const auto saved=request;const auto oldCache=cache;
+   for(size_t length=0;length<128;++length){assert(!AthNative::decodeRoamCache(wire,length,request));assert(!memcmp(&request,&saved,sizeof(saved)));}
+   for(unsigned fault=0;fault<8;++fault){auto bad=std::array<UInt8,128>{};memcpy(bad.data(),wire,128);
+     if(fault==0)bad[0x78]=11;else if(fault==1)bad[0x79]=0xff;else if(fault==2)bad[0x7f]=1;else bad[0x7a+fault-3]=2;
+     assert(!AthNative::decodeRoamCache(bad.data(),128,request));assert(!memcmp(&request,&saved,sizeof(saved)));
+   }
+   request.channels[0].channel=0;assert(!cache.apply(request,valid));assert(!memcmp(&cache,&oldCache,sizeof(cache)));
+   request={};request.updateOverride=true;assert(cache.apply(request,valid) && cache.count==1 && !cache.overrideEnabled);
+   request={};request.readChannels=true;assert(cache.apply(request,valid) && cache.count==1);
+   request={};request.clear=true;assert(cache.apply(request,valid) && !cache.count && !cache.overrideEnabled);
+   for(const auto &c:cache.channels)assert(!c.version && !c.channel && !c.flags);
+   request={};assert(!cache.apply(request,valid));request.count=11;assert(!cache.apply(request,valid));
+   Ath10k::RegulatoryPolicy policy;
+   auto realValid=[&](const AthNative::RoamCacheChannel &c){return AthNative::validRoamCacheChannel(policy,c);};
+   assert(realValid({1,6,10}));
+   for(auto c:{AthNative::RoamCacheChannel{2,6,10},{1,6,18},{1,6,0x4000000a},{1,6,11},{1,6,14},{1,6,0x20a},{1,0,10}})assert(!realValid(c));
+   auto restricted=policy;restricted.high2=2410;assert(!AthNative::validRoamCacheChannel(restricted,{1,6,10}));
+   UInt8 command[128]{};Ath10k::htcWriteLE32(command,1);Ath10k::htcWriteLE32(command+4,6);Ath10k::htcWriteLE32(command+8,10);
+   command[0x78]=1;command[0x7a]=command[0x7c]=command[0x7d]=command[0x7e]=1;
+   assert(cache.exchange(command,128,realValid) && cache.count==1 && cache.overrideEnabled);
+   memset(command,0xa5,120);memset(command+120,0,8);command[0x7d]=command[0x7e]=1;
+   assert(cache.exchange(command,128,realValid));
+   assert(Ath10k::wmiReadLE32(command)==1 && Ath10k::wmiReadLE32(command+4)==6 && command[0x78]==1 && command[0x7a]==1);
+   for(unsigned i=12;i<120;++i)assert(!command[i]);
+   const auto beforeCache=cache;command[0x7b]=1;command[4]=0;
+   UInt8 beforeCommand[128];memcpy(beforeCommand,command,128);
+   assert(!cache.exchange(command,128,realValid));assert(!memcmp(command,beforeCommand,128) && !memcmp(&cache,&beforeCache,sizeof(cache)));
+   assert(!cache.exchange(command,127,realValid));assert(!memcmp(command,beforeCommand,128));
+   memset(command,0,128);command[0x7b]=command[0x7c]=command[0x7d]=command[0x7e]=1;
+   assert(cache.exchange(command,128,realValid) && !cache.count && !cache.overrideEnabled && !command[0x78] && !command[0x7a]);
+ }
+
+ { namespace R=AthNative::RoamEvents;
+   static_assert(R::StartID==137 && R::PrepID==139 && R::ReassocID==73 && R::CompleteID==80,"stock controller event IDs");
+   const UInt8 startBytes[12]={0x78,0x56,0x34,0x12,0xef,0xcd,0xab,0x90,0xc0,0xff,0,0};
+   auto start=R::start(0x12345678,0x90abcdef,-64);assert(!memcmp(start.bytes,startBytes,12));
+   const UInt8 address[6]={2,3,4,5,6,7};R::Prep prep{};
+   const UInt8 prepBytes[12]={0x78,0x56,0x34,0x12,2,3,4,5,6,7,0xc0,0xff};
+   assert(R::prep(0x12345678,address,prep,-64) && !memcmp(prep.bytes,prepBytes,12));
+   const auto saved=prep;UInt8 invalid[6]{};
+   assert(!R::prep(0,nullptr,prep) && !memcmp(prep.bytes,saved.bytes,12));
+   assert(!R::prep(0,invalid,prep) && !memcmp(prep.bytes,saved.bytes,12));
+   invalid[0]=1;assert(!R::prep(0,invalid,prep) && !memcmp(prep.bytes,saved.bytes,12));
+   auto reassoc=R::reassoc(0x12345678,0x90abcdef);assert(!memcmp(reassoc.bytes,startBytes,8));
+   for(UInt32 status:{0u,0xe00002ebu,0xe00002bcu}){
+     auto done=R::completion(status);assert(Ath10k::wmiReadLE32(done.bytes)==status);
+     for(size_t i=4;i<sizeof(done.bytes);++i)assert(!done.bytes[i]);
+     // Consumer owns mutable storage and may replace the first 0x68 bytes.
+     memset(done.bytes,0xa5,0x68);for(size_t i=0x68;i<sizeof(done.bytes);++i)assert(!done.bytes[i]);
+   }
+ }
+
  { AirportWCL::ScanRequest scan{};Ath10k::WMIBSS b{};
    b.rxChannel=6;b.ssidLength=3;memcpy(b.ssid,"two",3);
    scan.ssids.count=2;
@@ -60,7 +174,20 @@ int main(){
      memcpy(request.bssid,second.bssid,6);
      assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
      assert(prepared.ap.bssid[5]==7); // Explicit target outranks signal/freshness.
-     memset(request.bssid,255,6);
+     // Multi-target filtering must retain ranking while excluding other APs.
+     request.bssidCount=2;memcpy(request.additionalBSSIDs[0],first.bssid,6);
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+     assert(prepared.ap.bssid[5]==9);
+     request.additionalBSSIDs[0][5]=10;
+     assert(AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+     assert(prepared.ap.bssid[5]==7);
+     const auto valid=prepared;
+     for(unsigned bad: {0u,1u,255u}){
+       memset(request.additionalBSSIDs[0],bad,6);
+       assert(!AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
+       assert(!memcmp(&valid,&prepared,sizeof(prepared)));
+     }
+     request.bssidCount=1;memset(request.bssid,255,6);
      const auto previous=prepared;cache->bss.count=65;
      assert(!AthNative::chooseRoamCandidate(live,request,*cache,2000,prepared));
      assert(!memcmp(&previous,&prepared,sizeof(prepared)));
@@ -109,6 +236,13 @@ int main(){
    for(unsigned i=0;i<50;++i)Ath10k::htcWriteLE16(wire+2*i,0xd024+i);
    assert(nativeDecodeReassoc(wire,sizeof(wire),decoded));
    assert(decoded.channelCount==50 && decoded.channels[49]==0xd055 && decoded.flags==1);
+   for(unsigned count=2;count<=7;++count){
+     Ath10k::htcWriteLE32(wire+0x90,count);
+     for(unsigned target=0;target<count;++target){memset(wire+0x64+6*target,0,6);wire[0x64+6*target]=2;wire[0x69+6*target]=target+1;}
+     assert(nativeDecodeReassoc(wire,sizeof(wire),decoded) && decoded.bssidCount==count);
+     assert(decoded.bssid[5]==1 && decoded.additionalBSSIDs[count-2][5]==count);
+     assert(decoded.channels[49]==0xd055 && decoded.ssidLength==4);
+   }
    const auto saved=decoded;
    for(unsigned n=0;n<sizeof(wire);++n){
      assert(!nativeDecodeReassoc(wire,n,decoded));assert(!memcmp(&saved,&decoded,sizeof(saved)));

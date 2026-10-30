@@ -52,8 +52,8 @@
     "External key ownership and AP-triggered GTK/IGTK validation remain unresolved"
   ],
   "next_priority": [
-    "Complete remaining WPA3/PMF and external-key ownership contracts as a group",
-    "AP-triggered rekey hardware evidence; no repeated scan benchmarks"
+    "Complete reassociation, credential lifetime, key retirement and macOS completion together",
+    "Validate WPA3/PMF ownership and AP-triggered rekey without repeating closed scan benchmarks"
   ],
   "security_profile_audit": {
     "capability_advertisement": "SAE and MFP jointly enabled only by experimental property and exact kernel guard",
@@ -80,5 +80,83 @@
       "Stock key callback and capability evidence"
     ],
     "installed": false
+  },
+  "execution_policy": {
+    "unit_of_work": "A complete related contract group, not one callback or one failing check",
+    "active_group": [
+      "Reassociation candidate selection and asynchronous macOS completion",
+      "Credential/profile lifetime across reconnect, forget, radio-off and profile replacement",
+      "Old PTK/GTK/IGTK retirement and generation fencing across handoff"
+    ],
+    "acceptance": "Review the entire group, run affected regressions during development, then one consolidated full regression and one candidate build after final edits",
+    "publication": "Keep intermediate edits local; publish one reviewed batch without per-fix pushes or Actions runs",
+    "hardware_gate": "Request explicit reboot authorization through the input form only when a meaningful integrated candidate is ready; reboot delay 10 seconds",
+    "closed_stages": "Use make test-development; no repeated manual scan timing or reboot-success questions without new regression evidence",
+    "truthfulness": "Report source integration, local production-path tests and offline build separately from physical inter-AP roaming; no physical handoff is available on this setup"
+  },
+  "pending_roam_group": {
+    "implemented_local": [
+      "Seven-target request decoding and candidate filtering",
+      "Noncopyable credential owner with monotonic generation and secret wiping",
+      "Atomic new-AP request preparation for Open/PSK/PSK-SHA256/SAE",
+      "Monotonic transition-disable restrictions retire prepared requests; unsupported policy clears credentials",
+      "Shared nativeBeginJoin used by ordinary macOS joins and tested with prepared roam requests; consumes credential copy on all exits",
+      "NativeSecurity profile retention at successful admission; terminal reset/MAC replacement invalidation and authenticated transition-disable propagation",
+      "Generation-checked software association retirement preserves only the admitted profile; full terminal reset always clears credentials",
+      "One-shot PreparedRoam owner binds profile object/generation and station identity, preserves original scan age, wipes on failed/consumed/cancelled transfer",
+      "Typed Start/Prep/Reassoc/Complete wire encoders; golden-layout checks passed",
+      "Bounded 128-byte user roam-cache decoder and transactional channel/override state; invalid updates preserve prior state",
+      "Atomic user roam-cache readback with zeroed unused records, known-band/width validation and regulatory intersection",
+      "Controller-owned PreparedRoam wiped on terminal reset, admitted replacement, MAC change and authenticated policy generation change; actual SAE admission fixture uses that owner and tests cancellation",
+      "Production disconnect drain waits for scan TX ownership; final reset independently checks expected ECHO cookie, RX MPDUs, scan completion/TX, serial/data/PMF TX, WMI credits and peer retirement",
+      "Production nativeContinueRoam validates live prepared owner before shared transport admission, retains it while busy and consumes it once into nativeBeginJoin; common admission additionally checks RX MPDUs and unretired vdev/peer creation",
+      "Noncopyable roam event Delivery progress enforces Start/Prep/Reassoc/Complete queue ordering, failed-enqueue retries, single accepted completion and new-BSS prerequisite for success; live dispatcher binding pending",
+      "Roam event delivery requires matching monotonically increasing transaction generation on every transition; old callbacks cannot advance a reused delivery owner",
+      "NativeSecurity binds prepared-profile preservation to accepted Start/Prep delivery generation; production terminal cleanup preserves only valid intentional retirement and wipes on cancel/failure/age/MAC/profile invalidation; common continuation clears retirement marker",
+      "Controller nativeDisconnectForRoam admits existing firmware Drain only after accepted Prep and idle transport; ordinary LinkDown suppressed during valid retirement; continuation preserves old publication until new join admission and restores it on admission failure",
+      "Live setWCL_REASSOC dispatch: request admission, ordered Start/Prep, asynchronous firmware retirement, shared join, Reassoc/new-BSS/Complete, cancellation and retry handling",
+      "Deferred BSD carrier-down during valid handoff with explicit failure release; late authenticated transition-disable policy invalidates prepared work before teardown",
+      "Mandatory post-success roam-cache clear/disable and empty-state readback; autonomous firmware cache enable/nonempty requests explicitly rejected"
+    ],
+    "verified": "63-test consolidated suite, callback matrix, native build, strict ad-hoc signature and exact UUID inclusion in offline auxiliary collection passed. Physical inter-AP handoff unavailable; candidate not installed.",
+    "remaining": [
+      "One reviewed publication and explicit approval for installation/reboot; verified SD rollback available",
+      "Physical inter-AP roaming unavailable on the single-router setup; no interoperability or seamless-IP claim until separate evidence",
+      "Autonomous firmware roam channel cache/override enable remains unsupported; recovered local parser is not proof of firmware scheduling semantics"
+    ],
+    "runtime_enabled": true,
+    "resolved_delivery_contract": "Stock Infra/PeerManager forwards IDs 0x49,0x50,0x89,0x8a,0x8b; no filter bypass needed. FIFO copies do not acknowledge WCL consumption; Glue allocation failure is fatal.",
+    "scan_end_contract": "76-byte writable telemetry, candidate count clamped to 3; all WCL FSM states preserved. Do not use as completion or retirement acknowledgement.",
+    "network_fsm": "All 77 transitions decoded; LINK_UP + LINK_UP runs linkUp/updateBss while retaining LINK_UP. No synthetic LinkDown needed for new-BSS publication.",
+    "roam_cache_remaining": "Bind completed local cache exchange to controller lifetime and verified roam-only scheduling semantics before enabling WCL_ROAM_USER_CACHE; ordinary scans retain their requested scope",
+    "full_local_regression": {
+      "passed": true,
+      "cpp_test_count": 63,
+      "entrypoint": "python3 tests/run-development-tests.py --cxx clang++",
+      "hardware_validation": false
+    },
+    "runtime_scope": "Enabled in the uninstalled source candidate; installed kext unchanged",
+    "candidate_uuid": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD"
+  },
+  "roaming_validation_policy": {
+    "hardware_constraint": "User confirms only one router; physical handoff between APs cannot be tested on this setup",
+    "implementation_goal": "Complete native reassociation against recovered stock macOS contract, without waiting for a second AP",
+    "required_local_evidence": [
+      "Stock producer/consumer message identities, sizes and ordering",
+      "Queue ordering and payload ownership including enqueue failures",
+      "Prepared profile through common join admission and WPA3 preparation",
+      "Old PTK/GTK/IGTK and transport retirement before next association",
+      "Cancellation, profile replacement, transition-disable policy and stale generations",
+      "Success/failure completion with new-BSS publication and retry behavior"
+    ],
+    "single_ap_hardware_scope": "Regression of ordinary association, WPA3, reconnect and traffic only when relevant; do not treat as inter-AP handoff evidence",
+    "reporting": "Distinguish implemented and locally verified roaming from unavailable multi-AP hardware validation; do not claim physical roaming passed",
+    "reboots": "Explicit authorization, 10-second delay; no request for unavailable multi-AP test",
+    "acceptance_levels": {
+      "contract": "Recovered macOS ABI, queue ownership and FSM behavior for the examined OS build only",
+      "local_integration": "Production handoff dispatcher exercised with controlled firmware completions, errors and cancellation; helper-only tests are insufficient",
+      "single_router": "Ordinary join/reconnect/traffic regression; same-AP reassociation is not inter-AP roaming",
+      "physical_handoff": "Unavailable on this setup; retain an explicit unverified label without blocking implementation"
+    }
   }
 }

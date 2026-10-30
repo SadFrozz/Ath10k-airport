@@ -2,6 +2,8 @@
 #include <cstring>
 #include <vector>
 #include "../src/kext/native/Ath10kNativeCandidates.hpp"
+#include "../src/kext/native/Ath10kNativeProfile.hpp"
+#include "../src/kext/native/Ath10kNativeRoamEvents.hpp"
 #include "../src/kext/native/Ath10kNativePMFInbox.hpp"
 #include "../src/kext/native/Ath10kNativeWire.hpp"
 #include "../src/shared/Ath10kSupplicant.hpp"
@@ -45,7 +47,7 @@ public:
     struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
         Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4;unsigned securityPhase=0;
         struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
-    void discardIfStopped();
+    void discardIfStopped(UInt64 now=0);
     void discardNativeSecurity();
     bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
     bool nativeAcceptSecurityResult(UInt32);
@@ -60,6 +62,59 @@ public:
 #include "native_pmf_firmware_guard.inc"
 #include "native_security_terminal_cleanup.inc"
 int main(){
+    for(unsigned outcome=0;outcome<8;++outcome){
+      Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity sec;d._nativeSecurity=&sec;
+      AirportWCL::JoinRequest request{};request.lowerAuth=1;request.ssidLength=4;
+      memcpy(request.ssid,"test",4);memcpy(request.bssid,s_ap,6);
+      assert(sec.profile.replace(request,s_sta,false));
+      Ath10k::ConnectionState live{};memcpy(live.local,s_sta,6);live.ssidLength=4;memcpy(live.ssid,"test",4);
+      Ath10k::WMIBSS ap{};memcpy(ap.bssid,s_ap,6);ap.bssid[5]^=1;ap.ssidLength=4;memcpy(ap.ssid,"test",4);
+      ap.capabilities=1;ap.beaconInterval=100;ap.rateCount=1;ap.rates[0]=0x82;ap.rxChannel=ap.advertisedChannel=6;
+      sec.candidates.add(ap,1000);NativeReassocRequest roam{};roam.ssidLength=4;memcpy(roam.ssid,"test",4);memcpy(roam.bssid,ap.bssid,6);
+      assert(sec.preparedRoam.prepare(sec.profile,live,roam,sec.candidates,1100));
+      assert(sec.roamDelivery.begin(0,ap.bssid));const auto delivery=sec.roamDelivery.generation();
+      const auto profile=sec.profile.generation();auto post=[](uint32_t,void *,size_t){return true;};
+      assert(!sec.beginRoamRetirement(profile,delivery,s_sta,1100));
+      assert(sec.roamDelivery.sendStart(delivery,post));
+      assert(!sec.beginRoamRetirement(profile,delivery,s_sta,1100));
+      assert(sec.roamDelivery.sendPrep(delivery,post));
+      assert(!sec.beginRoamRetirement(profile,delivery+1,s_sta,1100));
+      assert(sec.beginRoamRetirement(profile,delivery,s_sta,1100));
+      assert(!sec.beginRoamRetirement(profile,delivery,s_sta,1100));
+      memcpy(d._connection.local,s_sta,6);d._connection.disconnect=Ath10k::DisconnectStage::Drain;
+      UInt64 now=1200;
+      if(outcome==1)d._connection.cancelRequested=true;
+      if(outcome==2)d._connection.stage=Ath10k::LinkStage::Failed;
+      if(outcome==3)now=31001;
+      if(outcome==4)d._connection.local[5]^=1;
+      if(outcome==5)assert(sec.profile.replace(request,s_sta,false));
+      if(outcome==6)assert(sec.roamDelivery.sendComplete(delivery,1,false,post));
+      if(outcome==7)sec.profile.clear();
+      d.discardIfStopped(now);
+      if(outcome){assert(!sec.profile.generation() && !sec.preparedRoam.generation() && !sec.roamRetirement);}
+      else{
+        assert(sec.profile.generation()==profile && sec.preparedRoam.generation()==profile);
+        d._connection.disconnect=Ath10k::DisconnectStage::None;d._connection.stage=Ath10k::LinkStage::Disabled;
+        d.discardIfStopped(now);assert(sec.profile.generation()==profile);
+        d._connection.cancelRequested=true;d.discardIfStopped(now);assert(!sec.profile.generation());
+      }
+    }
+
+    // Open profiles have no crypto owner; terminal cleanup must still retire
+    // their identity/generation before a subsequent prepared handoff can run.
+    for(unsigned terminal=0;terminal<4;++terminal){
+      Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
+      AirportWCL::JoinRequest request{};request.lowerAuth=1;request.ssidLength=4;
+      memcpy(request.ssid,"open",4);memcpy(request.bssid,s_ap,6);
+      assert(security.profile.replace(request,s_sta,false));
+      d._connection.stage=Ath10k::LinkStage::Connected;
+      if(terminal==0)d._connection.cancelRequested=true;
+      if(terminal==1)d._connection.stage=Ath10k::LinkStage::Disabled;
+      if(terminal==2)d._connection.stage=Ath10k::LinkStage::Failed;
+      if(terminal==3)d._connection.disconnect=Ath10k::DisconnectStage::Drain;
+      d.discardIfStopped();assert(!security.profile.generation());
+    }
+
     { Ath10kPCIDevice d;d._nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
       d._connection.pmfRequired=true;d._connection.spectrum.pending=true;d._connection.spectrum.length=31;
       d.discardNativeSecurity();assert(!d._connection.spectrum.pending && d._connection.spectrum.dropped==1);
@@ -142,6 +197,11 @@ int main(){
     }
     Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;
     d._nativeSecurity=&security;
+    AirportWCL::JoinRequest profile{};profile.lowerAuth=1;profile.upperAuth=1024;
+    profile.keyCipher=6;profile.keyLength=32;memcpy(profile.key,s_pmk,32);
+    profile.ssidLength=4;memcpy(profile.ssid,"test",4);memcpy(profile.bssid,s_ap,6);
+    assert(security.profile.replace(profile,s_sta,false));
+    const auto profileGeneration=security.profile.generation();AthSecurity::wipe(&profile,sizeof(profile));
     assert(security.supplicant.begin(s_pmk,s_snonce,s_sta,s_ap,s_rsn,sizeof(s_rsn),6));
     memset(security.reply,0xa5,sizeof(security.reply));memset(security.keys,0x5a,sizeof(security.keys));
     memset(security.supplicant.output,0x3c,sizeof(security.supplicant.output));
@@ -158,7 +218,20 @@ int main(){
     // Cancellation only removes the candidate response, not pending committed
     // key operations or readiness. Full teardown below still retires everything.
     assert(security.ready && security.keysPending && security.authorizePending);
+    assert(security.profile.generation()==profileGeneration);
+    assert(!security.retireForRoam(0) && !security.retireForRoam(profileGeneration+1));
+    assert(security.ready && security.keysPending && security.authorizePending);
+    assert(security.retireForRoam(profileGeneration));
+    assert(security.profile.generation()==profileGeneration);
+    assert(!security.ready && !security.keysPending && !security.authorizePending);
+    for(auto v:security.keys)assert(!v);
+    for(auto v:security.reply)assert(!v);
+    AirportWCL::JoinRequest transfer{};
+    assert(security.profile.snapshot(profileGeneration,s_sta,reinterpret_cast<const UInt8 *>("test"),4,NativeJoinAuth::PSKSHA256,transfer));
+    assert(transfer.keyLength==32 && !memcmp(transfer.key,s_pmk,32));
+    AthSecurity::wipe(&transfer,sizeof(transfer));
     d.discardNativeSecurity();
+    assert(!security.profile.generation() && !security.retireForRoam(profileGeneration));
     AthSecurity::Supplicant<Ath10kKernelCrypto,true> pristine;pristine.reset();
     assert(!memcmp(&security.supplicant,&pristine,sizeof(pristine)));
     for(auto v:security.reply)assert(!v);

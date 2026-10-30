@@ -1378,3 +1378,487 @@ Candidate ranking tie regressions passed with ASan/UBSan: equal signal and
 observation time select the same BSSID under reversed cache insertion order;
 a fresher observation wins an equal-signal tie; an explicit requested BSSID
 filters other choices; count 65 rejects without changing output.
+
+
+### Grouped reassociation: successful completion dependencies (24G90)
+
+The complete `WCLRoamManager::roamDone` (0xffffff80021451a4) and
+`buildRoamCompletionStatus` (0xffffff8002145256) consumers establish that
+a successful roam is resolved against the current associated BSS, current BSSID,
+channel, authentication and AKMs. Nonzero input status instead takes the failure
+branch. Therefore an accepted reassociation request cannot be completed by
+replaying ordinary ConnectComplete while retaining the previous BSS state.
+
+The 0xa8-byte roam status payload is writable: under the manager/payload flag
+condition the handler copies 0x68 bytes of constructed status into it. It also
+clears its active state fields and invokes the adaptive-roam consumer. These
+are consumer facts, not proof of the producer layout or all notification IDs.
+Raw function boundaries and structured findings are retained locally in
+`NATIVE-roam-contract-batch-20261030/stock-roam-completion*`. Runtime REASSOC
+remains unsupported pending the complete profile/key/notification transaction.
+
+
+### Direct producer cross-check: reassociation notifications (24G90)
+
+The BCM producers now independently confirm three driver message IDs. Their
+common call target 0xffffff800222b4a8 resolves in IO80211Family to
+`IO80211Controller::postMessage(IO80211SkywalkInterface*, unsigned, void*,
+unsigned long, bool)`, eliminating the remaining numeric-ID ambiguity for
+these calls (not for every roaming message).
+
+- `handleReassocEvent` at 0xffffff80015cc4fe posts ID 0x49, eight bytes
+  at 0xffffff80015cc5b0. Words are mapped firmware status and reason, both
+  preserving zero. Firmware status 6 bypasses this producer. Broadcom numeric
+  statuses are not portable Ath10k status values.
+- `handleRoamPrepEvent` at 0xffffff80015cd426 posts ID 0x8b, twelve bytes
+  at 0xffffff80015cd6d4. Word zero comes from firmware reason; bytes 4..9
+  are the address; signed value at +10 defaults to zero or comes from the
+  supported extended event. Its physical meaning remains unproven.
+- `postRoamCompletionStatus` at 0xffffff80015e6f3a posts ID 0x50 with
+  0xa8 bytes at 0xffffff80015e6fc4, but another interface receives four
+  bytes at 0xffffff80015e6ff7. RoamPrep likewise has an alternate null/zero
+  payload path. The version/interface-specific envelope must not be collapsed.
+
+The complete producer functions, resolved controller wrapper and structured
+findings are retained in the local roam evidence packet and verified on SD.
+This advances the grouped transaction contract; it does not enable REASSOC
+or establish the entire writable status structure.
+
+
+### Reassociation group: admission requires retired transport owners
+
+Extracted production nativeJoinRequest accepted a valid SAE request when the
+software connection was Disabled but still owned a WMI command. The added
+fixture fails against the prior source at the admission assertion. Admission
+now rejects pending WMI TX, management TX, data TX, AP peers, PMF TX, scan TX
+and outstanding WMI credits before changing connection or security state.
+The seven cases run for both SAE password preparation modes and confirm no
+new worker/session is created by the rejected attempt. This is a demonstrated
+missing admission guard, not proof that a particular hardware disconnect was
+caused by this interleaving.
+
+Five focused groups (native_sae_radio, native_profile, native_wire,
+security_disconnect, native_security_lifecycle) and shared checks pass. Full
+batch acceptance/build and hardware validation remain pending. The grouped
+profile/roaming helpers are still not instantiated by the runtime.
+
+
+### Roam BSS publication dependency (24G90)
+
+`WCLNetManager::linkStatusInd` (0xffffff8002127b78) reads payload byte6
+to dispatch link-up/down FSM events. Its linkUp action (0xffffff8002123ff0)
+calls updateBss(true,true,false,reason) before subsequent notifications.
+`updateBss` (0xffffff8002124586) queries cmdIouc0x1b1 into a 0x840-byte
+buffer, checks BSSID at +0x29, passes beacon metadata and bytes at +0x40 to
+updateOrAddBeacon, then invokes setCurrentBSS. A failing update can trigger
+leaveNetworkCommand under the caller's leave-on-error flag.
+
+Thus future roaming must expose the new associated AP and beacon through
+queries before link-up delivery, and final successful roam status must follow
+the new BSS publication. Tests of extracted current query/link-update methods
+now exercise three consecutive AP identities, delayed old-address updates and
+stale scan scratch. These pass together with native_notifications and
+native_profile. They validate these boundaries, not a complete firmware roam.
+
+
+### Shared native association admission
+
+The wire entry now decodes then delegates to nativeBeginJoin, a radio-gated
+consumer of JoinRequest. The common path independently validates fixed-array
+bounds and station AP identity, checks old transport ownership, and uses the
+same candidate/security/SAE preparation as ordinary macOS joins. It wipes the
+provided credential copy on every return, including stopped/busy/bounds errors.
+
+The extracted-production SAE test now passes alternate password scenarios
+through ProfileCredentials -> prepareRoamJoin -> nativeBeginJoin, with a
+different former AP identity and the expected selected AP. Both H2E and legacy
+preparation paths are exercised. Clearing the profile before admission proves
+the prepared request is independent; the existing worker tests continue after
+the caller copy is wiped. This is local preparation/admission/crypto coverage,
+not evidence of a real firmware roaming transaction or its WCL completion.
+Five focused groups and shared checks passed. Live REASSOC and profile retention
+remain disabled pending old-owner retirement and notification integration.
+
+
+### Roaming start must precede retiring the old BSS
+
+BCM handleRoamScanStartEvent at 0xffffff80015cc7ba calls the independently
+resolved controller postMessage at 0xffffff80015ccace with ID0x89 and twelve
+bytes (mapped status, mapped roam reason, extended signed16 value plus zero
+padding). WCLRoamManager::roamStart at 0xffffff8002144bc4 requires a current
+BSS as well as a payload, clears its completion state and snapshots the current
+BSSID as the old AP. This establishes an additional ordering boundary: do not
+retire the current BSS before the start notification is consumed. Enqueue
+success is not proof of consumption. No synthetic scan-start is enabled.
+
+The current shared-admission implementation compiles and links as a native
+kext; the symbol check passes (UUID FB08EAEC-3200-370B-9D0E-07DCBF9773AC).
+This intermediate build has not passed final full-suite/dependency-collection
+acceptance and is not installed. The live roaming transaction remains pending.
+
+
+### Roaming delivery return values and allocation boundary
+
+The full stock reportDataPathEventsGated (0xffffff8002264c28) calls
+the object at interface ivars+0x28 through slot0x288. A false result
+skips postMessageInternal; the gated function still returns zero. When
+forwarding, it also discards postMessageInternal's return. The outer
+reportDataPathEvents (0xffffff8002264cd2) returns a boolean nonzero test
+of its workqueue action result, not a consumer acknowledgement. The
+concrete filter receiver and its roam-ID behavior remain to be resolved.
+
+Glue addEventToPendingQueue (0xffffff800212aecc) copies payload bytes into
+its own allocation and appends at the tail. Its allocation-failure branch
+calls _panic (0xffffff8000bd13ec, independently resolved in the local
+kernel-cache symbol table), rather than returning a recoverable error.
+routeEventToWcl returns zero after queuing/scheduling. Consequently,
+PostOffice enqueue retry can cover only failure before that queue accepts
+its copy; it cannot guarantee downstream allocation or event consumption.
+Do not replay accepted events blindly: duplicate roam FSM transitions are
+not an acknowledgement protocol. Preserve the old WCL BSS until start and
+publish the new BSS before completion using the verified ordered path.
+Evidence: stock-roam-delivery-gates.asm/json in the roaming batch packet.
+No runtime notification path is enabled by this finding.
+
+
+### Infrastructure roam event filter resolved
+
+Binary vtables independently resolve InfraInterface slot0xb00 to inherited
+Skywalk createPeerManager (0xffffff8002263aee), and slot0xb18 to
+reportDataPathEvents (0xffffff8002264cd2). Creation stores the manager in
+interface ivars+0x28. PeerManager slot0x288 resolves to reportDataPathEvents
+(0xffffff80021e14f4), slot0x290 to recordDataPathEventsProcessing.
+
+For IDs0x49,0x50,0x89,0x8a,0x8b the full InfraInterface dispatch reaches
+0xffffff80022d6240 unchanged. The base PeerManager takes its default path
+with edx=0, r12b=1, r13b=0; its common epilogue returns true after recording
+counters. These roam payloads are not read by this filter. The ordinary
+infrastructure path therefore needs no filter override or bypass for these
+events. The general non-acknowledgement and downstream allocation limits
+above still apply. This conclusion does not cover AWDL/NAN managers.
+Evidence: stock-roam-filter-resolved.asm/json.
+
+
+### Runtime profile owner integration
+
+NativeSecurity now retains a bounded credential profile after successful
+common join admission. An admitted replacement clears the old generation
+before candidate/security setup; busy requests do not overwrite it. Reset
+clears the profile together with association security. Accepted MAC changes
+invalidate it before vdev recreation. Authenticated transition-disable updates
+restrict the retained profile and retire prepared generations; unsupported
+policy clears it without silently downgrading authentication.
+
+Terminal service now checks profile ownership itself, including Open networks
+which have no supplicant or PMF session. Local production-extraction tests cover
+all four terminal conditions, preservation across pairwise-attempt cancellation,
+SAE credential retention and reset on failed H2E/legacy preparation paths, and
+notification-driven policy restriction/unsupported-policy invalidation. Five
+focused groups passed, followed by the added policy-notification test.
+Native build CD040286-296B-361F-B0D9-7E713D497AFD compiled/linked and passed
+the symbol check. Full batch acceptance and dependency checks remain pending.
+Prepared handoff ownership transfer and roam notifications are not yet wired;
+REASSOC stays unsupported and this intermediate build is not installed.
+
+
+### Software retirement boundary for the handoff
+
+NativeSecurity resetAssociation is private and shared by full reset and the
+explicit retireForRoam(expectedProfile) operation. Full reset always invalidates
+credentials first. Roam retirement requires the current nonzero profile
+generation; a stale/zero token returns without touching current keys. It
+cancels SAE/PSK jobs, PMF sessions/inbox/query/TX owners, pending management
+keys, supplicant state and replies while retaining the profile. Existing SAE
+generation counters are not recycled. This API is not yet invoked by live REASSOC.
+
+The extracted-production lifecycle test verifies stale-token noninterference,
+key/reply clearing, retained exact binary PMK, and subsequent terminal profile
+invalidation. Five affected test groups passed. Firmware retirement is separate:
+serviceDisconnect waits for CE3 and credits, key completion/peer disappearance,
+optional PEER_DELETE_RESP, STOP_RESP, final ECHO and pending-MPDU drain before
+resetDisconnected. Software retirement alone does not satisfy those barriers.
+
+
+### Prepared handoff credential transfer
+
+PreparedRoam owns one bounded request, bound to the concrete ProfileCredentials
+object, its generation and station MAC. Preparation carries the selected cache
+observation time through chooseRoamCandidate/prepareRoamJoin. Consumption checks
+that original observation age (not a renewed preparation-age window), backwards
+time, owner identity and generation, then wipes the private copy. Failure leaves
+the caller output unchanged and retires the pending secret. Replacement and
+destruction also wipe it; the owner is noncopyable.
+
+Local tests cover four auth profiles, successful one-shot transfer, clear,
+same-profile replacement, MAC mismatch, expired observation, backwards time,
+explicit cancellation, another owner with the same numeric generation, failed
+preparation, and backing-storage secret removal after consumption/destruction.
+The production SAE preparation test now runs prepare -> retireForRoam -> take
+-> nativeBeginJoin for both H2E and legacy paths. Five affected groups passed.
+This is software ownership/admission coverage: PreparedRoam is not yet created
+by live REASSOC, and no inter-AP radio or macOS completion is claimed.
+
+
+### Roam scan-end is telemetry, not completion
+
+The exact-length handler at 0xffffff8002144330 accepts 76 bytes and dispatches
+FSM event3. All six state transitions preserve their input state. SCAN,
+REASSOC and WAIT_ROAM_DONE invoke roamScanEnd (0xffffff8002144f1e); it requires
+a current BSS, clamps candidate count at byte1 to three in the writable
+payload, logs scan/candidate metrics, and stores nonzero signed byte0 into
+context+0x70. The embedded strings independently identify byte0 as current
+BSS RSSI, byte3 scan count, words4/8/12 reason/status/age. Three 20-byte
+candidate records begin at16 (BSSID, channel byte6, RSSI byte7, age word8,
+load word12, flags halfword16). Unread bytes remain unspecified.
+
+This event must not substitute for RoamDone or acknowledge old-radio retirement.
+There is no scan-end success/failure transition out of ROAM_SCAN in this FSM.
+The current BCMCore immediate-ID search did not find a producer; absence from
+that search is not proof that stock never emits it. Consumer layout and FSM
+behavior are established independently. Evidence saved in
+stock-roam-scan-end-consumer.asm and stock-roam-scan-end-facts.json.
+
+
+### Repeated link-up updates BSS without a link-down
+
+Decoded all 77 WCLNetManager transitions from context0xffffff80023f1f60,
+using initializer0xffffff8002129cf4 (11 events, 7 states, 22 actions) and
+CommonFsmManager's verified two-byte next-state/action entries. In LINK_UP,
+LINK_UP remains LINK_UP and calls linkUp, rather than ignoring it. That action
+executes the previously recovered updateBss path. Thus new-BSS publication
+during roaming need not send LinkDown first; preserving the old WCL BSS through
+RoamStart and posting repeated LinkStatus(up) before RoamDone is consistent
+with both FSMs. This does not by itself verify the other completion consumers.
+Full matrix: stock-network-fsm-derived.json.
+
+NativeRoamEvents now constructs recovered Start/Prep/Reassoc/Complete
+envelopes with fixed IDs and byte layouts. The completion is always a mutable
+168-byte envelope; opaque bytes are zero. Invalid preparation addresses leave
+the output unchanged. Golden-wire and mutation-boundary tests passed alongside
+existing notification/profile regressions. These encoders are not yet connected
+to the live roaming dispatcher; mapped failure policy remains to be integrated.
+
+
+### Successful roaming triggers a currently unsupported cache request
+
+WCLAdaptiveRoam::handleRoamEventConfiguration (0xffffff80022dec70) returns
+immediately for nonzero status. On success it calls configureUserRoamCache
+(0xffffff80022dee46), which emits command0x1af with a 128-byte envelope. This
+call uses zero channels, clear=1 and updateOverride=1 with override=0. Native
+setWCL_ROAM_USER_CACHE still returns unsupported. This is an explicit remaining
+post-completion contract, not an optional hardware roaming test.
+
+The producer copies up to ten 12-byte channel records and stores count at0x78,
+override at0x7a, clear at0x7b, updateOverride at0x7c. BCM cmdROAM_USER_CACHE
+(0xffffff800155a4f0) independently confirms clear/add/override operations and
+read flags0x7d/0x7e when output is supplied. The unused byte0x7f is unresolved.
+Implement real channel-cache/override state and its scan effect before
+acknowledging arbitrary requests; a no-op success would violate this contract.
+Evidence: stock-roam-postcompletion-cache.asm/json.
+
+
+### User roam-cache parsing and state
+
+Added decodeRoamCache for the recovered fixed 128-byte envelope, ten channel
+records and the five operation flags. It rejects truncated/oversized frames,
+negative/oversized count representations, nonboolean flags and the unresolved
+byte0x7f; failed decoding leaves output unchanged. UserRoamCache commits only
+after validating every entry through the caller's validator. Clear/list update
+and override update are independent; a failed channel replacement leaves the
+previous complete state intact. Read flags preserve state when no mutations
+are requested. No output serialization is implemented yet.
+
+native_wire, native_profile and native_scan passed. The live callback remains
+unsupported until real channel/regulatory validation, query serialization and
+roam-only scheduling are wired; normal user scans must not be narrowed by a
+roaming hint. BCM maps override into firmware user_roamcache operation4, but
+that alone does not prove how it should affect every ordinary scan request.
+
+
+### Roam-cache atomic readback and channel validation
+
+BCM readback independently writes override at0x7a (0xffffff800155abec)
+and count at0x78 (0xffffff800155ad5b); channel conversion fills 12-byte entries.
+UserRoamCache::exchange now applies validated operations to a private candidate,
+serializes requested reads from that resulting state, then commits state/output.
+Invalid input or rejected channel leaves both unchanged. Unused returned channel
+records are zeroed rather than echoing stale caller bytes.
+
+The channel validator checks the known 2.4/5GHz band, 20/40/80MHz geometry,
+firmware scan-plan primary channel and current regulatoryPower policy (passive
+scan eligibility). Unsupported widths/unknown flag bits and inconsistent band
+or extension flags are rejected. Tests cover read-after-write, read-only,
+clear/override reset, malformed/short transaction preservation and a restricted
+firmware band range. native_wire, regulatory and native_scan passed.
+This completes local cache exchange, not live callback/roam scheduling; those
+remain unwired. Evidence: stock-roam-cache-readback.asm.
+
+### Roaming acceptance with one router
+
+Physical inter-AP handoff is unavailable on the user's setup. This must not
+block implementation of the native contract or trigger requests for a second
+AP. Keep four distinct evidence levels: recovered stock macOS contract,
+production-path local integration, ordinary single-AP hardware regression, and
+unverified physical inter-AP handoff. Same-AP reconnect does not establish the
+last level. Recovered private ABI is tied to the examined OS build.
+
+For local integration acceptance, exercise the actual handoff dispatcher through
+success, cancellation, stale completions and firmware retirement failures.
+Profile helpers and event-layout tests alone do not close that gate. Check that
+old keys and transport ownership retire before the new join, the old BSS survives
+the start notification, the new BSS is queryable before successful completion,
+and failures leave neither pending credentials nor an unfinished system request.
+Live REASSOC remains disabled until this production-path integration is complete.
+
+### Prepared handoff now follows controller credential lifetime
+
+NativeSecurity owns PreparedRoam. Terminal reset wipes it before clearing the
+profile and association; admitted profile replacement and accepted MAC change
+also clear it. An authenticated policy update clears it if the profile token
+changes. Software retirement alone preserves it for the explicit handoff.
+The extracted production SAE fixture now uses this owned object and exercises
+terminal cancellation before preparing again and entering common join admission.
+Four affected integration groups and the final SAE cancellation fixture passed.
+The earlier full 63-test result predates these production edits; final full-suite
+and native-build acceptance remain pending. Live REASSOC is still disabled.
+
+### Transport retirement before exposing Disabled
+
+Production serviceDisconnect previously waited for ECHO reply and pending RX
+MPDUs at its final barrier. Earlier stages had drained other owners, but final
+reset did not independently establish they stayed retired. It now checks the
+expected disconnect ECHO cookie, scan completion/TX ownership, serial/data/PMF
+TX, WMI ownership/credits and peer count before wiping ConnectionState. Drain
+also waits for scan TX ownership even after a scan completion arrived.
+
+The extracted production routine was exercised with nine independently held
+barrier conditions and a completed-scan/owned-TX drain case. Each held case
+preserves association keys/state; releasing it permits exactly one reset.
+Existing end-to-end simulated CLEAR/DELETE/STOP/ECHO/reconnect and native join
+admission tests also pass. This is preventive ownership hardening, not evidence
+that every injected state has occurred on hardware. Live roam remains pending.
+
+### Production prepared-join continuation
+
+Added nativeContinueRoam beneath the radio/WCL gate contract. It validates
+profile ownership, MAC and original scan age before waiting on shared join
+admission. Busy retains the prepared request; invalid work is wiped; an
+admitted request is consumed once into nativeBeginJoin. Common admission now
+also checks pending RX MPDUs and unretired vdev/peer creation flags.
+
+The production SAE fixture exercises eight held transport/publication conditions,
+then actual H2E/legacy preparation through the continuation, and rejects a second
+consumption. Profile/security tests and native compile/link/symbol checks passed.
+This function is not yet called by a live REASSOC dispatcher. The dispatcher
+must still handle old-BSS notification ordering and intentional teardown
+without ordinary terminal cleanup discarding the retained profile. Tests
+explicitly prepare the retirement/publication boundary; they do not prove that
+missing live orchestration. No installation or physical roaming test occurred.
+
+### Roam notification enqueue progress
+
+RoamEvents::Delivery now tracks one noncopyable transaction: Start, Prep,
+Reassoc, then Complete. Only successful queue acceptance advances progress.
+Rejected posts leave the original metadata intact, even when the receiver
+mutates its writable payload. Successful completion requires Reassoc acceptance
+and an explicit new-BSS publication prerequisite; nonzero failure completion
+is permitted after any accepted Start. Completed events cannot be replayed.
+
+Tests inject rejection at each step and failure completion from all three
+started phases, check invalid ordering, mutated-payload retries, double sends
+and transaction reuse. The native_wire group passed. This is local delivery
+state, not a WCL-consumption acknowledgement and not yet bound to the live
+controller dispatcher. The previously built kext predates this header addition.
+
+### Stale notification attempts cannot advance a new roam
+
+Delivery now assigns a nonzero monotonically increasing generation at begin
+and requires it on every send. Reusing a completed owner cannot let an old
+callback emit Start, Prep, Reassoc or Complete for the new attempt. Generation
+exhaustion refuses another begin. Invalid begin leaves the previous token and
+phase intact. Tests pass for stale transitions at every phase, alongside the
+previous enqueue-failure, mutation and single-completion cases. This remains
+local delivery state awaiting live dispatcher integration.
+
+### Intentional retirement integrated with production terminal cleanup
+
+NativeSecurity now owns delivery progress and a retirement token. Beginning
+retirement requires a matching prepared profile and an accepted Start/Prep
+sequence. The production serviceNative cleanup preserves that profile only
+while its delivery token, MAC and original observation age remain valid and
+no explicit cancellation or failed link state exists. Full reset always clears
+the retirement token and pending credentials. The cleanup predicate includes
+orphaned pending/retirement owners even if the profile was already cleared.
+
+Extracted production tests cover retention across Drain and Disabled, explicit
+cancellation, failed link, expiry, MAC replacement, profile replacement/clear
+and failure completion. The SAE fixture runs accepted Start/Prep -> retirement
+-> shared continuation -> H2E/legacy preparation and confirms consumption clears
+the retirement marker. Controller-level request admission, firmware disconnect
+initiation and intentional LinkDown suppression are still not wired; no live
+REASSOC support is claimed. Final full-suite acceptance remains pending.
+
+### Controller disconnect and retained-link publication
+
+The controller now admits nativeDisconnectForRoam only with a valid prepared
+profile, accepted Prep, established published link, and idle scan/TX/WMI owners.
+It queues the existing requestDisconnect Drain, retires software association
+keys, and closes the data path without discarding old WCL publication flags.
+serviceNativeNotifications suppresses ordinary Deauth/LinkDown only while the
+retirement remains valid. Cancellation/expiry restores the ordinary terminal
+path. Common continuation may bypass those retained publication flags only
+after validating the intentional retirement, while keeping all transport checks.
+It resets publication flags on new admission and restores them on failure.
+
+Production SAE integration tests exercise busy TX/scan rejection before port
+closure, Drain admission, continuation blocked until retirement, then H2E/legacy
+SAE preparation. Firmware completion is modelled there by resetDisconnected;
+separate reconnect tests cover actual production teardown sequencing. Production
+notification tests verify suppression and return to exactly one ordinary
+Deauth/LinkDown with the old BSSID. The macOS REASSOC entrypoint and overall
+service dispatcher are still unsupported/unwired; no live roaming claim.
+
+## Integrated host-requested roaming candidate (supersedes earlier unwired notes)
+
+The current source connects setWCL_REASSOC through the radio-gated request
+handler and existing WCL/radio service bridge. It validates the fixed 188-byte
+request, selects a fresh eligible cached BSS, snapshots the admitted profile,
+and queues Start/Prep before initiating the existing asynchronous disconnect.
+Admission rejects overlapping joins/scans/rekeys and terminal/power states.
+There is no companion app, root patch, or private synchronous queue wait.
+
+The same transaction continues only after the firmware/CE/HTT/RX retirement
+boundary. It uses the ordinary join/security path with fresh association keys.
+Notifications use Reassoc, new BSS/LinkStatus/FirstBeacon, then writable 168-byte
+RoamComplete. Success requires publication of the new BSS; failure/cancellation
+completes the accepted roam, and JoinAbortComplete waits until that completion.
+Queue acceptance is tracked without claiming consumer acknowledgement.
+
+Both WCL link-down publication and BSD carrier-down are deferred during a valid
+handoff while data admission/queues close. Failed/cancelled retirement releases
+the deferred carrier even when the internal data-link flag is already down.
+Authenticated transition-disable received after request acceptance is applied
+before teardown, so a newly restricted profile cannot use an older snapshot.
+Late key/rekey work blocks retirement until it is resolved.
+
+The WCL post-success user-cache clear/override-disable and empty readback are
+implemented. Nonempty autonomous firmware roam-cache updates and override enable
+return unsupported; no ignored request is reported successful. Host-directed
+roaming uses the fresh observation cache and performs full authentication;
+FT/SAE-PK, independent firmware roam offload, and inter-AP interoperability are
+not claimed. No eligible cached BSS causes an immediate not-ready response;
+this request does not invent or widen a foreground scan.
+
+Validation covers the actual request/retirement/common SAE code plus extracted
+notification dispatch with controlled firmware hooks. Separate production
+reconnect tests exercise CLEAR/DELETE/STOP/ECHO and held owners. The notification
+fixture tests every enqueue-failure position, before/after-join cancellation,
+late policy, BSS publication and one terminal result. These are local tests,
+not a physical inter-AP roam. Only one router is available. Installed EFI and
+the loaded driver remain unchanged until explicit installation/reboot approval.
+
+Integrated candidate AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD passed the final
+63-test suite, callback matrix, native compile/link/symbol checks, strict ad-hoc
+signature and exact-UUID offline dependency inclusion. The offline probe omits
+only OSBundleRequired from its plist; executable program sections match the
+normal signed candidate. Installed EFI is unchanged; rollback is verified on SD.
