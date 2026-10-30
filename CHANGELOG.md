@@ -6,6 +6,19 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.107 — 2026-10-30
+
+- Start the experimental Enterprise EAP output queue before controlled-port
+  authorization; stop and flush its ownership on retirement even with carrier down,
+  while preserving an authorized data queue.
+- Reject expired EAP ingress independently of delayed service cleanup; stop EAP
+  submission while the interface, runtime or power admission is disabled.
+- Preserve the system client's initial empty MSK reset without cancelling the
+  association or extending its deadline. Clearing an accepted key still revokes it.
+- Propagate MSK callback expiry into cancellation and release orphaned EAP queue
+  ownership after security/profile/association retirement. Enterprise remains
+  default-disabled pending late-key isolation and interoperability evidence.
+
 ## 1.0.106 — 2026-10-30
 
 - Bound native pairwise-key completion delivery to five seconds after consuming the successful M4

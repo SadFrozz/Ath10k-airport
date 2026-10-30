@@ -30,7 +30,9 @@ constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNotReady=2,kIOR
 #include "native_eap_queue.inc"
 #include "native_eap_service.inc"
 #include "native_eap_integration_completion.inc"
+#include "native_eap_key_rx.inc"
 #include "../fixtures/eap_vectors.inc"
+#include "../fixtures/eap_reauth_vectors.inc"
 
 static uint8_t pwe[64]{},randomScalar[32]{},mask[32]{};
 static AthSecurity::SAEGroup19AuthMessage request;
@@ -436,7 +438,7 @@ int main(){
 #define FIELD(member,name) field.member=reinterpret_cast<decltype(field.member)>(dlsym(lib,name));assert(field.member)
  FIELD(units,"cczp_n");FIELD(prime,"cczp_prime");FIELD(multiply,"cczp_mul");FIELD(inverse,"cczp_inv");FIELD(add,"cczp_add");FIELD(subtract,"cczp_sub");
 #undef FIELD
- for(unsigned scenario=0;scenario<4;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+ for(unsigned scenario=0;scenario<6;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
   auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
   s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
   memcpy(d->_nativeMACCurrent,w_sta,6);
@@ -446,8 +448,8 @@ int main(){
   AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=4;join.ssidLength=ap.ssidLength;
   memcpy(join.ssid,ap.ssid,ap.ssidLength);memcpy(join.bssid,ap.bssid,6);
   ownerGate=true;const auto result=d->nativeBeginJoin(join);ownerGate=false;
-  assert(result==((scenario==1 || scenario==3)?kIOReturnSuccess:kIOReturnUnsupported));
-  if(scenario==1 || scenario==3){assert(s.securityAKM==1 && s.secure && !s.portAuthorized && !sec->ready && sec->eapOwner.generation());
+  assert(result==((scenario==1 || scenario==3 || scenario==4 || scenario==5)?kIOReturnSuccess:kIOReturnUnsupported));
+  if(scenario==1 || scenario==3 || scenario==4 || scenario==5){assert(s.securityAKM==1 && s.secure && !s.portAuthorized && !sec->ready && sec->eapOwner.generation());
    assert(sec->profile.generation() && d->_nativeJoinPending);
    // Continue the admitted enterprise profile through the real native callback,
    // PMK binding, authenticated exports and durable M4 completion barrier.
@@ -459,6 +461,7 @@ int main(){
    assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
    assert(!s.cancelRequested && !s.portAuthorized && sec->eapOwner.generation()==eapGeneration);
    key.key_len=32;
+   if(scenario==4)key.key[0]^=1; // A late MSK with the wrong PMK for this AP exchange.
    nativeSAEClockMS=100;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
    ownerGate=true;d->serviceNativeEAP(100);ownerGate=false;
    assert(d->_nativeEAPQueueRunning && d->outputQueue.starts==1 && !d->_networkLinkUp);
@@ -466,6 +469,14 @@ int main(){
    using E=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
    assert(sec->supplicant.receive(e_m1,sizeof(e_m1))==E::Reply);
    assert(d->nativeAcceptSecurityResult(E::Reply));
+   if(scenario==4){
+    // Acceptance by the tokenless callback is not proof of EAP provenance.
+    // The current AP's authenticated M3 must not export keys with this PMK.
+    sec->replyPending=false;sec->replyLength=0;
+    assert(sec->supplicant.receive(e_m3,sizeof(e_m3))==E::Fatal);
+    assert(!sec->keysPending && !sec->authorizePending && !s.authorizeRequested && !s.portAuthorized);
+    stop(d);continue;
+   }
    assert(sec->replyLength==sizeof(e_m2) && !memcmp(sec->reply,e_m2,sizeof(e_m2)));
    sec->replyPending=false;sec->replyLength=0;
    assert(sec->supplicant.receive(e_m3,sizeof(e_m3))==E::Keys);
@@ -481,8 +492,30 @@ int main(){
    if(scenario==3){assert(s.cancelRequested && !s.authorizeRequested && !s.portAuthorized && !sec->eapOwner.generation());}
    else {
     assert(s.authorizeRequested && !s.portAuthorized && !sec->authorizePending);
-    key.key_len=0;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
-    assert(s.cancelRequested && !s.portAuthorized && !sec->eapOwner.generation());
+    if(scenario==5){
+     s.portAuthorized=true;s.authorizeRequested=false;s.securityPhase=5;s.securityGeneration=1;sec->replyPending=false;
+     nativeSAEClockMS=110;key.key_len=0;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+     assert(sec->eapOwner.replacementPending() && s.portAuthorized && !s.cancelRequested);
+     memcpy(s.eapolFrames[0],er_m1,sizeof(er_m1));s.eapolLength[0]=sizeof(er_m1);s.eapolRead=0;s.eapolCount=1;
+     d->serviceEAPKeyFrames();assert(s.eapolCount==1 && !sec->replyPending);
+     key.key_len=32;memcpy(key.key,er_pmk,32);assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+     ownerGate=true;d->serviceNativeEAP(111);ownerGate=false;
+     nativePasswordRandom=[](uint8_t *out,size_t n){assert(n==32);memcpy(out,er_snonce,32);return true;};
+     d->serviceEAPKeyFrames();nativePasswordRandom=nullptr;
+     assert(s.eapolCount==0 && sec->replyPending);
+     assert(sec->replyLength==sizeof(er_m2) && !memcmp(sec->reply,er_m2,sizeof(er_m2)));sec->replyPending=false;
+     assert(sec->supplicant.receive(er_m3,sizeof(er_m3))==E::PairKeys);
+     assert(d->nativeAcceptSecurityResult(E::PairKeys) && sec->keysPending && sec->pairUpdateReply);
+     assert(!memcmp(sec->keys,er_ptk+32,16));
+     sec->keysPending=false;sec->replyPending=false;s.securityGeneration=2;sec->authorizePending=true;
+     s.eapolCompletion.begin(78);s.eapolCompletion.retire(77,0);d->serviceEAPCompletion(112);
+     assert(!sec->ptkUpdatePending && sec->authorizePending);
+     s.eapolCompletion.retire(78,0);d->serviceEAPCompletion(113);
+     assert(sec->ptkUpdatePending && sec->eapOwner.replacementPending() && !s.cancelRequested);
+    }else {
+     key.key_len=0;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+     assert(s.cancelRequested && !s.portAuthorized && !sec->eapOwner.generation());
+    }
    }}
   else assert(!sec->eapOwner.generation());
   stop(d);

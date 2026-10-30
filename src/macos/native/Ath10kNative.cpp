@@ -1033,13 +1033,21 @@ void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
         nativeSetEAPQueue(false);return;
     }
     nativeSetEAPQueue(true);
-    if(!sec->ready){
+    const bool replacement=sec->ready && sec->eapOwner.replacementPending();
+    const bool replacementIdle=!sec->eapOwner.pending() && !sec->eapTXInFlight && !sec->replyPending && !sec->keysPending &&
+        !sec->authorizePending && !sec->ptkUpdatePending && !sec->supplicant.pairwisePending() &&
+        !s.txOwned && !s.dataPending && !s.wmiOwned && !s.submitted && !s.rekeyKind;
+    if(!sec->ready || (replacement && replacementIdle)){
         // Consume the translated PMK once, only for the still-current station
         // and peer. Secrets never outlive this gated invocation.
         struct Material {UInt8 pmk[32]{},nonce[32]{};
             ~Material(){AthSecurity::wipe(this,sizeof(*this));}} material;
         if(sec->eapOwner.takePMK(sec->eapOwner.generation(),s.local,s.bssid,now,material.pmk)){
-            if(!Ath10kKernelCrypto::random(material.nonce,sizeof(material.nonce)) ||
+            if(replacement){
+                if(!sec->supplicant.replaceEAPMaster(material.pmk,s.local,s.bssid)){
+                    fail("native-eap-master-replacement");return;
+                }
+            }else if(!Ath10kKernelCrypto::random(material.nonce,sizeof(material.nonce)) ||
                !sec->supplicant.begin(material.pmk,material.nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,1) ||
                !sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false)){
                 sec->supplicant.reset();fail("native-eap-supplicant-initialization");return;
@@ -1089,8 +1097,25 @@ IOReturn Ath10kPCIDevice::nativeSetCipherKey(void *data){
     // separate preauthentication contract, not permission to reuse this owner.
     const auto address=reinterpret_cast<const UInt8 *>(&key.key_ea);
     for(unsigned i=0;i<6;++i)if(address[i])return kIOReturnBadArgument;
+    const UInt64 keyNow=Ath10k::uptimeNS()/1000000u;
+    const bool establishedEAP=(s.portAuthorized && s.securityPhase==5) ||
+        ((s.rekeyKind==1 || s.rekeyKind==2) && s.securityPhase>=1 && s.securityPhase<=4);
+    if(key.key_cipher_type==9 && !key.key_len && sec->ready && establishedEAP &&
+       !sec->eapOwner.replacementPending()){
+        // A completed Enterprise link may start another OS EAP transaction.
+        // Preserve installed keys until authenticated replacement; never reuse
+        // old transport/key completions as evidence for the new PMK.
+        // Queue and in-flight work retain their owners. Service defers PMK
+        // consumption until they drain, within this original deadline.
+        if(keyNow>~UInt64(0)-30000 ||
+           !sec->eapOwner.beginReplacement(sec->eapOwner.generation(),s.local,s.bssid,keyNow,keyNow+30000)){
+            s.error="native-eap-replacement-busy";s.cancelRequested=true;s.portAuthorized=false;
+            discardNativeSecurity();requestNativeService();return kIOReturnBusy;
+        }
+        requestNativeService();return kIOReturnSuccess;
+    }
     const auto result=sec->eapOwner.setMSK(sec->eapOwner.generation(),s.local,s.bssid,
-        key.key_cipher_type,key.key,key.key_len,Ath10k::uptimeNS()/1000000u);
+        key.key_cipher_type,key.key,key.key_len,keyNow);
     using R=AthNative::EAPOwner::KeyResult;
     switch(result){
     case R::Accepted:requestNativeService();return kIOReturnSuccess;
@@ -1835,7 +1860,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
             else {sec->replyPending=false;sec->authorizePending=true;
                 AthSecurity::wipe(sec->reply,sizeof(sec->reply));sec->replyLength=0;}
         }
-        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && !sec->eapTXInFlight && s.eapolCount && !s.rekeyKind){
+        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && !sec->eapTXInFlight &&
+           (!sec->eapOwner.replacementPending() || sec->eapOwner.replacementKeyReady()) && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
             using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
@@ -2071,6 +2097,9 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
     // Keep the accepted pairwise update until macOS accepts its notification.
     // No new EAPOL exchange is consumed while this single completion is pending.
     if(sec && sec->ptkUpdatePending){
+        if(sec->eapOwner.replacementKeyReady() && !sec->eapOwner.replacementCompletable(sec->eapOwner.generation(),s.local,s.bssid,now)){
+            s.error="native-eap-replacement-completion-owner";s.cancelRequested=true;s.portAuthorized=false;
+        }
         if(!associated || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None ||
            !_wmiLive.active || s.securityGeneration!=sec->ptkUpdateGeneration){
             sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;
@@ -2081,7 +2110,11 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             const UInt64 generation=sec->pmfSession?sec->pmfSession->activeGeneration():0;
             auto event=AirportWCL::completedPairwiseUpdate(
                 sec->transitionPolicy.currentFlags(s.local,s.bssid,generation));
-            if(post(AirportWCL::SupplicantEvent,&event,sizeof(event))){sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;}
+            if(post(AirportWCL::SupplicantEvent,&event,sizeof(event))){
+                if(sec->eapOwner.replacementKeyReady())
+                    sec->eapOwner.finishReplacement(sec->eapOwner.generation(),s.local,s.bssid,now);
+                sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;
+            }
         }
     }
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;

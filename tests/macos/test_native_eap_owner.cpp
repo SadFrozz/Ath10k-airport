@@ -1,4 +1,5 @@
 #include <cassert>
+#include <initializer_list>
 #include <cstring>
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 int main(){
@@ -58,5 +59,27 @@ int main(){
  assert(owner.begin(sta,ap,100,200));last=owner.generation();
  assert(owner.setMSK(last,sta,ap,9,key,32,150)==K::Accepted);
  assert(owner.setMSK(last,sta,ap,9,nullptr,0,151)==K::Cleared && !owner.generation());
+ // Replacement spans MSK plus firmware/receipt completion, unlike initial
+ // MSK wait. Consumption must not disable its terminal deadline.
+ for(bool complete:{false,true}){
+  Owner r;assert(r.begin(sta,ap,100,200));auto old=r.generation();
+  assert(!r.beginReplacement(old,sta,ap,101,300));
+  assert(r.setMSK(old,sta,ap,9,key,32,110)==K::Accepted);
+  assert(r.takePMK(old,sta,ap,120,output));
+  assert(r.enqueuePacket(old,sta,ap,frame,60,121)==Owner::Enqueue::Queued);
+  assert(!r.beginReplacement(old,sta,other,122,300));
+  assert(r.beginReplacement(old,sta,ap,122,300) && r.pending());
+  size_t queuedLength=0;uint64_t queuedSince=0;assert(r.front(queuedLength,queuedSince) && queuedLength==18 && queuedSince==121);r.pop();
+  auto next=r.generation();
+  assert(next!=old && r.replacementPending() && !r.replacementKeyReady());
+  assert(!r.finishReplacement(next,sta,ap,123));
+  assert(r.setMSK(old,sta,ap,9,key,32,124)==K::Stale);
+  assert(r.setMSK(next,sta,ap,9,key,32,125)==K::Accepted);
+  assert(r.takePMK(next,sta,ap,126,output) && r.replacementKeyReady());
+  assert(!r.beginReplacement(next,sta,ap,127,400));
+  assert(!r.finishReplacement(old,sta,ap,128));
+  if(complete){assert(r.finishReplacement(next,sta,ap,299));assert(!r.replacementPending() && !r.expire(300));}
+  else {assert(!r.finishReplacement(next,sta,ap,300));assert(r.expire(300) && !r.generation());}
+ }
  AthSecurity::wipe(output,sizeof(output));AthSecurity::wipe(key,sizeof(key));
 }

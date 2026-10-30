@@ -21,8 +21,9 @@ bool connectionAssociated(const State &s){return s.associated;}
 }
 struct Security {
  AthNative::EAPOwner eapOwner;bool ready=false;bool eapTXInFlight=false,replyPending=false,keysPending=false,authorizePending=false,ptkUpdatePending=false;
- struct {bool pending=false,fail=false;unsigned begins=0,resets=0;bool pairwisePending(){return pending;}
+ struct {bool pending=false,fail=false;unsigned begins=0,resets=0,replacements=0;bool pairwisePending(){return pending;}
  bool begin(const UInt8 *pmk,const UInt8 *nonce,const UInt8*,const UInt8*,const UInt8*,unsigned,unsigned akm){++begins;assert(pmk[0]==7 && nonce[0]==0x42 && akm==1);return !fail;}
+ bool replaceEAPMaster(const UInt8 *pmk,const UInt8*,const UInt8*){++replacements;assert(pmk[0]==7);return !fail;}
  bool bindRSNXE(const UInt8*,unsigned,bool){return !fail;}void reset(){++resets;}
  } supplicant;
 };
@@ -49,6 +50,30 @@ struct Ath10kPCIDevice {
 #include "native_eap_service.inc"
 #include "native_eap_timeout.inc"
 int main(){
+ {Ath10kPCIDevice d;d.begin();auto &s=d._connection;auto &sec=d.security;UInt8 key[32]{};key[0]=7;
+  auto g=sec.eapOwner.generation();assert(sec.eapOwner.setMSK(g,s.local,s.bssid,9,key,32,101)==AthNative::EAPOwner::KeyResult::Accepted);
+  d.serviceNativeEAP(102);d.enqueue(103);
+  assert(sec.eapOwner.beginReplacement(g,s.local,s.bssid,104,1000));g=sec.eapOwner.generation();
+  assert(sec.eapOwner.setMSK(g,s.local,s.bssid,9,key,32,105)==AthNative::EAPOwner::KeyResult::Accepted);
+  d.serviceNativeEAP(106);assert(d.submits==1 && sec.eapTXInFlight && !sec.supplicant.replacements);
+  s.eapolCompletion.complete=true;d.serviceNativeEAP(107);
+  assert(!sec.eapTXInFlight && !sec.supplicant.replacements);
+  d.serviceNativeEAP(108);assert(sec.supplicant.replacements==1 && sec.eapOwner.replacementKeyReady());
+ }
+
+ for(unsigned block=0;block<11;++block){
+  Ath10kPCIDevice d;d.begin();auto &s=d._connection;auto &sec=d.security;UInt8 key[32]{};key[0]=7;
+  auto g=sec.eapOwner.generation();assert(sec.eapOwner.setMSK(g,s.local,s.bssid,9,key,32,101)==AthNative::EAPOwner::KeyResult::Accepted);
+  d.serviceNativeEAP(102);assert(sec.ready);
+  assert(sec.eapOwner.beginReplacement(g,s.local,s.bssid,103,1000));g=sec.eapOwner.generation();
+  assert(sec.eapOwner.setMSK(g,s.local,s.bssid,9,key,32,104)==AthNative::EAPOwner::KeyResult::Accepted);
+  bool *guards[]={&sec.eapTXInFlight,&sec.replyPending,&sec.keysPending,&sec.authorizePending,&sec.ptkUpdatePending,&sec.supplicant.pending,&s.txOwned,&s.dataPending,&s.wmiOwned,&s.submitted,&s.rekeyKind};
+  *guards[block]=true;d.serviceNativeEAP(105);assert(sec.supplicant.replacements==0);
+  *guards[block]=false;d.serviceNativeEAP(106);assert(sec.supplicant.replacements==1 && sec.supplicant.begins==1 && !sec.supplicant.resets);
+  d.serviceNativeEAP(107);assert(sec.supplicant.replacements==1 && sec.eapOwner.replacementPending());
+  d.serviceNativeEAP(1000);assert(s.cancelRequested && !sec.eapOwner.generation());
+ }
+
  for(unsigned retired=0;retired<4;++retired)for(bool authorized:{false,true}){
   Ath10kPCIDevice d;d.begin();d.serviceNativeEAP(101);assert(d._nativeEAPQueueRunning);
   d._networkLinkUp=authorized;

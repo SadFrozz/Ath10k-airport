@@ -1,4 +1,5 @@
 #include <cassert>
+#include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 #include <cstring>
 #include <cstdint>
 #include <vector>
@@ -36,6 +37,7 @@ public:
                 if(!pending.length || !AthSecurity::equal(pending.station,local,6) || !AthSecurity::equal(pending.bssid,ap,6))return false;
                 out=pending;pending={};return true;}} supplicant;
         AthSecurity::TransitionDisableDelivery transitionPolicy;
+        AthNative::EAPOwner eapOwner;
         AthNative::ProfileCredentials profile;
         AthNative::PreparedRoam preparedRoam;
         AthNative::RoamEvents::Delivery roamDelivery;
@@ -45,7 +47,7 @@ public:
         bool preserve=false;
         template<class State> bool preserveRoamRetirement(const State &,UInt64){return preserve;}
         unsigned resets=0;
-        void reset(){++resets;ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
+        void reset(){++resets;eapOwner.clear();ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
     } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
@@ -272,6 +274,25 @@ static void roamDispatcher(){
     }
 }
 static void pairwiseNotifications(){
+    for(unsigned mode=0;mode<4;++mode){
+        auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);d->serviceNativeNotifications(10);d->events.clear();
+        auto &s=d->_connection;auto &o=d->security.eapOwner;uint8_t key[32]{},out[32]{};
+        assert(o.begin(s.local,s.bssid,1,100));auto g=o.generation();
+        assert(o.setMSK(g,s.local,s.bssid,9,key,32,2)==AthNative::EAPOwner::KeyResult::Accepted);
+        assert(o.takePMK(g,s.local,s.bssid,3,out));assert(o.beginReplacement(g,s.local,s.bssid,4,120));g=o.generation();
+        assert(o.setMSK(g,s.local,s.bssid,9,key,32,5)==AthNative::EAPOwner::KeyResult::Accepted);
+        if(mode!=2)assert(o.takePMK(g,s.local,s.bssid,6,out));
+        s.securityGeneration=8;d->security.ptkUpdateGeneration=8;d->security.ptkUpdatePending=true;d->security.ptkUpdateSince=10;
+        if(mode==0){d->failAlways=true;d->serviceNativeNotifications(110);assert(o.replacementPending());d->failAlways=false;}
+        if(mode==3)s.bssid[5]^=1;
+        d->serviceNativeNotifications(mode==1?120:119);
+        unsigned updates=0;for(const auto &event:d->events)if(event.id==AirportWCL::SupplicantEvent)++updates;
+        assert(updates==((mode==0 || mode==2)?1u:0u));
+        if(mode==0)assert(!o.replacementPending() && !s.cancelRequested);
+        else if(mode==2)assert(o.replacementPending() && !s.cancelRequested); // Old event cannot finish new EAP.
+        else assert(s.cancelRequested && !s.portAuthorized);
+    }
+
     for(unsigned mode=0;mode<5;++mode){
         auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);
         d->serviceNativeNotifications(100);d->events.clear();

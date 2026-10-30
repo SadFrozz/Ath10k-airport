@@ -76,6 +76,8 @@ def main():
         network_source=(ROOT/'src/macos/controller/Ath10kNetwork.cpp').read_text()
         completion=native[native.index('        // Bound delivery even when an earlier WCL event'):native.index('        if(sec->keysPending && !s.wmiOwned')]
         (include/'native_eap_integration_completion.inc').write_text('void Ath10kPCIDevice::serviceEAPCompletion(UInt64 now){auto sec=_nativeSecurity;auto &s=_connection;\n'+completion+'}\n')
+        key_rx=native[native.index('        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && !sec->eapTXInFlight &&'):native.index('        if(sec->supplicant.pairwisePending()){')]
+        (include/'native_eap_key_rx.inc').write_text('void Ath10kPCIDevice::serviceEAPKeyFrames(){auto sec=_nativeSecurity;auto &s=_connection;\n'+key_rx+'}\n')
         (include/'native_eapol_completion.inc').write_text('void Driver::service(UInt64 now){auto sec=&security;auto &s=state;\n'+completion+'}\n')
         retirement=network_source[network_source.index('            s.txOwned=false;'):network_source.index('            if(s.txStatus){',network_source.index('            s.txOwned=false;'))]
         (include/'native_eapol_retirement.inc').write_text('void retire(Ath10k::ConnectionState &s){\n'+retirement+'}\n')

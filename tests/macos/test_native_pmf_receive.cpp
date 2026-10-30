@@ -95,6 +95,7 @@ public:
  void serviceNativeEAP(UInt64);
  int nativeSetCipherKey(void *);
  void serviceEAPCompletion(UInt64);
+ void serviceEAPKeyFrames();
  struct OutputQueue {unsigned starts=0,stops=0,flushes=0;void service(int){}
   void start(){++starts;}void stop(){++stops;}void flush(){++flushes;}} outputQueue;
  OutputQueue *getOutputQueue(){return &outputQueue;}

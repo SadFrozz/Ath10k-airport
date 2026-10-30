@@ -52,16 +52,18 @@ request from the installed OS. No password is retained by the driver.
 EAP owner waits at most 30 seconds from admission for MSK. The normal 15-second
 four-way timer starts on successful PMK consumption; the existing overall native
 join deadline still bounds the complete join. No extension or perpetual retry is
-introduced. Enterprise host roaming and reauthentication remain to be integrated;
-a second different MSK currently returns Busy, rather than replacing live keys.
+introduced. Same-association reauthentication is integrated locally as described below.
+Enterprise host roaming remains unimplemented. A different MSK without the preceding
+clear/restart transaction returns Busy rather than overwriting current material.
 
 Production admission, native key callback, PMK binding, M1–M4 exports and M4
 completion have a combined sanitized fixture. Firmware key acknowledgements are
 emulated, and it checks authorization intent rather than actual radio port opening.
-Failure completion and clear-key cancel without authorizing.
+Failed completion cancels without authorizing. Clear-key behavior depends on whether
+the owner is empty, initially installing keys, established, or already replacing keys.
 
 Still required: end-to-end pre-link delivery/system-client startup evidence,
-late MSK serialization and enterprise reauthentication/roaming. The 68-test sanitized suite and offline
+late MSK serialization, Enterprise roaming and radio reauthentication evidence. The 68-test sanitized suite and offline
 dependencies passed. Local validation is not
 enterprise interoperability or supported macOS 11–26 coverage.
 
@@ -84,7 +86,9 @@ Packet ingress validates association and owner deadline independently of service
 scheduling. Expired transmission is Invalid, including when the queue is full;
 it must not stall a caller waiting for space in an expired authentication. Expired
 or retired EAP receive is consumed/dropped, not passed to the internal key parser.
-A consumed PMK ends only the EAP wait budget, not subsequent four-way/join deadlines.
+Initial PMK consumption ends only the initial EAP wait budget, not four-way/join
+deadlines. A replacement retains its 30-second deadline through accepted key-update
+notification; consuming replacement PMK does not end that budget.
 
 Read-only examination of installed IONetworkingFamily UUID
 5D3F11B8-802B-3860-8A36-E9334980A117 establishes that inputPacket/pushInputPacket
@@ -109,9 +113,10 @@ EAPOLSocket.c (blob a82591c5bd96afe2bf98057b261c225759596577) maps an ordinary
 client clear to zero-length MSK with no BSSID. Thus a valid current EAP owner
 without an accepted key treats that request as idempotent empty-key reset:
 preserve association, queued packets, generation and the original deadline.
-Never authorize or extend the deadline. Clearing an accepted/consumed PMK still
-revokes the owner and closes/cancels the association; reauthentication remains
-unsupported rather than silently replacing live keys.
+Never authorize or extend the deadline. On an established link, or its ongoing
+pair/group rekey, the first clear starts bounded replacement without bypassing
+firmware key barriers. Clearing accepted replacement material cancels; clearing
+accepted material during initial installation also cancels.
 
 The public client's link-down handler schedules inactivity after a configurable
 delay (default one second). It is not a synchronous driver-visible callback drain.
@@ -148,3 +153,83 @@ old key requests remain outside the proven boundary.
 Static evidence: outputs/NATIVE-eap-port-lifecycle-20261030/startup-contract.
 The user-mode ordering is recovered; system/login-window modes, the precise
 kernel enterprise join envelope and actual AF_NDRV/radio delivery remain unverified.
+
+## Reauthentication clear is not a unique state transition
+
+Public Supplicant.c blob 552c261964a5eee7382a0e54bba952a29731bb47 routes
+a new method request from Authenticated into Authenticating (around lines
+1284–1302), which clears the MSK. Held also clears it (around line 3052).
+Thus zero-length cipher9 alone identifies neither successful reauthentication
+nor failure. An EAP Success frame cannot be required before key handoff: the
+client attempts set_wpa_key_info while its method is still Authenticating.
+
+Stock CoreMac UUID 4C3822FC-8902-3AF6-A791-DD4A8D9E9C66 dispatches cipher9
+through the PMK branch at 0xffffff80015864c0 (jump table 0xffffff8001586ad4).
+Zero key length skips event-enable/timeout setup but still calls programPMK at
+0xffffff8001586574. programPMK issues WLC_SET_WSEC_PMK (0x10c), with a
+0x108-byte payload. These inspected functions contain no direct disassociation
+on zero length. Firmware effects on existing PTK/controlled-port state remain
+unrecovered; do not infer that it is safe to retain or discard those keys.
+
+The local replacement policy below separates master-key and established-link
+lifetimes, using independent supplicant reference behavior and existing driver
+key barriers. It is not proof of stock firmware internals or radio interoperability.
+Evidence: outputs/NATIVE-eap-reauth-contract-20261030.
+
+## Late-key provenance versus cryptographic authorization
+
+A tokenless MSK callback cannot identify the EAP session that produced its bytes.
+That provenance gap is distinct from controlled-port authorization: the current
+supplicant derives a PTK from PMK, both MACs and nonces, then verifies current M3
+MIC before publishing Keys. A wrong old PMK must fail that check; acceptance by
+nativeSetCipherKey alone must never open the port. A combined production-path
+fixture now exercises admitted Enterprise join, empty reset, wrong MSK, M1 and
+valid AP M3, asserting Fatal with no key export or authorization intent.
+Its execution result is tracked in the audit; the test does not prove callback
+serialization, retry availability, firmware behavior or real Enterprise delivery.
+An old PMK equal to the current PMK is not distinguishable by key bytes alone.
+
+## Replacement transaction requirements
+
+The upstream-derived supplicant in FreeBSD, wpa.c blob
+adf88ebdf829cf7d83f6925c65f417e6574bda0f, separates wpa_sm_set_pmk from
+established PTK state. Its PMKSA_REPLACE path avoids deauthentication; cache
+expiration is handled separately. This supports separate master-key and link
+lifetimes, not assumptions about Broadcom firmware behavior.
+Source: https://github.com/freebsd/freebsd-src/blob/main/contrib/wpa/src/rsn_supp/wpa.c
+
+The current local group covers these linked transitions:
+
+| Transition | Required rule | Local implementation / remaining evidence |
+| --- | --- | --- |
+| Established or ongoing rekey → EAP restart | Preserve link identity and prior owners; bounded deadline | Clear starts a new 30-second owner; initial key installation remains cancellation |
+| New MSK while prior work is pending | Drain prior EAP queue, TX, key and notification owners before PMK handoff | Deferred service with original deadline; old PTK notification cannot finish new owner |
+| New PMK → M1/M3 | Fresh nonce, replay retention, authenticate before key export | replaceEAPMaster preserves established keys/replay; early M1 waits for handoff |
+| New keys → firmware barrier → M4 | Match generation and receipt, then notify macOS | Existing PairKeys path and durable receipt; replacement ends only after accepted update notification |
+| Failure / timeout / leave | No indefinite wait or retained retired secrets | Owner expiry cancels; terminal security reset clears replacement state; hardware evidence remains open |
+
+## Current local integration and evidence
+
+The initial empty reset is idempotent. A clear on an established authorized phase5
+link, or its existing pair/group rekey in phases1–4, starts replacement. Queued EAP
+frames keep their bytes and timestamps; transport owners are not reset. New PMK
+waits for queue, EAP TX, reply, key-install, authorization receipt, PTK notification,
+pairwise candidate and serial/data/WMI/rekey owners to drain. Timeout still runs.
+
+Existing installed keys remain until authenticated new M3 requests their update.
+The restart itself never opens a port closed by an ongoing firmware update. The
+existing pairwise key-install path closes/reopens the port at its firmware barriers.
+An old pairwise notification delivered before new PMK handoff cannot finish the
+replacement; after handoff, completion checks identity, generation and deadline.
+
+Independent AP vectors and production-fragment fixtures cover PMK replacement,
+M1–M4, retained replay/GTK state, wrong PMK/MIC, duplicate M3 without reinstall,
+early queued M1, deferred owners, queue/TX/receipt drain, restart during firmware
+rekey, terminal timeout and accepted/rejected macOS notification. Affected tests
+passed ASan/UBSan. Final consolidated 68-test regression passed with ASan/UBSan; native compilation
+and symbol validation passed. Firmware acknowledgements are emulated in fixtures.
+
+Enterprise remains default-disabled. Precise live kernel join envelope, downstream
+AF_NDRV delivery, stale OS callback provenance, system/login-window startup,
+Enterprise roaming and radio interoperability remain open. Source integration and
+local tests do not advertise support or establish native operation on other OSes.

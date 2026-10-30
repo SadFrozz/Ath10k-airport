@@ -3,7 +3,7 @@
 #include <cstring>
 #include <strings.h>
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
-using UInt8=uint8_t;using IOReturn=int;
+using UInt8=uint8_t;using UInt64=uint64_t;using IOReturn=int;
 constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnUnsupported=2,kIOReturnNotReady=3,kIOReturnBusy=4;
 struct apple80211_key {
  uint32_t version=1,key_len=32,key_cipher_type=9;uint16_t key_flags=0,key_index=0;
@@ -16,9 +16,12 @@ namespace Ath10k {
  template<class S> bool connectionAssociated(const S &s){return s.associated && !s.cancelRequested;}
 }
 struct Ath10kPCIDevice {
- struct Security {AthNative::EAPOwner eapOwner;} security;
+ struct Security {AthNative::EAPOwner eapOwner;
+ bool ready=false,eapTXInFlight=false,replyPending=false,keysPending=false,authorizePending=false,ptkUpdatePending=false;
+ struct {bool pending=false;bool pairwisePending(){return pending;}} supplicant;
+ } security;
  Security *_nativeSecurity=&security;
- struct State {const char *error=nullptr;unsigned securityAKM=1;bool associated=true,cancelRequested=false,portAuthorized=false;
+ struct State {const char *error=nullptr;unsigned securityAKM=1,securityPhase=0,rekeyKind=0;bool txOwned=false,dataPending=false,wmiOwned=false,submitted=false;bool associated=true,cancelRequested=false,portAuthorized=false;
    uint8_t local[6]={2,1,2,3,4,5},bssid[6]={2,6,7,8,9,10};} _connection;
  unsigned scheduled=0,discarded=0;
  void requestNativeService(){++scheduled;}
@@ -28,6 +31,34 @@ struct Ath10kPCIDevice {
 #include "native_eap_callback.inc"
 int main(){
  using K=AthNative::EAPOwner::KeyResult;
+ for(unsigned phase=1;phase<=4;++phase)for(bool rekey:{false,true}){
+  Ath10kPCIDevice d;auto &s=d._connection;auto &sec=d.security;uint8_t out[32]{};apple80211_key key;
+  assert(sec.eapOwner.begin(s.local,s.bssid,1,1000));auto g=sec.eapOwner.generation();
+  assert(sec.eapOwner.setMSK(g,s.local,s.bssid,9,key.key,32,2)==K::Accepted);
+  assert(sec.eapOwner.takePMK(g,s.local,s.bssid,3,out));sec.ready=true;
+  s.securityPhase=phase;s.rekeyKind=rekey;s.portAuthorized=false;key.key_len=0;Ath10k::clockMS=100;
+  assert(d.nativeSetCipherKey(&key)==kIOReturnSuccess);
+  assert(!s.portAuthorized); // The restart never skips the firmware authorization barrier.
+  if(rekey)assert(!s.cancelRequested && sec.eapOwner.replacementPending() && s.rekeyKind);
+  else assert(s.cancelRequested && !sec.eapOwner.generation()); // Initial installation is not reauth.
+ }
+
+ for(unsigned block=0;block<12;++block){
+  Ath10kPCIDevice d;auto &s=d._connection;auto &sec=d.security;uint8_t out[32]{};apple80211_key key;
+  assert(sec.eapOwner.begin(s.local,s.bssid,1,1000));auto old=sec.eapOwner.generation();
+  assert(sec.eapOwner.setMSK(old,s.local,s.bssid,9,key.key,32,2)==K::Accepted);
+  assert(sec.eapOwner.takePMK(old,s.local,s.bssid,3,out));sec.ready=true;s.portAuthorized=true;s.securityPhase=5;
+  bool *guards[]={&sec.eapTXInFlight,&sec.replyPending,&sec.keysPending,&sec.authorizePending,&sec.ptkUpdatePending,&sec.supplicant.pending,&s.txOwned,&s.dataPending,&s.wmiOwned,&s.submitted};
+  if(block<10)*guards[block]=true;else if(block==10)s.rekeyKind=1;key.key_len=0;Ath10k::clockMS=100;
+  auto result=d.nativeSetCipherKey(&key);
+  {
+   assert(result==kIOReturnSuccess && !s.cancelRequested && s.portAuthorized && sec.eapOwner.replacementPending());
+   auto g=sec.eapOwner.generation();assert(g!=old);
+   Ath10k::clockMS=101;assert(d.nativeSetCipherKey(&key)==kIOReturnSuccess && sec.eapOwner.generation()==g);
+   assert(sec.eapOwner.expire(30100)); // Repeated empty reset did not extend deadline.
+  }
+ }
+
  // A callback may observe expiry before periodic service. It must both reject
  // the key and schedule terminal cleanup, rather than silently erase the timer.
  for(bool clear: {false,true}){

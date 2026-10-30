@@ -9,7 +9,7 @@ namespace AthNative {
 class EAPOwner {
     uint64_t sequence_=0,generation_=0,started_=0,deadline_=0;
     uint8_t station_[6]{},peer_[6]{},pmk_[32]{};
-    bool ready_=false,consumed_=false;
+    bool ready_=false,consumed_=false,replacement_=false;
     static constexpr size_t PacketLimit=1522,QueueLimit=4;
     struct Packet {uint8_t bytes[PacketLimit]{};size_t length=0;uint64_t since=0;} tx_[QueueLimit]{};
     size_t read_=0,count_=0;
@@ -30,7 +30,7 @@ public:
     EAPOwner &operator=(const EAPOwner &)=delete;
     ~EAPOwner(){clear();}
     void clear(){
-        generation_=started_=deadline_=0;ready_=consumed_=false;
+        generation_=started_=deadline_=0;ready_=consumed_=replacement_=false;
         AthSecurity::wipe(tx_,sizeof(tx_));read_=count_=0;
         AthSecurity::wipe(station_,sizeof(station_));AthSecurity::wipe(peer_,sizeof(peer_));
         AthSecurity::wipe(pmk_,sizeof(pmk_));
@@ -43,10 +43,31 @@ public:
         AthSecurity::copy(station_,station,6);AthSecurity::copy(peer_,peer,6);
         generation_=++sequence_;started_=now;deadline_=deadline;return true;
     }
+    // Preserve queued frames for the same association. The service must drain
+    // queue and firmware/transport owners before consuming the replacement PMK.
+    bool beginReplacement(uint64_t generation,const uint8_t *station,const uint8_t *peer,
+                          uint64_t now,uint64_t deadline){
+        if(!current(generation,station,peer) || !consumed_ || replacement_ ||
+           !validAt(now) || deadline<=now || sequence_==~uint64_t(0))return false;
+        AthSecurity::wipe(pmk_,sizeof(pmk_));ready_=consumed_=false;
+        generation_=++sequence_;started_=now;deadline_=deadline;
+        replacement_=true;return true;
+    }
+    bool replacementPending() const {return replacement_;}
+    bool replacementKeyReady() const {return replacement_ && consumed_;}
+    bool replacementCompletable(uint64_t generation,const uint8_t *station,const uint8_t *peer,uint64_t now) const {
+        return current(generation,station,peer) && replacement_ && consumed_ && validAt(now);
+    }
+    // A PMK handoff is not completion. Only the native owner, after key/receipt
+    // barriers, may retire this deadline for the same replacement generation.
+    bool finishReplacement(uint64_t generation,const uint8_t *station,const uint8_t *peer,uint64_t now){
+        if(!current(generation,station,peer) || !replacement_ || !consumed_ || !validAt(now))return false;
+        replacement_=false;return true;
+    }
     // Admission checks must use the same clock as service expiry: packet or
     // key callbacks can arrive before a delayed workloop processes its timer.
     bool validAt(uint64_t now) const {
-        return generation_ && now>=started_ && (consumed_ || now<deadline_);
+        return generation_ && now>=started_ && ((consumed_ && !replacement_) || now<deadline_);
     }
     bool expire(uint64_t now){
         if(!generation_ || validAt(now))return false;
@@ -68,7 +89,7 @@ public:
             }
             clear();return KeyResult::Cleared;
         }
-        if(now<started_ || (!consumed_ && now>=deadline_)){clear();return KeyResult::Stale;}
+        if(!validAt(now)){clear();return KeyResult::Stale;}
         if(ready_)return AthSecurity::equal(pmk_,key,32)?KeyResult::Duplicate:KeyResult::Conflict;
         AthSecurity::copy(pmk_,key,32);ready_=true;return KeyResult::Accepted;
     }

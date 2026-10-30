@@ -15,6 +15,7 @@
 #include "../../src/core/Ath10kControl.hpp"
 #include "../fixtures/security_vectors.inc"
 #include "../fixtures/eap_vectors.inc"
+#include "../fixtures/eap_reauth_vectors.inc"
 #include "../fixtures/rekey_vectors.inc"
 #ifdef _WIN32
 // The BCrypt-backed adapter is defined above; the same vectors run on each OS.
@@ -139,6 +140,42 @@ static void enterpriseExchange(){
  assert(e.outputLength==sizeof(e_m4) && !memcmp(e.output,e_m4,sizeof(e_m4)));
  assert(!memcmp(e.keys,e_ptk+32,16) && !memcmp(e.keys+16,e_gtk,16));
  assert(e.receive(e_m3,sizeof(e_m3))==E::Reply); // No key reinstallation.
+ // Replacing PMK must not reset replay or installed-key history. The native
+ // owner/firmware barriers are separate and are not emulated by this API test.
+ uint8_t replacement[32];memcpy(replacement,e_pmk,32);replacement[0]^=0x80;
+ uint8_t wrongPeer[6];memcpy(wrongPeer,e_ap,6);wrongPeer[5]^=1;
+ assert(!e.replaceEAPMaster(nullptr,e_sta,e_ap));
+ assert(!e.replaceEAPMaster(replacement,e_sta,wrongPeer));
+ assert(e.replaceEAPMaster(replacement,e_sta,e_ap));
+ assert(e.receive(e_m1,sizeof(e_m1))==E::Ignore);
+ assert(e.receive(e_m3,sizeof(e_m3))==E::Reply);
+ assert(!memcmp(e.keys,e_ptk+32,16) && !memcmp(e.keys+16,e_gtk,16));
+ std::vector<uint8_t> fresh(e_m1,e_m1+sizeof(e_m1));
+ const uint64_t replay=AthSecurity::be64(e_m3+14+9)+1;
+ for(unsigned i=0;i<8;++i)fresh[14+9+i]=uint8_t(replay>>(56-8*i));
+ fresh[14+17]^=1;
+ assert(e.receive(fresh.data(),fresh.size())==E::Reply && e.pairwisePending());
+ assert(!e.replaceEAPMaster(e_pmk,e_sta,e_ap));
+ uint8_t nonce[32];assert(OpenSSLCrypto::random(nonce,sizeof(nonce)));
+ E expected;assert(expected.begin(replacement,nonce,e_sta,e_ap,e_rsn,sizeof(e_rsn),1));
+ assert(expected.receive(fresh.data(),fresh.size())==E::Reply);
+ assert(e.outputLength==expected.outputLength && !memcmp(e.output,expected.output,e.outputLength));
+ e.cancelPairwiseAttempt();assert(!e.pairwisePending());
+ assert(e.receive(e_m3,sizeof(e_m3))==E::Reply); // Still the established M4, no install.
+ assert(!memcmp(e.keys,e_ptk+32,16) && !memcmp(e.keys+16,e_gtk,16));
+ assert(e.receive(er_m1,sizeof(er_m1))==E::Reply);
+ assert(e.outputLength==sizeof(er_m2) && !memcmp(e.output,er_m2,sizeof(er_m2)));
+ assert(e.receive(e_m3,sizeof(e_m3))==E::Ignore);
+ auto forged=std::vector<uint8_t>(er_m3,er_m3+sizeof(er_m3));forged[14+81]^=1;
+ assert(e.receive(forged.data(),forged.size())==E::Ignore && e.pairwisePending());
+ assert(!memcmp(e.keys,e_ptk+32,16));
+ assert(e.receive(er_m3,sizeof(er_m3))==E::PairKeys);
+ assert(!e.pairwisePending() && !memcmp(e.keys,er_ptk+32,16));
+ assert(e.outputLength==sizeof(er_m4) && !memcmp(e.output,er_m4,sizeof(er_m4)));
+ assert(e.receive(er_m3,sizeof(er_m3))==E::Reply); // No second installation.
+ assert(e.receive(e_m1,sizeof(e_m1))==E::Ignore);
+ S psk;start(psk);assert(!psk.replaceEAPMaster(replacement,v_sta,v_ap));
+ E empty;assert(!empty.replaceEAPMaster(replacement,e_sta,e_ap));
  e.reset();assert(e.receive(e_m3,sizeof(e_m3))==E::Ignore);
  assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,e_rsn,sizeof(e_rsn),5));
  assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,v_rsn,sizeof(v_rsn),1));

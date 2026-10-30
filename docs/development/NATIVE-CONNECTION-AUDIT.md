@@ -2259,3 +2259,144 @@ verification and auxiliary linking; exact UUID inclusion was verified. No EFI or
 system collection modification, installation or Enterprise hardware claim.
 Evidence: final-regression.log, final-regression-summary.json, latest-build.json
 and final-inclusion.json in NATIVE-eap-port-lifecycle-20261030.
+
+
+Publication checkpoint: functional batch 862ed1f0bba3df83732eb68860ad95edcd72ce69
+was published to native-sequoia-development and its tree matched the local files.
+Only then were plist/kmod versions advanced to 1.0.107 and code-only changelog
+notes assigned. These metadata edits await the next publication; no second
+per-fix push was made. The validated binary is still the prepublication 1.0.106
+image; a versioned build must be generated before any installation.
+
+
+## 2026-10-30 — reauthentication PMK-clear boundary
+
+Recovered stock cipher9 switch target and programPMK zero-length path. Stock
+forwards empty PMK to firmware without direct disassociation in inspected methods;
+public EAP client emits that clear both on Authenticating and Held. This rules out
+using the callback alone as a unique restart/failure signal. Firmware active-key
+semantics and replacement-handshake ownership must be recovered as one group
+before replacing current default-disabled cancellation behavior. No driver edits
+or repeated Personal tests for this evidence-only step. See EAP contract and
+NATIVE-eap-reauth-contract-20261030 facts/disassembly.
+
+
+Wrong-PMK authorization boundary: added one scenario to the combined production
+Enterprise join/callback/handshake fixture. A deliberately different PMK is
+accepted by the tokenless current-owner callback, but valid AP M3 then returns
+Fatal without key export or authorization intent. The fixture passed ASan/UBSan.
+This distinguishes a tested cryptographic barrier from unresolved late-callback
+provenance/availability; it does not close reauthentication or hardware delivery.
+No production code change, whole-suite rerun, publication or build-number change.
+
+
+Reauthentication group review: upstream-derived PMK setter and cache-replacement
+behavior separate PMK lifetime from established PTK/link lifetime. Local review
+identified four coupled integration points: reset() loses replay/GTK history,
+phase5 replacement admission requires an authorized port, old EAPOL receipts
+have independent consumers, and the OS needs initial/update completion ordering.
+Recorded a transition table in the EAP contract; no speculative port policy or
+partial production implementation was enabled. Reference blob and limitations
+saved as reference-pmk-lifecycle.json.
+
+
+## 2026-10-30 — Enterprise master replacement primitive
+
+Added replaceEAPMaster to the cryptographic supplicant: only established AKM1,
+current station/BSSID, no pending pairwise exchange. It replaces PMK without
+resetting established keys, replay floors, GTK history or cached responses. The
+next M1 derives a candidate using the fresh nonce path. Security fixture passed
+ASan/UBSan: old M1 rejected, old M3 acknowledged without reinstall, next M2
+matches independent fresh derivation under replacement PMK, pending exchange
+rejects replacement, cancellation preserves established key material.
+
+This primitive is NOT called by the native callback yet. It is incomplete local
+work for the larger reauthentication group, not advertised support or a deployable
+candidate. Next integration must serialize EAP/firmware receipt ownership and
+resolve port/restart/failure policy together. Existing native clear behavior is
+unchanged; full regression waits for the completed related batch.
+
+
+Replacement crypto acceptance expanded to independent Python hashlib/HMAC and
+cryptography RFC3394 AP vectors (public fixture keys only). New PMK M1/M2/M3/M4
+completes with PairKeys, exact expected TK/M4, rejects old M3 and damaged MIC,
+and returns Reply rather than key export for duplicate new M3. ASan/UBSan
+security test passed. Original Enterprise fixture regenerates byte-for-byte
+unchanged after generator extension. Native orchestration remains unintegrated;
+these are cryptographic results, not firmware/radio reauthentication evidence.
+
+
+Replacement lifetime owner now provides explicit begin/finish transitions. Begin
+requires the current consumed owner, no queued EAP, matching station/peer, valid
+clock and a future deadline; it creates a new generation. Consuming replacement
+PMK does not remove that deadline. Finish requires matching generation/identity,
+consumed PMK and time strictly before expiry. Restart cannot extend a pending
+replacement. Sanitized owner tests cover queued packets, retired generations,
+wrong peer, no key, deadline equality, completion and timeout.
+
+These APIs remain unconnected to native service pending the single orchestration
+group. The caller must still drain firmware/TX ownership and supply actual key
+completion evidence; finishReplacement alone cannot establish those facts.
+
+
+Native EAP service now consumes a pending replacement PMK through
+replaceEAPMaster only when EAP TX, reply, key export, authorization receipt,
+PTK notification, pairwise candidate, serial/data/WMI TX, submitted command and
+rekey owners are idle. Waiting for handoff does not return before ordinary EAP
+receipt processing, avoiding a self-blocked drain. Initial admission keeps its
+existing begin/bind path. Replacement remains bounded after PMK consumption.
+The service fixture passed ASan/UBSan for all eleven guards, single consumption,
+no full supplicant reset and timeout; combined native fixture also passed ASan/UBSan.
+Callback restart admission, port policy and completion integration remain pending.
+
+
+Replacement completion is now tied to accepted macOS pairwise-update publication.
+Before publishing, the replacement must match station/peer/generation, have a
+consumed PMK and remain before its deadline. Failure cancels and closes the port
+without false success. Failed post retains the pending deadline; successful post
+finishes the replacement. Actual extracted notification fixture passed ASan/UBSan
+for retry, successful completion, deadline equality, no consumed PMK and changed
+peer. Native callback restart admission remains unconnected, so no full
+reauthentication support is claimed and no installation candidate is ready.
+
+
+Idle-link reauthentication startup connected to the actual MSK callback. Stable
+phase5 authorized Enterprise clear begins replacement; old outstanding owners
+fail explicitly with cancellation/Busy instead of silently overwriting state.
+Repeated initial empty reset does not extend the deadline. Actual combined
+join/callback/new PMK/M1/M3/PairKeys/M4 receipt fixture passed ASan/UBSan; wrong
+receipt ID cannot complete the replacement. An additional guard now defers queued
+key-frame consumption until new PMK handoff. Affected group and native build passed for the combined source. Default gate remains off. No install or push.
+
+
+Phase5 restart now tolerates outstanding prior owners. beginReplacement preserves
+queued same-association EAP frames while replacing only PMK owner/deadline. Service
+drains queued/in-flight EAP and existing key/notification owners before consuming
+new PMK. A prior PTK notification may complete during that wait but cannot finish
+the replacement; only post-handoff completion may do so. Updated five-test group
+passed ASan/UBSan. Added queue→TX→receipt→PMK fixture also passed ASan/UBSan.
+The first interrupted edit attempt left old test expectations; that run failed
+and is not acceptance evidence. Updated tests passed after reconciliation.
+Mid-install phase1–3 restart semantics remain separate from this phase5 path.
+Latest source has not yet received final native rebuild/full regression.
+
+
+Restart admission now includes an existing pair/group firmware rekey in phases1–4
+(rekeyKind1/2), without opening its controlled port. Initial installation remains
+a distinct cancel path. Service drains the existing operation and notification
+before replacement PMK handoff. Callback tests cover each phase and the initial
+versus rekey distinction. The combined native fixture now uses extracted actual
+key-RX service to prove queued early M1 is retained until replacement PMK, then
+consumed to generate new M2. All three affected fixtures passed ASan/UBSan.
+Full consolidated regression and native build started for final group acceptance;
+no installation, push or additional version change.
+
+
+Final reauthentication batch checkpoint: all 68 tests plus runner checks passed
+with explicit ASan/UBSan and assertions. Native 1.0.107 build UUID
+94767F02-6D18-31C1-986F-C7CEC401A0C6 passed symbol validation; isolated strict
+ad-hoc signature and exact-UUID auxiliary inclusion passed. Evidence is under
+NATIVE-eap-reauth-contract-20261030. No installed image change or live Enterprise
+claim. Pending post-publication release notes: bounded same-association restart,
+queued-owner drain, replay-preserving PMK replacement, early key RX admission,
+existing firmware rekey coordination and accepted macOS completion.

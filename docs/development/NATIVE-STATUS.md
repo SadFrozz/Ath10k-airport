@@ -33,32 +33,31 @@ Those results describe 826c310, not untested subsequent changes.
 | Host-requested roaming | Integrated and covered by production-path fixtures | Physical inter-AP test unavailable with one router |
 | Autonomous roam cache/offload | Enable/nonempty requests rejected | Implementation remains |
 | Ordinary WPA2-Enterprise | Default-disabled AKM1/CCMP, EAP transport/MSK/four-way integrated in 1.0.106 | System startup/pre-link delivery, late MSK serialization and radio evidence |
-| Enterprise reauthentication/roaming | Different MSK rejected; no supported reauthentication/handoff | Separate owner/OS contracts and implementation |
+| Enterprise reauthentication/roaming | Same-association replacement integrated locally with deferred owners and bounded completion; roaming unimplemented | Final batch validation, OS provenance and radio evidence |
 | Sleep/wake | Lifecycle implemented; possibly working | Platform sleep deferred by user |
 | macOS 11–14, 15.0–15.1, 26 | Separate adapters unfinished | ABI recovery, implementation and per-OS verification |
 | AWDL/AirDrop | Not implemented | Separate protocol/interface/channel integration stage |
 
-## Active local batch
+## Published and local checkpoints
 
-Uncontrolled EAP port lifecycle: start the output queue while ordinary data stays
-blocked; close the EAP-only queue even when BSD carrier was already down; reject
-expired/retired receive and transmit traffic before asynchronous cleanup.
-The shared runtime timer requests native service each successful tick; timer
-interval is at most 100 ms during runtime power idle. WCL contention can delay
-processing, so ingress checks independently enforce the owner deadline.
+Uncontrolled EAP port lifecycle was published as
+862ed1f0bba3df83732eb68860ad95edcd72ce69. Its 68-test sanitized regression and
+exact-UUID offline linking are saved under NATIVE-eap-port-lifecycle-20261030.
+Only after publication was source version advanced to 1.0.107. Version metadata
+and code changelog remain local until the next grouped publication.
 
-The current source includes queue lifetime, initial empty-key reset and explicit
-callback-driven timeout cleanup. Affected fixtures passed ASan/UBSan. The final
-consolidated 68-test regression passed with ASan/UBSan. Native build and symbol validation passed at
-1.0.106, UUID 9CB4F564-2283-3261-A46A-3A27CBC19C87. An isolated validation copy
-passed strict ad-hoc signature verification and offline dependency linking; its
-exact UUID was verified in the generated collection. The source bundle remains
-unsigned and uninstalled. The earlier premature 1.0.107 image is superseded.
+Current local batch adds same-association Enterprise reauthentication: bounded
+restart, retained queue and old transport ownership, deferred PMK replacement
+without wiping established key/replay history, early key-frame admission, and
+completion after firmware/M4/macOS notification barriers. Restart during an existing
+pair/group key installation preserves that operation's port policy. Affected
+sanitized fixtures passed; final full 68-test regression passed with ASan/UBSan, native build and offline inclusion passed.
+Evidence: outputs/NATIVE-eap-reauth-contract-20261030. No new image installed.
 
-Enterprise remains off. The zero-BSSID key callback carries no transaction token;
-internal generations do not establish isolation from old OS callbacks. Installed
-user-mode startup ordering is recovered; real Enterprise delivery and other
-startup modes remain unverified. No publication or build-number advancement yet.
+Enterprise remains off. Static installed user-mode startup ordering is recovered;
+actual Enterprise delivery and other startup modes remain unverified. A tokenless
+MSK callback cannot prove EAP session provenance. Wrong PMK cannot pass the tested
+M3 authentication boundary, but stale requests can still affect availability.
 
 ## Evidence and work policy
 

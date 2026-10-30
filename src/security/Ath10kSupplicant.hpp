@@ -116,6 +116,15 @@ public:
      !equal(station,local,6) || !equal(bssid,ap,6))return false;
   out=pendingTransitionDisable;wipe(&pendingTransitionDisable,sizeof(pendingTransitionDisable));return true;
  }
+ // Replace only Enterprise master material between completed exchanges. The
+ // caller must drain exported replies/firmware work before invoking this; this
+ // crypto object cannot acknowledge transport ownership. Preserve replay floors,
+ // installed-key history and cached retransmission responses until a new M3.
+ bool replaceEAPMaster(const uint8_t *master,const uint8_t *station,const uint8_t *bssid){
+  if(!AllowEAP || selectedAKM!=1 || state!=3 || pairRekey || !master ||
+     !station || !bssid || !equal(station,local,6) || !equal(bssid,ap,6))return false;
+  copy(pmk,master,32);return true;
+ }
  void cancelPairwiseAttempt(){
   if(!pairwisePending())return;
   copy(ptk,establishedPTK,48);copy(anonce,establishedANonce,32);copy(snonce,establishedSNonce,32);
