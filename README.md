@@ -1,80 +1,111 @@
 # Ath10k-airport
 
-Experimental native Qualcomm Atheros QCA9377 Wi-Fi kext for OpenCore, targeting
-Lunnen LLL5DAW (`168c:0042 / 1a3b:2b51`) on x86_64 macOS Sequoia.
-Wi-Fi is controlled through macOS system settings and the Wi-Fi menu.
-There is no companion application, login agent or application bundle to install.
-The driver does not require OpenCore Legacy Patcher or changes to system volumes.
+Experimental native Qualcomm Atheros Wi-Fi driver for macOS, loaded through
+OpenCore. Networks are managed through the macOS Wi-Fi menu and System Settings.
+No companion app, login agent, OpenCore Legacy Patcher or system-volume patches
+are required.
 
-## Documentation
+[Documentation](docs/guides/native-sequoia.md) ·
+[Compatibility](docs/compatibility/COMPATIBILITY.md) ·
+[Releases](https://github.com/SadFrozz/Ath10k-airport/releases) ·
+[Issues](https://github.com/SadFrozz/Ath10k-airport/issues) ·
+[Changelog](CHANGELOG.md)
 
-- [Requirements](NATIVE-CONTRACT.md) and [security requirements](WPA3-CONTRACT.md)
-- [Current implementation and evidence](NATIVE-STATUS.md)
-- [Changelog](CHANGELOG.md), [development audit](NATIVE-CONNECTION-AUDIT.md), [batch plan](NATIVE-BATCH-PLAN.json)
-- [Agent working instructions](AGENTS.md)
+## Features and status
 
-## Status
+- Native network discovery, scanning, association and IPv4/IPv6 traffic.
+- WPA2-Personal and experimental WPA3-Personal/SAE with PMF.
+- Internal key updates, replay protection and protected management handling.
+- Host-requested roaming implementation with local regression coverage.
 
-Native discovery, scanning and WPA2 traffic have worked on the development laptop.
-An explicit experimental build has also connected through native SAE on Sequoia
-15.6.1 (24G90), carried interface-bound IPv4/IPv6 traffic and completed one protected
-unicast SA Query round trip. This is a limited hardware checkpoint, not complete
-WPA3/PMF interoperability or stability certification. Group BIP and rekey have host
-coverage; AP-driven hardware rekey, reconnect timing and sleep/wake remain open.
-Normal reboot without forced power-off has been reported by the user.
+**This is a development driver, not a stable general-purpose release.** The
+hardware checkpoint is QCA9377 (`168c:0042`, subsystem `1a3b:2b51`) in a Lunnen
+LLL5DAW on x86_64 macOS Sequoia 15.6.1 (24G90). Other cards and system versions
+are not implied by the presence of firmware or headers in this repository.
 
-Default builds do not enable SAE. The experimental option is guarded for the
-validated kernel; broader macOS 11–26 support remains planned. AWDL/AirDrop are
-unsupported. Sequoia ABI declarations are not proof of compatibility with other
-releases. See [the connection audit](NATIVE-CONNECTION-AUDIT.md),
-[the native contract](NATIVE-CONTRACT.md), [compatibility](COMPATIBILITY.md) and
-[WPA3 requirements](WPA3-CONTRACT.md).
+| Area | Current limitation |
+| --- | --- |
+| Stability | Disconnects, transmission errors and latency remain under investigation |
+| WPA3/PMF | SAE traffic and one protected SA Query exchange observed; full interoperability and AP-triggered rekey remain unverified |
+| Roaming | Physical inter-AP handoff has not been tested |
+| Sleep/wake | Possibly working at driver level; platform sleep investigation is deferred |
+| macOS 11–26 | Broader support is a development target, not a supported-version range |
+| AWDL/AirDrop | Not implemented |
+| Enterprise / FT / SAE-PK | Not implemented or advertised |
 
-## Build
+See the [implementation and evidence map](docs/development/NATIVE-STATUS.md) for
+precise scope. SAE is disabled in default builds and requires the explicit
+experimental option below.
+
+## Installation
+
+Use only a build intended for your hardware and macOS version. Preserve a known
+working EFI and another network connection before replacing the driver.
+
+1. Copy the built `Ath10kMac.kext` to `EFI/OC/Kexts`.
+2. Add or update its enabled entry in `Kernel → Add` in OpenCore's `config.plist`.
+3. Check your OpenCore configuration, then reboot to load the new binary.
+4. Select the network using the standard macOS Wi-Fi controls.
+
+Install the kext bundle only; no application or additional system patch is part
+of this driver. Do not treat controller-only or cryptography diagnostic builds
+as functional Wi-Fi releases. See the [native guide](docs/guides/native-sequoia.md).
+
+## Building
+
+Clone the repository with its pinned dependencies:
 
 ```sh
+git clone --recurse-submodules https://github.com/SadFrozz/Ath10k-airport.git
+cd Ath10k-airport
+# For an existing checkout:
+git submodule update --init --recursive
 make -j2 kext
-# Explicit equivalent:
-make NATIVE=1 DIAGNOSTIC_STAGE=0 -j2 kext
 ```
 
-The opt-in SAE build for the currently validated kernel is:
+Building on macOS requires the Apple command-line toolchain and Python 3.
+The output is `build/native/out/Ath10kMac.kext`. For the experimental SAE build
+on the validated kernel:
 
 ```sh
-make NATIVE=1 NATIVE_SAE_EXPERIMENTAL=1 NATIVE_PMF_PROBE=0 DIAGNOSTIC_STAGE=0 -j2 kext
+make -j2 NATIVE=1 NATIVE_SAE_EXPERIMENTAL=1 NATIVE_PMF_PROBE=0 DIAGNOSTIC_STAGE=0 kext
 ```
 
-This keeps the one-shot startup PMF hardware diagnostic disabled. Experimental
-admission does not bypass the kernel/profile/key checks or downgrade a requested
-SAE connection to WPA2. See [the WPA3 contract](WPA3-CONTRACT.md) for limitations.
+Run the consolidated regression suite with `make test-development`.
+Local tests do not certify radio interoperability or additional macOS versions.
+See [Windows build instructions](docs/guides/windows-build.md) for the separate
+cross-compilation workflow.
 
-Output: `build/native/out/Ath10kMac.kext`. Only this kext is the driver deliverable;
-release archives also include documentation, licenses and checksums.
-`DIAGNOSTIC_STAGE=3` explicitly selects the controller-only diagnostic, which stops
-before radio startup. It is not the functional Wi-Fi driver.
-`NATIVE=0` retains the historical Ethernet-backed implementation for development;
-it is not the default or release configuration.
+## Development
 
-Build commands do not install into EFI or reboot the computer. For Windows
-cross-compilation, see [the Windows guide](docs/windows-build.md).
-Generated firmware headers and `firmware/prepared/` stay outside source control.
+- `src/core`: radio, firmware transport and data path.
+- `src/security`: authentication, key exchange and protected management.
+- `src/macos`: controller, native OS integration and ABI definitions.
+- `tests`: matching test groups, fixtures and shared support.
+- `scripts`: build, validation and diagnostics tooling.
+- `packaging`: kext and Xcode project templates.
+- `vendor`: pinned upstream submodules; generated headers belong in `build`.
+- [`firmware`](firmware/README.md): chipset-specific inputs, provenance and licenses.
+- `docs`: requirements, current development state, guides and historical evidence.
 
-## Checks
+Read the [native contract](docs/contracts/NATIVE-CONTRACT.md),
+[security contract](docs/contracts/WPA3-CONTRACT.md) and [agent instructions](AGENTS.md)
+before changing implementation. Submit bug reports with the OS build, PCI IDs,
+driver build/UUID, reproduction steps and relevant sanitized diagnostics. Never
+include network passwords or key material.
 
-```sh
-python3 scripts/audit-native-callbacks.py --check
-python3 tests/run-development-tests.py
-```
+## Credits and licensing
 
-Host models and successful compilation do not prove hardware stability. Offline
-kernel binding requires exact candidate inclusion checks; see
-[validation limits](OFFLINE-VALIDATION-ERRATUM.md).
-The optional `Collect-macOS-diagnostics.command` reads diagnostics; it is not an
-application or a requirement for native Wi-Fi operation.
+- [Acidanthera / MacKernelSDK](https://github.com/acidanthera/MacKernelSDK) for the kernel SDK.
+- [OpenIntelWireless / itlwm](https://github.com/OpenIntelWireless/itlwm) and
+  [laobamac's fork](https://github.com/laobamac/itlwm) for native Wi-Fi ABI references.
+- Linux ath10k contributors and Qualcomm Atheros firmware authors for reference
+  implementations and firmware; retain the notices shipped with these files.
 
-## Provenance and licenses
+Project licensing is recorded in [LICENSE](LICENSE). Dependencies and firmware
+retain their own licenses. The [dependency guide](docs/guides/dependencies.md)
+records pinned revisions and local ABI overrides. The [licensing review](docs/guides/license-audit.md)
+records unresolved third-party compatibility questions; the root license does
+not cover every bundled component.
 
-Based on jonasw8/Ath10kMac and thekunalthakur/Ath10kMac. Private declarations and
-local ABI amendments are recorded in `vendor/itlwm/SOURCE.json`. MacKernelSDK,
-firmware and regulatory data retain their own notices. See `LICENSE`, `firmware/`,
-`regulatory/` and `vendor/itlwm/`.
+See [CI and releases](docs/guides/ci.md) for triggers, Release/Debug packages and tag publication.

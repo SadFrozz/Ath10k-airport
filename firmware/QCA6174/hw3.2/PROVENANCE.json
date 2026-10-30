@@ -1,0 +1,21 @@
+{
+  "driver_profile": "QCA6174/hw3.2",
+  "previous_repository_location": "firmware/",
+  "source_revision": null,
+  "provenance_note": "Existing repository inputs relocated without changing bytes. Original upstream revision has not been established.",
+  "license": "../../LICENSE.QualcommAtheros_ath10k",
+  "files": {
+    "notice_ath10k_firmware-6.txt": {
+      "bytes": 53425,
+      "sha256": "8ce5c6ea0542bf4aac31fc3ae16a39792ad22d0eae4543063fac56fb3380f021"
+    },
+    "firmware-6.bin": {
+      "bytes": 706360,
+      "sha256": "04d3bad5efa3f9fbe3ba53fd3e25fa9b0585ed227eea8111303b4e08861f979d"
+    },
+    "board-2.bin": {
+      "bytes": 740076,
+      "sha256": "66e83dde1c9af535df1fcd17c72971a96a263357300e921b358d35a353227d60"
+    }
+  }
+}

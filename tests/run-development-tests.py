@@ -31,11 +31,12 @@ def main():
             raise RuntimeError(f'{name} failed; see {out / (name + ".log")}')
         print('PASS', name, flush=True)
         passed.append(name)
-    run('prepare-firmware', [sys.executable, 'scripts/prepare-firmware.py'])
+    run('prepare-native-headers', [sys.executable, 'scripts/build/prepare-native-headers.py'])
+    run('prepare-firmware', [sys.executable, 'scripts/build/prepare-firmware.py'])
     run('payload-python', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_payload.py', '-v'])
-    run('kext-symbols', [sys.executable, 'tests/test_kext_symbols.py', '-v'])
-    run('kernel-collection-inclusion', [sys.executable, 'tests/test_kernel_collection.py', '-v'])
-    run('p256-diagnostic-config', [sys.executable, 'tests/test_p256_diagnostic_config.py', '-v'])
+    run('kext-symbols', [sys.executable, 'tests/macos/test_kext_symbols.py', '-v'])
+    run('kernel-collection-inclusion', [sys.executable, 'tests/macos/test_kernel_collection.py', '-v'])
+    run('p256-diagnostic-config', [sys.executable, 'tests/macos/test_p256_diagnostic_config.py', '-v'])
     run('native-lock-order', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_lock_order.py', '-v'])
     run('diagnostic-privacy', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_native_preflight.py', '-v'])
     if args.zig:
@@ -46,16 +47,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ath10k-tests-') as tmp:
         include = Path(tmp)
         (include/'IOKit').mkdir()
-        (include/'IOKit/IOLib.h').write_bytes((ROOT/'tests/mock_iolib.h').read_bytes())
+        (include/'IOKit/IOLib.h').write_bytes((ROOT/'tests/support/mock_iolib.h').read_bytes())
         (include/'IOKit/IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
-        run('extract-production', [sys.executable, 'tests/extract-production.py', str(include/'driver_methods.inc')])
-        power=(ROOT/'src/kext/Ath10kPower.cpp').read_text()
+        run('extract-production', [sys.executable, 'tests/support/extract-production.py', str(include/'driver_methods.inc')])
+        power=(ROOT/'src/macos/controller/Ath10kPower.cpp').read_text()
         (include/'power_methods.inc').write_text(power[power.index('bool Ath10kPCIDevice::powerIOBlocked('):])
-        notifications=(ROOT/'src/kext/Ath10kPowerNotifications.cpp').read_text()
+        notifications=(ROOT/'src/macos/controller/Ath10kPowerNotifications.cpp').read_text()
         (include/'power_notification_methods.inc').write_text(notifications[notifications.index('bool Ath10kPCIDevice::preparePowerNotifications('):])
         (include/'power_notification_callback.inc').write_text(power[power.index('IOReturn Ath10kPCIDevice::powerNotification('):])
-        native=(ROOT/'src/kext/native/Ath10kNative.cpp').read_text()
-        driver=(ROOT/'src/kext/Ath10kPCIDevice.cpp').read_text()
+        native=(ROOT/'src/macos/native/Ath10kNative.cpp').read_text()
+        driver=(ROOT/'src/macos/controller/Ath10kPCIDevice.cpp').read_text()
         (include/'controller_shutdown.inc').write_text(driver[driver.index('void Ath10kPCIDevice::systemWillShutdown('):driver.index('void Ath10kPCIDevice::publishWMIRuntimeProperties(')])
         scan_service=driver[driver.index('const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)'):]
         scan_service=scan_service[:scan_service.index('    if (!state.attempted && (_connection.stats.step')]
@@ -71,7 +72,7 @@ def main():
         (include/'native_security_class.inc').write_text(native[native.index('class Ath10kPCIDevice::NativeSecurity {'):native.index('IO80211WorkQueue *Ath10kPCIDevice::getWorkQueue()')])
         terminal=native[native.index('    if(sec && (',native.index('    // A completed radio-side teardown')):native.index('    // Crypto/radio progress must not wait')]
         (include/'native_security_terminal_cleanup.inc').write_text('void Ath10kPCIDevice::discardIfStopped(UInt64 now){auto sec=_nativeSecurity;auto &s=_connection;\n'+terminal+'}\n')
-        network_source=(ROOT/'src/kext/Ath10kNetwork.cpp').read_text()
+        network_source=(ROOT/'src/macos/controller/Ath10kNetwork.cpp').read_text()
         completion=native[native.index('        if(sec->authorizePending && s.eapolCompletion.complete)'):native.index('        if(sec->keysPending && !s.wmiOwned')]
         (include/'native_eapol_completion.inc').write_text('void Driver::service(){auto sec=&security;auto &s=state;\n'+completion+'}\n')
         retirement=network_source[network_source.index('            s.txOwned=false;'):network_source.index('            if(s.txStatus){',network_source.index('            s.txOwned=false;'))]
@@ -101,7 +102,7 @@ def main():
         entry=driver[driver.index('void Ath10kPCIDevice::runDeferredProbe()'):driver.index('    ATH10K_TRACE("Ath10kMac: deferred target probe begin') ]
         (include/'first_probe_run.inc').write_text(entry+'    ++starts;IOLockUnlock(_probePowerLock);\n}\n')
         (include/'first_probe_pci.inc').write_text(driver[driver.index('bool Ath10kPCIDevice::preparePoweredPCI()'):driver.index('void Ath10kPCIDevice::queueDeferredProbe()')])
-        recovery=(ROOT/'src/kext/Ath10kRecovery.cpp').read_text()
+        recovery=(ROOT/'src/macos/controller/Ath10kRecovery.cpp').read_text()
         (include/'wake_recovery_methods.inc').write_text(recovery[recovery.index('void Ath10kPCIDevice::queueWakeRecovery()'):])
         (include/'restore_aspm_methods.inc').write_text(driver[driver.index('bool Ath10kPCIDevice::disableASPMForBringup()'):driver.index('void Ath10kPCIDevice::logMSIState(')])
         (include/'first_probe_scheduler.inc').write_text(driver[driver.index('void Ath10kPCIDevice::queueDeferredProbe()'):driver.index('void Ath10kPCIDevice::deferredProbeCall(')])
@@ -118,8 +119,8 @@ def main():
         (include/'native_bridge_stop.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeStopAction('):native.index('void Ath10kPCIDevice::releaseNativeInterface()')])
         (include/'native_security_snapshot.inc').write_text(native[native.index('void Ath10kPCIDevice::publishNativeSecurityState('):native.index('// Called only with WCL and radio gates held, in that order.')])
         (include/'native_join_request.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativeRetainSystemLink('):native.index('IOReturn Ath10kPCIDevice::nativeRequestGated(')])
-        ioctl=(ROOT/'vendor/itlwm/Airport/apple80211_ioctl.h').read_text()
-        var=(ROOT/'vendor/itlwm/Airport/apple80211_var.h').read_text()
+        ioctl=(ROOT/'build/generated/itlwm/Airport/apple80211_ioctl.h').read_text()
+        var=(ROOT/'build/generated/itlwm/Airport/apple80211_var.h').read_text()
         caps=ioctl[ioctl.index('struct apple80211_capability_data'):ioctl.index('#elif __IO80211_TARGET >= __MAC_14_0',ioctl.index('struct apple80211_capability_data'))]
         enum=var[var.index('enum apple80211_card_capability'):var.index('#define APPLE80211_CAP_MAX')]
         (include/'native_capability_abi.inc').write_text('#define APPLE80211_VERSION 1\n#ifndef __offsetof\n#define __offsetof __builtin_offsetof\n#endif\n'+caps+enum)
@@ -128,32 +129,32 @@ def main():
         (include/'native_link_metrics.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeLinkMetrics('):native.index('static_assert(sizeof(apple80211_key)')])
         (include/'native_link_state.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeCurrentAPInfo('):native.index('static UInt32 channelFlags(')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
-        worker_header=(ROOT/'src/kext/native/Ath10kSAEWorker.hpp').read_text()
-        worker_source=(ROOT/'src/kext/native/Ath10kSAEWorker.cpp').read_text()
+        worker_header=(ROOT/'src/macos/native/Ath10kSAEWorker.hpp').read_text()
+        worker_source=(ROOT/'src/macos/native/Ath10kSAEWorker.cpp').read_text()
         worker='\n'.join(line for line in (worker_header+'\n'+worker_source).splitlines()
                          if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_worker.inc').write_text(worker+'\n')
-        session_sources=[ROOT/'src/kext/native/Ath10kSAESession.hpp', ROOT/'src/kext/native/Ath10kSAESession.cpp']
+        session_sources=[ROOT/'src/macos/native/Ath10kSAESession.hpp', ROOT/'src/macos/native/Ath10kSAESession.cpp']
         session='\n'.join(line for source in session_sources for line in source.read_text().splitlines()
                           if not line.startswith('#include') and line!='#pragma once')
         (include/'sae_session.inc').write_text(session+'\n')
-        preparation_sources=[ROOT/'src/kext/native/Ath10kNativeSAEPreparation.hpp',ROOT/'src/kext/native/Ath10kNativeSAEPreparation.cpp']
+        preparation_sources=[ROOT/'src/macos/native/Ath10kNativeSAEPreparation.hpp',ROOT/'src/macos/native/Ath10kNativeSAEPreparation.cpp']
         preparation='\n'.join(line for source in preparation_sources for line in source.read_text().splitlines()
                                if not line.startswith('#include') and line!='#pragma once')
         (include/'native_sae_preparation.inc').write_text(preparation+'\n')
-        psk_sources=[ROOT/'src/kext/native/Ath10kNativePSKPreparation.hpp',ROOT/'src/kext/native/Ath10kNativePSKPreparation.cpp']
+        psk_sources=[ROOT/'src/macos/native/Ath10kNativePSKPreparation.hpp',ROOT/'src/macos/native/Ath10kNativePSKPreparation.cpp']
         psk='\n'.join(line for source in psk_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'native_psk_preparation.inc').write_text(psk+'\n')
-        p256_sources=[ROOT/'src/kext/native/Ath10kP256CheckJob.hpp',ROOT/'src/kext/native/Ath10kP256CheckJob.cpp']
+        p256_sources=[ROOT/'src/macos/native/Ath10kP256CheckJob.hpp',ROOT/'src/macos/native/Ath10kP256CheckJob.cpp']
         p256='\n'.join(line for source in p256_sources for line in source.read_text().splitlines()
                        if not line.startswith('#include') and line!='#pragma once')
         (include/'p256_check.inc').write_text(p256+'\n')
-        p256_registry_sources=[ROOT/'src/kext/native/Ath10kP256RegistryJob.hpp',ROOT/'src/kext/native/Ath10kP256RegistryJob.cpp']
+        p256_registry_sources=[ROOT/'src/macos/native/Ath10kP256RegistryJob.hpp',ROOT/'src/macos/native/Ath10kP256RegistryJob.cpp']
         p256_registry='\n'.join(line for source in p256_registry_sources for line in source.read_text().splitlines()
                                 if not line.startswith('#include') and line!='#pragma once')
         (include/'p256_registry.inc').write_text(p256_registry+'\n')
-        pmf_sources=[ROOT/'src/kext/native/Ath10kPMFSession.hpp',ROOT/'src/kext/native/Ath10kPMFSession.cpp']
+        pmf_sources=[ROOT/'src/macos/native/Ath10kPMFSession.hpp',ROOT/'src/macos/native/Ath10kPMFSession.cpp']
         pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'pmf_session.inc').write_text(pmf+'\n')
@@ -167,14 +168,14 @@ def main():
             executable = out / ('test_' + name + ('.exe' if os.name == 'nt' else ''))
             libraries = ['-lbcrypt'] if name == 'security' and os.name == 'nt' else (
                 ['-lcrypto'] if name == 'security' and sys.platform != 'darwin' else [])
-            run(name + '-compile', compiler + flags + (['-DATH10K_TEST_SHUTDOWN=1'] if name == 'power' else []) + (['-pthread'] if name in ['p256_backend','sae_session','pmf_session','native_pmf_receive','sae_worker','power','power_notifications','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/kext', '-Ivendor/itlwm',
-                'tests/test_' + name + '.cpp'] + libraries + ['-o', str(executable)])
+            run(name + '-compile', compiler + flags + (['-DATH10K_TEST_SHUTDOWN=1'] if name == 'power' else []) + (['-pthread'] if name in ['p256_backend','sae_session','pmf_session','native_pmf_receive','sae_worker','power','power_notifications','native_termination','native_bridge','first_probe','wake_recovery','connection','tx_watchdog','security_disconnect','reconnect_090','station_maintenance','channel_switch','ap_maintenance','runtime_power','wmi_notifications'] else []) + ['-Wno-unused-function', '-I' + str(include), '-Isrc/core', '-Isrc/macos/controller', '-Isrc/macos/native', '-Itests/support', '-Itests/fixtures', '-Ibuild/generated/itlwm',
+                str(next((ROOT/'tests').glob('*/test_' + name + '.cpp')))] + libraries + ['-o', str(executable)])
             run(name, [str(executable)])
     (out / 'summary.json').write_text(json.dumps({
         'passed': passed, 'assertions_enabled': True,
         'full_development_suite': args.only is None, 'selected_tests': names,
         'macos_kext_build': False, 'hardware_validation': False,
-        'native_adapter_present': True, 'feature_status': 'NATIVE-STATUS.md',
+        'native_adapter_present': True, 'feature_status': 'docs/development/NATIVE-STATUS.md',
     }, indent=2) + '\n')
 
 if __name__ == '__main__':

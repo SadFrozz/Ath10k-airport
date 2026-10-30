@@ -79,7 +79,7 @@ protocol after attachment. This candidate still requires hardware validation.
 | P1 | Visibility | Beacon metadata corrected; 2026-10-30 autojoin still describes the saved target profile as hidden=yes; fresh profile/UI consistency remains unverified | Compare fresh beacon, WCL current BSS and saved profile/UI independently |
 | P1 | Join and keys | PSK/SHA256 fixtures and first traffic previously passed | Initial/rekey/abort/failure paths retain ordering and replay protections |
 | P1 | Power and lifecycle | Early PM/first-producer admission, native/controller stop fences, security cleanup and guarded automatic wake rematch are candidates | Off/on, sleep/wake and teardown have finite completion and safe DMA ownership |
-| P2 | Queries and capabilities | 190 inline callbacks: 32 forward, 158 reject; source-checked inventory in NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |
+| P2 | Queries and capabilities | 190 inline callbacks: 32 forward, 158 reject; source-checked inventory in docs/development/NATIVE-CALLBACK-MATRIX.json | Classify every rejection by actual system caller; implement mandatory contracts |
 | P2 | IPv6/multicast and statistics | Partial implementation | Multicast filter and counters reflect delivered traffic; no fabricated metrics |
 | P1 | WPA3/PMF | Opt-in image 9A07D3C3 auto-associated with AKM8/required PMF on 24G90 and passed en1-bound ICMP/HTTPS; protected management counters initially zero | Validate protected unicast/group management, replay, firmware PN, rekey, reconnect and sleep/wake on hardware |
 | P1 | WPA3 policy notification | Local candidate uses stock event76/40-byte successful exchange format; seven affected sanitizer tests and 72 actual userland parser/decoder cases pass; enqueue retries and connection binding implemented | Verify real kernel delivery and saved-profile persistence with an authenticated AP policy update; broader bitmap octets remain unmapped |
@@ -104,7 +104,7 @@ do not silently replace their verified manifests. An older local
 as the current candidate.
 
 Every future link check must additionally run
-`scripts/verify-kernel-collection.py COLLECTION KEXT_EXECUTABLE` and match both
+`scripts/validation/verify-kernel-collection.py COLLECTION KEXT_EXECUTABLE` and match both
 bundle identifier and executable UUID. This is necessary, not sufficient, for
 hardware correctness. The verifier rejects missing/duplicate entries, stale
 UUIDs and malformed command bounds.
@@ -328,7 +328,7 @@ The previous bridge allocated two generic IOMalloc(0x130) buffers and placed the
 
 The bridge now calls the stock nonvirtual IOSkywalkEthernetInterface::copyRegistrationInfo factory. The Ethernet slot owns that single allocation, including partial factory failure after MAC property publication fails. The Network slot temporarily borrows its common 0x108 prefix. stop(), free() and virtual deregisterLogicalLink() detach only that loan before the inherited cleanup executes; another owner's slot is left for its own cleanup. The Ethernet owner survives stop/deregistration and releases the buffer in final base free, so a reader which already obtained the prefix does not lose storage at detach. There is no generic allocation handed to a typed free, and no second owner of the same pointer. Preexisting registrations reject setup rather than being overwritten. The bridge does not call the full Nexus/logical-link registration method with fabricated packet pools or null links.
 
-The local macOS15 Network RegistrationInfo declaration is corrected to 0x108, the Ethernet factory signature is added as IOReturn, and these deviations from the pinned vendor snapshot are recorded in vendor/itlwm/SOURCE.json. Static assertions retain the existing class layouts and verify both registration sizes. The stock addresses are Network registration ffffff8002980ebc, Ethernet factory ffffff8002986fec, Network deregistration ffffff8002980b64, Ethernet free ffffff8002986e5a, and virtual deregisterLogicalLink ffffff800298115e. Direct deregistration references identified in the analyzed families belong to base stop/free, virtual deregisterLogicalLink and full Ethernet registration failure cleanup. The latter registration entry is not called by this bridge.
+The local macOS15 Network RegistrationInfo declaration is corrected to 0x108, the Ethernet factory signature is added as IOReturn, and these deviations from the pinned vendor snapshot are recorded in scripts/build/native-headers.json. Static assertions retain the existing class layouts and verify both registration sizes. The stock addresses are Network registration ffffff8002980ebc, Ethernet factory ffffff8002986fec, Network deregistration ffffff8002980b64, Ethernet free ffffff8002986e5a, and virtual deregisterLogicalLink ffffff800298115e. Direct deregistration references identified in the analyzed families belong to base stop/free, virtual deregisterLogicalLink and full Ethernet registration failure cleanup. The latter registration entry is not called by this bridge.
 
 Compiled parent dispatch was checked against the actual IO80211InfraProtocol vtable: offset 0xa0 resolves to IO80211InfraInterface::free (ffffff80022d3ae0), 0x5d8 to IO80211InfraInterface::stop (ffffff80022d3a04), and 0x8e8 to IOSkywalkNetworkInterface::deregisterLogicalLink (ffffff800298115e). That verifies the three inherited calls added here, not all framework vtables. Native compilation, signature verification and offline kernel linking confirm that the factory import is resolvable on the installed system.
 
@@ -454,7 +454,7 @@ Current controller-power candidate executable UUID: `8C9FAF40-3A5D-36D8-8D82-F68
 range checking, and does not issue PCI configuration reads. Powered startup still
 revalidates the actual native hardware profile before bus mastering/BAR access.
 The current machine's cached ID encodings were verified read-only. Production
-matching tests use a PCI mock without hardware APIs. INITIAL-POWER-CONTRACT.md
+matching tests use a PCI mock without hardware APIs. docs/contracts/INITIAL-POWER-CONTRACT.md
 records the matching XNU initial-callback conditions and the remaining early-PM/
 producer-tail integration. Automatic wake recovery remains incomplete; this
 matching change alone does not make a rematch while powered off safe end to end.
@@ -479,7 +479,7 @@ by ONCE rescheduling in the tail. Cancellation retains its scheduler lock until
 final free, after power closure, and restores PCI commands only when owned.
 
 Production-method host tests cover entry/configuration traps, queue/tail/cancel
-races and initial power actions. INITIAL-POWER-CONTRACT.md records the source
+races and initial power actions. docs/contracts/INITIAL-POWER-CONTRACT.md records the source
 evidence and implementation. Automatic native recovery after an initialized
 sleep remains unimplemented; kernel delivery and physical startup remain untested.
 The separate e105f82 candidate awaiting install/reboot authorization is unchanged.
@@ -677,8 +677,8 @@ with the native replies. Width20/40 and globally disabled build profiles are
 checked separately from the default suite. Kernel consumers and real reconnect
 performance still require hardware validation.
 
-NATIVE-CALLBACK-MATRIX.json now inventories all 190 inline protocol overrides:
-31 forward and 159 return Unsupported. scripts/audit-native-callbacks.py
+docs/development/NATIVE-CALLBACK-MATRIX.json now inventories all 190 inline protocol overrides:
+31 forward and 159 return Unsupported. scripts/validation/audit-native-callbacks.py
 checks the snapshot against the actual header, explicit aliases, enum and
 main dispatcher branches; CI runs --check. Negative probes verify stale
 snapshots, unfamiliar/nested bodies and missing enum/dispatch entries are
@@ -706,7 +706,7 @@ lengths check bounds; existing production security-lifecycle tests now wipe the
 expanded retained key slot. Native compiler assertions check 148-byte ABI, key
 offset 16, RSC length 80 and WoW length offsets 100/120.
 
-WPA3-CONTRACT.md records the matching stock validation/copy addresses and all
+docs/contracts/WPA3-CONTRACT.md records the matching stock validation/copy addresses and all
 remaining SAE/PMF implementation gates. No SAE/PMF success or capability is
 claimed; live WPA3 credential delivery and hardware security behavior are still
 unverified. The broader native lifecycle/compatibility goal remains open.
@@ -727,7 +727,7 @@ unchanged and is rechecked against the existing local auxiliary collection.
 ## SAE backend symbol availability (2026-10-28)
 
 The separate Sequoia CoreCrypto image contains P-256 entries not visible in the
-earlier kernel-only search. SAE-CRYPTO-BACKEND.md records image UUIDs, twelve
+earlier kernel-only search. docs/contracts/SAE-CRYPTO-BACKEND.md records image UUIDs, twelve
 strong imports, exact auxiliary probe inclusion and a missing-export negative
 control. The isolated make target is built in CI, never loads and does not alter
 the normal Wi-Fi binary. Manual import/validation disassembly identifies heap
@@ -791,7 +791,7 @@ RSNXE query/setter contract audit (2026-10-29, Sequoia only):
   0x68, bytes 0x70), distinct from its firmware-associated cache at 0x171.
   Returning the AP beacon RSNXE would implement a different contract.
 - Both current native callbacks still explicitly reject. Their stock producer
-  addresses and semantics are recorded in NATIVE-CALLBACK-MATRIX.json, separate
+  addresses and semantics are recorded in docs/development/NATIVE-CALLBACK-MATRIX.json, separate
   from consumer evidence. Caller ordering, next-join binding, mid-association
   update rules and cancellation lifetime need reconstruction before a setter
   can safely affect the real association. A byte cache with no effect on the
@@ -828,7 +828,7 @@ slot or disconnect after replacement. Native staging and final dispatch also
 pass with a mocked firmware key-completion barrier. These passing host checks
 reduce the remaining matrix to actual AP-driven group BIP and rekey behavior;
 they do not close hardware, long-duration or sleep/wake requirements. See
-WPA3-CONTRACT.md for the exact evidence boundary. Production code is unchanged
+docs/contracts/WPA3-CONTRACT.md for the exact evidence boundary. Production code is unchanged
 from the pending D1E2649F package during this follow-up.
 
 PCIe idle admission versus native management work (2026-10-29):

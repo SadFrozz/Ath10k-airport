@@ -5,7 +5,7 @@ import re
 from cryptography.hazmat.primitives.cmac import CMAC
 from cryptography.hazmat.primitives.ciphers import algorithms
 
-text = (Path(__file__).resolve().parents[2] / 'tests/sae_eapol_vectors.inc').read_text()
+text = (Path(__file__).resolve().parents[2] / 'tests/fixtures/sae_eapol_vectors.inc').read_text()
 def value(name):
     found = re.search(r'\b' + name + r'\[\]\s*=\s*\{([^}]*)\}', text)
     assert found, name

@@ -1,7 +1,7 @@
 // Diagnostic symbol/context candidate only. Never install or load this probe.
 #define ATH10K_P256_DIAGNOSTIC_BINDING 1
-#include "../../src/kext/native/Ath10kP256KernelBinding.hpp"
-#include "../../src/shared/Ath10kP256BackendCheck.hpp"
+#include "../../src/macos/native/Ath10kP256KernelBinding.hpp"
+#include "../../src/security/Ath10kP256BackendCheck.hpp"
 #include <mach/mach_types.h>
 #include <mach/kmod.h>
 // Caller must supply exclusive worker-owned storage. This entry is preserved

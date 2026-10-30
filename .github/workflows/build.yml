@@ -1,0 +1,194 @@
+name: Kext builds / NIGHTLY
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Commit SHA from the selected branch (empty = branch HEAD)'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_commit:
+        required: false
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: kext-build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.configuration }} x86_64 kext
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, Debug]
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - name: Validate requested commit
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          if [[ -n "$SOURCE_COMMIT" && ! "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo 'Use a full 40-character commit SHA, or leave the field empty.' >&2
+            exit 1
+          fi
+      - name: Check out source and submodules
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify source belongs to selected revision
+        env:
+          SELECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD "$SELECTED_REVISION"
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain and MacKernelSDK
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          xcodebuild -version
+          xcrun --show-sdk-path
+          python3 --version
+
+          test -f vendor/MacKernelSDK/Headers/Availability.h
+          test -f vendor/MacKernelSDK/Library/x86_64/libkmod.a
+          test -f vendor/MacKernelSDK/Library/universal/libkmodc++.a
+
+      - name: Validate version and release tag
+        id: metadata
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          import plistlib
+          import re
+          from pathlib import Path
+
+          info = plistlib.loads(Path("packaging/Ath10kMac.kext/Contents/Info.plist").read_bytes())
+          version = info["CFBundleVersion"]
+          if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise SystemExit("CFBundleVersion must use the major.minor.build format.")
+          if info.get("CFBundleShortVersionString") != version:
+              raise SystemExit("The two Info.plist version fields must match.")
+          source = Path("src/macos/controller/kmod_info.c").read_text()
+          module = re.search(r'KMOD_EXPLICIT_DECL\([^,]+,\s*"([^"]+)"', source)
+          if not module or module.group(1) != version:
+              raise SystemExit("The kmod_info.c version must match Info.plist.")
+
+          is_tag = os.environ["GITHUB_REF"].startswith("refs/tags/")
+          if is_tag:
+              tag = os.environ["GITHUB_REF_NAME"]
+              pattern = r"v" + re.escape(version) + r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+              if not re.fullmatch(pattern, tag):
+                  raise SystemExit(f"Tag {tag!r} does not match source version {version}. Use v{version}.")
+              package_version = tag[1:]
+              prerelease = "-" in package_version
+          elif os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+              stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+              package_version = f'{version}-NIGHTLY.{stamp}.{os.environ["SOURCE_SHA"][:12]}'
+              prerelease = False
+          else:
+              package_version = f'{version}-dev.{os.environ["SOURCE_SHA"][:12]}'
+              prerelease = False
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+              output.write(f"package_version={package_version}\n")
+              output.write(f"prerelease={str(prerelease).lower()}\n")
+              output.write(f"artifact_name=Ath10kMac-{package_version}-{os.environ['CONFIGURATION']}-x86_64\n")
+          PY
+
+      - name: Build and check kext symbols
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          set -euo pipefail
+          make clean
+          flags=(-O2)
+          diagnostics=0
+          if [[ "$CONFIGURATION" == Debug ]]; then
+            flags=(-O1 -g)
+            diagnostics=1
+          fi
+          make NATIVE=1 DIAGNOSTIC_STAGE=0 DIAGNOSTICS="$diagnostics" OPT="${flags[*]}" -j"$(sysctl -n hw.logicalcpu)" kext
+          codesign --force --sign - build/native/out/Ath10kMac.kext
+          codesign --verify --strict build/native/out/Ath10kMac.kext
+          python3 scripts/build/windows/validate.py build/native/out/Ath10kMac.kext
+          plutil -lint build/native/out/Ath10kMac.kext/Contents/Info.plist
+          xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
+          test "$(xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
+          xcrun dwarfdump --uuid build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac
+
+      - name: Package kext, notices, and checksum
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          set -euo pipefail
+          stage="build/release"
+          archive="Ath10kMac-${PACKAGE_VERSION}-${CONFIGURATION}-x86_64.zip"
+          mkdir -p "$stage/Licenses" build/dist
+          ditto build/native/out/Ath10kMac.kext "$stage/Ath10kMac.kext"
+          chmod 755 "$stage/Ath10kMac.kext/Contents/MacOS/Ath10kMac"
+
+          if [[ -f README.md ]]; then
+            cp README.md "$stage/README.md"
+          fi
+          ditto docs "$stage/docs"
+          cp CHANGELOG.md "$stage/CHANGELOG.md"
+          cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+          cp packaging/licenses/APSL-1.1.txt "$stage/Licenses/APSL-1.1.txt"
+          for license in LICENSE LICENSE.txt LICENSE.md COPYING; do
+            if [[ -f "$license" ]]; then
+              cp "$license" "$stage/$license"
+            fi
+          done
+          cp vendor/MacKernelSDK/LICENSE.txt "$stage/Licenses/MacKernelSDK.txt"
+          cp build/generated/itlwm/LICENSE "$stage/Licenses/itlwm.txt"
+          cp firmware/LICENSE.QualcommAtheros_ath10k "$stage/Licenses/"
+          cp firmware/QCA6174/hw3.2/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA6174-firmware-notice.txt"
+          cp firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA9377-firmware-notice.txt"
+          cp regulatory/LICENSE "$stage/Licenses/wireless-regdb.txt"
+
+          # Record the exact source commit without changing the driver version.
+          printf 'Ath10kMac package: %s\nSource commit: %s\nArchitecture: x86_64\nConfiguration: %s\n' \
+            "$PACKAGE_VERSION" "$SOURCE_SHA" "$CONFIGURATION" > "$stage/BUILD-INFO.txt"
+          ditto -c -k --norsrc "$stage" "build/dist/$archive"
+          (cd build/dist && shasum -a 256 "$archive" > "$archive.sha256")
+          unzip -t "build/dist/$archive"
+
+          {
+            printf '### Ath10kMac %s\n\n' "$PACKAGE_VERSION"
+            printf 'Build and symbol checks completed for x86_64.\n\n'
+            printf 'Package: \x60%s\x60\n\n' "$archive"
+            cat "build/dist/$archive.sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: build/dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
