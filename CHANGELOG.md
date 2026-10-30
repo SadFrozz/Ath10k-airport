@@ -6,6 +6,15 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.110 — 2026-10-30
+
+- Accept native IPv4/IPv6 and legacy ARP/NDP address notifications into the
+  stock macOS interface cache, without enabling firmware offload.
+- Validate IPv6 list sizes and clear unused entries on replacement, including
+  removal of the final address; normalize unused record bytes.
+- Preserve partial ARP updates and local-address removal semantics; propagate
+  system cache errors and retain stop/power admission for all address requests.
+
 ## 1.0.109 — 2026-10-30
 
 - Preserve pending EAP queue/TX, replacement authentication and pairwise-key

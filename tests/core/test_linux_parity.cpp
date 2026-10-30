@@ -26,6 +26,19 @@ static void qosTests(){
         assert(buildHTTPacket(f,sizeof(f),p,sizeof(p),0x10000,0x20000,1,s,false));
         assert(((htcReadLE16(f+10)>>6)&31)==up);}
     p[15]=(46<<2)|3;assert(txPriorityTID(s,p,sizeof(p))==6); // EF + ECN
+    for(UInt32 tc=0;tc<4;++tc){
+        const UInt8 expected[]={0,1,5,6};const UInt8 priority=hostTrafficPriority(tc);
+        assert(priority==expected[tc]);
+        assert(txPriorityTID(s,p,sizeof(p),priority)==priority);
+        assert(buildHTTPacket(f,sizeof(f),p,sizeof(p),0x10000,0x20000,1,s,false,AthSecurity::ManagementTX::Plain,priority));
+        assert(((htcReadLE16(f+10)>>6)&31)==priority);
+    }
+    assert(hostTrafficPriority(4)==255 && hostTrafficPriority(0xffffffff)==255);
+    s.ap.wmm[12]|=16;
+    assert(txPriorityTID(s,p,sizeof(p),6)==5); // OS VO still obeys AP admission.
+    assert(txPriorityTID(s,p,sizeof(p),0)==0); // Policy downgrade stays BE despite EF.
+    s.ap.wmm[12]&=~16;
+
     p[12]=0x86;p[13]=0xdd;p[14]=0x60|11;p[15]=0x80;assert(txPriorityTID(s,p,sizeof(p))==6);
     p[12]=0x81;p[13]=0;p[14]=7<<5;p[16]=8;p[17]=0;assert(txPriorityTID(s,p,sizeof(p))==7);
     for(UInt8 aci:{UInt8(3),UInt8(2),UInt8(0),UInt8(1)}){s.ap.wmm[4*aci]|=16;

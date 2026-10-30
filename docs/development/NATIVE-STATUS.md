@@ -8,20 +8,21 @@ its dated candidate/install statements are historical, not current state.
 
 ## Installed checkpoint
 
-Ath10kMac **1.0.109**, UUID **8EDCBD5B-73D0-3488-8703-FED8837683F9**,
-functional source **a88bbedb9c0113ff93219eda53a741ff28fa9a6a**. Enterprise remains disabled.
-Loaded UUID verified on boot 2667E42D-9EF0-4D07-B60F-37E461F4007D after authorized installation.
-The bounded en1-bound gateway check returned 45/45 replies, mean 9.267 ms,
-maximum 242.158 ms. Disconnect/watchdog/security/replay counts stayed zero;
-TX NoAck stayed 9→9. Connection remained connected-sae and PMF port ready.
-Evidence: `outputs/NATIVE-installed-1.0.109-runtime-20261030/result.json`, workspace and SD.
-This does not prove prolonged stability or AP-triggered rekey. The latency spike
-and earlier NoAck observations remain open.
-
-The same runtime source passed 68 sanitized C++ tests plus runner checks before
-publication. The subsequent metadata-only 1.0.109 candidate passed native build,
-signature and exact-UUID offline inclusion; installation/rollback evidence is in
-`outputs/NATIVE-1.0.109-hardware-candidate-20261030`.
+Ath10kMac **1.0.110**, UUID **E39009FE-C6F8-385B-8B0C-B6DC48AED01A**,
+functional source **add6acf41627edc4d7158a31db7bec597c752d08**. Boot verified on
+CF493E4E-E6A4-406D-85DA-C5DDA4C4D505. Interface en1 has IPv4 and three IPv6
+addresses; native SAE/PMF remains ready. 45/45 gateway probes returned, but TX NoAck
+rose 0→12, mean RTT 99.094 ms and max 1012.305 ms. Disconnect/watchdog/replay/security
+counters stayed zero. This is bounded connectivity evidence, not stability acceptance
+or proof of individual address callback invocation. Latency/NoAck correlation is
+under investigation; do not infer that the host-address change caused it.
+Evidence: outputs/NATIVE-installed-1.0.110-runtime-20261030 (workspace and SD).
+69 sanitized tests and offline candidate checks passed before installation.
+Follow-up correlation interval: 120/120 replies, mean RTT 9.444 ms, one sample
+above the descriptive 100 ms cutoff (595.887 ms, 0.83%); NoAck remained 12→12.
+No scan generation/event change around that spike. This interval fits the user's
+<=1% rare-spike allowance; no targeted latency fix justified by this sample.
+Earlier startup interval remains recorded; prolonged stability is not certified.
 
 ## Current implementation
 
@@ -87,7 +88,7 @@ Only after that publication, local metadata advanced to 1.0.109. The metadata-on
 and boot-verified; its metadata update is not yet published. Enterprise
 roam admission is still unsupported until the OS session handoff is implemented.
 
-## Local address-notification group (not installed)
+## Published address-notification group
 
 Four host notifications now reach the stock interface cache: IPV4_PARAMS,
 IPV6_PARAMS, legacy OFFLOAD_ARP and OFFLOAD_NDP. These are synchronous gated
@@ -104,4 +105,16 @@ Focused production dispatch and request admission checks passed; final expanded
 isolated signature and exact-UUID offline inclusion passed, including the getter
 bridge (UUID F1A75ABE-5C9E-3570-9DF7-0C62A3422E9C). DHCP sleep hint, conditional traffic
 engineering and radio ARP/NS offload remain unfinished; no capability advertised.
-Source version remains 1.0.109 until a completed batch is pushed and verified.
+Published as add6acf41627edc4d7158a31db7bec597c752d08 after exact remote-tree
+verification. Only then metadata advanced locally to 1.0.110; metadata is not yet
+published. Installed image is now boot-verified 1.0.110.
+
+Hardware candidate 1.0.110 is ready, UUID E39009FE-C6F8-385B-8B0C-B6DC48AED01A.
+The metadata-only rebuild passed strict signature and exact-UUID offline inclusion;
+current EFI 1.0.109/config and new candidate copies were hash-verified on SD.
+Installation/reboot explicitly authorized and executed; loaded UUID verified.
+Evidence: outputs/NATIVE-1.0.110-hardware-candidate-20261030/READY.json.
+
+## Local traffic-policy package (unpublished)
+
+Host mbuf traffic class now survives admission and HTT descriptor generation; AP ACM downgrade remains enforced. Native host Fastlane marking is applied synchronously within WCL after releasing radio, protected by the existing termination fence; link-down clears it. Enabled ACM override remains unsupported. All 71 tests passed with ASan/UBSan. Native build, strict isolated signature and exact-UUID offline inclusion passed (9A28E4F5-FD99-3724-9599-3B470EFC47AE). Hardware verification remains pending. This code is not in the installed 1.0.110 UUID listed above. Congestion-monitor and battery-policy integration remain open.

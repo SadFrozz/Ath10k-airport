@@ -2668,3 +2668,83 @@ signature and exact-UUID offline dependency inclusion. All four host callbacks
 are included. No radio-offload capability, sleep behavior or runtime installation
 changed. Source metadata remains 1.0.109 until publication succeeds.
 Evidence: host-group-full-summary.json and address-full-regression.log.
+
+## 2026-10-30 — 1.0.110 boot and observed latency/NoAck
+
+Loaded E39009FE-C6F8-385B-8B0C-B6DC48AED01A on boot
+CF493E4E-E6A4-406D-85DA-C5DDA4C4D505. Native SAE/PMF is ready, en1 active with
+IPv4 and three IPv6 addresses. 45/45 bound gateway probes returned; NoAck rose
+0 to 12, no disconnect/watchdog/replay/security growth. RTT mean 99.094 ms,
+maximum 1012.305 ms; seven samples exceeded 100 ms, three exceeded 500 ms.
+Those are descriptive cutoffs, not user-defined limits; isolated-spike acceptance
+at <=1% has not been established. Do not attribute the behavior to this batch
+without causal evidence; older images also had latency/NoAck observations.
+
+A bounded 120-probe correlation run is active in unified exec session 85454,
+sampling only numeric/boolean scan, TX, power and worker counters. Evidence lives
+in outputs/NATIVE-installed-1.0.110-runtime-20261030. Poll the existing session;
+do not restart based on this note. No network settings changed.
+
+## 2026-10-30 — completed 120-probe correlation interval
+
+Session 85454 completed exit 0. 120/120 en1-bound replies, mean RTT 9.444 ms,
+maximum 595.887 ms; exactly one sample above descriptive 100/500 ms cutoffs,
+0.83% of probes. User permits <=1% rare spikes, so this interval does not justify
+a targeted latency fix. NoAck stayed 12→12, no scan-generation/event change in the
+spike window. Across 3018 observed TX completions, mean CE observation latency
+was 1.166 ms and mean HTT observation latency 13.795 ms; these span all traffic,
+not per-ping attribution. No causal scan/queue diagnosis established. The earlier
+startup interval is retained, not overwritten by this successful later sample.
+Evidence: correlation.json, correlation-summary.json, accepted-window.json under
+NATIVE-installed-1.0.110-runtime-20261030. Copies hash-equivalent on SD.
+
+## 2026-10-30 — traffic engineering disabled-mode contract
+
+Stock setTRAFFIC_ENG_PARAMS at 0xffffff8001550892 reads no payload fields after
+null validation. It returns success only with core+0x74cc enabled; disabled returns
+0xe00002c7 (Unsupported), null 0xe00002bc. initTrafficEngineering initializes the
+gate to zero and consults wlan.trafficengineering.enabled; the separate debug
+method writes the gate and starts/stops monitoring. The ioctl validates a four-byte
+record (operation 0x202). Thus our Unsupported is compatible with the disabled
+feature branch, not proof of a missing mandatory parameter application. Enabling
+monitor-driven policy and other queue contracts remain separate unfinished work.
+Evidence: outputs/NATIVE-traffic-policy-contract-20261030, copied to SD. No code,
+installed configuration, version, commit or push changed during this recovery.
+
+## 2026-10-30 — Traffic/queue policy producer boundaries
+
+Recovered Fastlane OS capability versus asynchronous ACM override as distinct operations. Existing VLAN/DSCP classification and AP admission downgrade remain intact; nonzero Fastlane requests are still rejected pending OS service-class and retirement recovery. Congestion has a feature-gated downstream reader; this does not establish all callers optional. Battery policy uses feature/state gates and MRC threshold control, not ordinary station power-save. Ordinary POWERSAVE accepts only zero/one in stock, matching our input domain.
+
+Evidence: outputs/NATIVE-traffic-policy-contract-20261030/queue-power-producers.{asm,json} and fastlane-skywalk.asm. No runtime edit, new build or full regression in this research checkpoint. Remaining: OS caller failure handling, service-class mapping, queue/monitor ownership, policy reset/disable and hardware translation.
+
+### XNU priority transport gap
+
+Pinned primary XNU source 43a90889846e00bfb5cf1d255cdc0a701a1e05a4 (11417.140.69) separates interface QoS marking mode, mbuf service class and packet DSCP. Fastlane mode changes generate KEV_DL_QOS_MODE_CHANGED; set_packet_qos preserves control class even when DSCP is default and may downgrade other classes under policy. Our outputPacket copies Ethernet bytes without mbuf class into submitDataPacket; txPriorityTID reconstructs only VLAN/DSCP. This loses OS metadata and is the next concrete implementation gap, not evidence that every observed latency spike is caused by it. Native Skywalk ingress must also be traced before claiming coverage. Evidence and primary source hashes: outputs/NATIVE-traffic-policy-contract-20261030/xnu-qos-path.json; verified SD copy.
+
+### Local host-priority implementation (unpublished)
+
+The native adapter uses the BSD mbuf path through Ath10kBSDInterface, not a second raw Skywalk TX callback. outputPacket now reads mbuf traffic class and carries its BE/BK/VI/VO access category through preflight admission, submitDataPacket and HTT descriptor creation. Internal callers without metadata retain frame classification; AP ACM downgrade and management TID remain in place. Metadata is a synchronous scalar, with no new owner or queue. Packet bytes are unchanged.
+
+Focused linux_parity and tx_watchdog tests passed with ASan/UBSan; an additional production submission fixture verifies DMA payload, descriptor TID, AP downgrade and slot accounting. Added linux_parity to the consolidated runner, where it was previously absent. Native build and symbol validation passed. Full batch regression, offline dependency inclusion and hardware verification are pending; Fastlane lifecycle remains in progress. Version remains 1.0.110; no installation or publication. Logs preserved and byte-verified on SD under NATIVE-traffic-policy-contract-20261030.
+
+### Fastlane event delivery is synchronous
+
+Pinned XNU dlil_post_msg directly calls dlil_event_internal, which invokes filter, protocol and ifnet event callbacks synchronously. Thus simply adding the stock setter in nativeRequestGated would introduce uncontrolled outward calls under the radio gate. Existing prepareBSDInterface retains both ifnet and legacy callback owner, but policy jobs still need generation/retirement serialization. Fastlane remains unsupported while this full lifecycle is implemented; do not add a success-only flag. Evidence: outputs/NATIVE-traffic-policy-contract-20261030/fastlane-event-order.json and primary dlil.c, SD copies verified.
+
+### Existing service worker cannot directly host external policy calls
+
+nativeServiceThread enters WCL then radio for all service work. Controller stop drains it outside gates, but nativeInterfaceWillStop cannot wait and may precede controller stop. A retained OSObject alone does not prevent base stop dismantling interface managers. New Fastlane external work therefore needs an interface active-operation barrier coordinated with the outside-gate termination notifier, not merely another service flag. This is a prerequisite for the new feature, not evidence of an existing failure. Current code snapshots and lifetime analysis are saved and SD-verified in NATIVE-traffic-policy-contract-20261030/policy-worker-{current.cpp,lifetime.json}.
+
+### Local synchronous Fastlane mode integration
+
+Further inspection of terminationThread/resumeTerminationAction confirms the existing WCL fence holds inherited didTerminate/finalize until admitted WCL calls exit. Therefore synchronous host marking can reuse this fence: perform verifies WCL ownership and absence of radio ownership, obtains admission via nativeRequest, then invokes the exported Skywalk setter after radio returns. A live BSD binding is required. Link-down clears marking; enable+ACM override is rejected before host mutation, while disable ignores override as stock does. No asynchronous job or extra interface owner was introduced. Prior external-worker barrier requirements apply to work outside WCL, not this synchronous design.
+
+Production perform and admission-case fixtures passed with ASan/UBSan for wrong gates, missing binding/controller, admission refusal, mode enable/disable, link-down reset, unsupported ACM and null input. Existing termination fixture passed. Native compile/symbol validation passed. Offline linking, full finalized-batch regression and hardware remain pending; source version remains 1.0.110, installed image unchanged.
+
+### Integrated package validation in progress
+
+Isolated signature and exact-UUID offline kernel collection inclusion passed for 9A28E4F5-FD99-3724-9599-3B470EFC47AE (still source version 1.0.110, unpublished/uninstalled). Full ASan/UBSan regression is running under exec session 68932, log /tmp/ath-traffic-full.log; do not restart while live. Battery-policy ioctl 0x1d8 validates four bytes; congestion ioctl 0x1fb validates one byte. Both follow WCL/typed fallback with status propagation; this is not proof of caller optionality. Bounded consumer disassembly and offline evidence saved on SD.
+
+### Full traffic-policy regression complete
+
+Session 68932 exited zero. All 71 C++ tests plus runner checks passed with ASan/UBSan and assertions enabled. Native build, isolated signature and exact-UUID offline inclusion had already passed for unchanged runtime code. Summary and full log copied and byte-verified on SD. Source remains unpublished/uninstalled; no full regression repeat needed unless code changes or a new failure warrants it.

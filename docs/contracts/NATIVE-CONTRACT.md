@@ -61,3 +61,9 @@ silently treated as permission to enable sleeping firmware responses.
 Pinned Android reference replacement/cleanup caveats are recorded in
 `outputs/NATIVE-address-traffic-contract-20261030/offload-replacement-review.json`.
 These requirements do not claim that offload is currently implemented.
+
+## Host traffic priority and Fastlane policy
+
+Preserve the host-selected packet access category through admission and the final HTT descriptor without changing packet bytes. AP ACM restrictions still apply; management/control ownership remains separate. When OS metadata is unavailable, keep the established frame classifier.
+
+Fastlane mode changes can synchronously call DLIL filters, protocols and interface event callbacks. Do not introduce that call while holding the radio gate. Policy work must retain the native interface and BSD callback owner, serialize enable/disable, bind the applicable interface/network generation, and retire stale work before detach or reuse. An unsupported ACM override must not partially apply an accepted policy. Test cancellation, failed submission, competing disable and stop, as well as priority mapping.

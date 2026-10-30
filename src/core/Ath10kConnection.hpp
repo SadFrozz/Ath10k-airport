@@ -1637,9 +1637,15 @@ inline UInt8 ethernetPriority(const UInt8 *p,UInt32 length){
         dscp=static_cast<UInt8>(((p[offset]&15)<<2)|(p[offset+1]>>6));
     return dscp==46?6:static_cast<UInt8>(dscp>>3);
 }
-inline UInt8 txPriorityTID(const ConnectionState &s,const UInt8 *packet,UInt32 length){
+// macOS traffic classes are BE=0, BK=1, VI=2, VO=3. Preserve the
+// OS-selected access category even when IP DSCP differs (e.g. policy downgrade).
+// 255 means no host metadata; internal callers retain frame classification.
+inline UInt8 hostTrafficPriority(UInt32 trafficClass){
+    return trafficClass==0?0:trafficClass==1?1:trafficClass==2?5:trafficClass==3?6:255;
+}
+inline UInt8 txPriorityTID(const ConnectionState &s,const UInt8 *packet,UInt32 length,UInt8 hostPriority=255){
     if(!s.ap.wmmPresent || !s.portAuthorized)return 16;
-    UInt8 tid=ethernetPriority(packet,length);
+    UInt8 tid=hostPriority<8?hostPriority:ethernetPriority(packet,length);
     // There is no TSPEC admission in this STA profile. Follow the same
     // VO -> VI -> BE -> BK downgrade chain as mac80211/net80211.
     for(UInt32 attempts=0;attempts<4;++attempts){const UInt8 ac=txAccessCategory(tid);
@@ -1663,14 +1669,14 @@ inline bool packetProtectionAllowed(const UInt8 *packet,UInt32 length,const Conn
 }
 inline UInt32 buildHTTPacket(UInt8 *f,UInt32 capacity,const UInt8 *packet,UInt32 length,
                             UInt32 address,UInt32 frags,UInt8 ep,const ConnectionState &s,bool management,
-                            AthSecurity::ManagementTX protection=AthSecurity::ManagementTX::Plain) {
+                            AthSecurity::ManagementTX protection=AthSecurity::ManagementTX::Plain,UInt8 hostPriority=255) {
     if(!f || capacity<256 || !ep || ep==255 || !address || !frags || !packetProtectionAllowed(packet,length,s,management,protection))return 0;
     htcZero(f,256);f[0]=ep;f[5]=s.httSequence;
     UInt32 bytes=0;
     if(!frags)return 0;
     UInt32 prefetch=length<50?length:50;bytes=24+((prefetch+3u)&~3u);
     f[8]=1;f[9]=management?(protection==AthSecurity::ManagementTX::HardwareCCMP?0x61:0x65):((s.secure && (s.portAuthorized || s.rekeyKind))?0x42:0x46); // HTT >=3: TX_FRM for both management and Ethernet.
-    const UInt8 tid=management?17:txPriorityTID(s,packet,length);if(tid==255)return 0;
+    const UInt8 tid=management?17:txPriorityTID(s,packet,length,hostPriority);if(tid==255)return 0;
     htcWriteLE16(f+10,static_cast<UInt16>(0x800u|(UInt16(tid)<<6))); // POSTPONED, TID bits 6..10
     htcWriteLE16(f+12,static_cast<UInt16>(length));htcWriteLE16(f+14,s.txId);
     htcWriteLE32(f+16,management?address:frags);htcWriteLE32(f+20,0xffff);

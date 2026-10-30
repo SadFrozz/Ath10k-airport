@@ -19,6 +19,20 @@ public:
 };
 
 int main(){
+    // Host priority must survive the real submission/DMA builder, including
+    // AP admission downgrade; packet bytes and per-slot ownership stay intact.
+    for(UInt8 priority:{UInt8(0),UInt8(1),UInt8(5),UInt8(6)}){
+        WatchdogDriver d;auto &s=d._connection;s.ap.wmmPresent=true;
+        memset(s.ap.wmm,0,sizeof(s.ap.wmm));s.ap.wmm[12]=16;
+        d.frame[14]=0x45;d.frame[15]=46<<2;
+        assert(!d.submitDataPacket(d.frame,sizeof(d.frame),1800,priority));
+        const UInt8 expected=priority==6?5:priority;
+        const auto *command=static_cast<const UInt8 *>(d._dataBuffers[0].command.virtualAddress());
+        assert(((Ath10k::htcReadLE16(command+10)>>6)&31)==expected);
+        assert(!memcmp(d._dataBuffers[0].payload.virtualAddress(),d.frame,sizeof(d.frame)));
+        assert(s.dataPending==1 && s.dataTX[0].owned && s.txTID[expected]);
+        d.releaseWMIRuntime();
+    }
     { WatchdogDriver d;d.fill();auto &s=d._connection;
       s.radio.appliedPS=s.radio.configuredPS=true;s.radio.requestedPS=false;d._regs.tx3Consume=[](){};
       assert(!d.serviceRadioMaintenance(3000));

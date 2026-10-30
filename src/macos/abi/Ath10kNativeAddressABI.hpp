@@ -10,3 +10,8 @@ extern "C" IOReturn ath10kStoreIPv6Params(IO80211InfraInterface *,const void *)
 // Borrowed interface-owned pointer; consume synchronously under the gate.
 extern "C" const void *ath10kReadIPv4Params(IO80211InfraInterface *)
     __asm__("__ZN21IO80211InfraInterface13getIPv4ParamsEv");
+
+// Unlike address-cache copies, this can synchronously invoke DLIL callbacks.
+// Call only from WCL with the radio gate released and a live BSD binding.
+extern "C" void ath10kSetFastlaneCapable(IO80211InfraInterface *,bool)
+    __asm__("__ZN25IOSkywalkNetworkInterface18setFastlaneCapableEb");

@@ -547,7 +547,23 @@ IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const {
     // The BSD controller retains its separate, thread-backed workloop.
     return controller?controller->getWorkQueue():nullptr;
 }
-IOReturn Ath10kNativeInterface::perform(AthNativeOp op,void *data){return controller?controller->nativeRequest(op,data):kIOReturnNotAttached;}
+IOReturn Ath10kNativeInterface::perform(AthNativeOp op,void *data){
+    if(!controller)return kIOReturnNotAttached;
+    const bool fastlane=op==AthNativeOp::setWCL_FAST_LANE;
+    const bool linkDown=op==AthNativeOp::setWCL_LINK_STATE_UPDATE && data &&
+        !static_cast<const UInt8 *>(data)[6];
+    if(fastlane || linkDown){
+        // The inherited termination fence waits for this WCL call to exit.
+        // DLIL may synchronously call filters/protocols: never hold radio here.
+        auto wcl=getWorkLoop();auto radio=controller->getWorkLoop();
+        if(!wcl || !wcl->inGate() || !radio || radio->inGate())return kIOReturnNotPermitted;
+        if(!getBSDInterface())return kIOReturnNotReady;
+    }
+    const IOReturn result=controller->nativeRequest(op,data);
+    if(result==kIOReturnSuccess && (fastlane || linkDown))
+        ath10kSetFastlaneCapable(this,fastlane && static_cast<const UInt8 *>(data)[0]!=0);
+    return result;
+}
 IOReturn Ath10kNativeInterface::setMacAddress(ether_addr &address) {
     return controller?controller->nativeRequest(AthNativeOp::MACSet,&address):kIOReturnNotAttached;
 }
@@ -1701,7 +1717,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         return kIOReturnSuccess;}
     case N::setWCL_FAST_LANE:{
         const auto bytes=static_cast<const UInt8 *>(data);
-        return (bytes[0] || bytes[1])?kIOReturnUnsupported:kIOReturnSuccess;}
+        // Changing host marking is separate from overriding AP admission.
+        // Reject the latter before any host-side mutation; disable ignores it.
+        return (bytes[0] && bytes[1])?kIOReturnUnsupported:kIOReturnSuccess;}
     case N::setWCL_SCAN_REQ:{AirportWCL::ScanRequest scan{};
         // The native ABI owns a fixed request containing at most 400 channels.
         if(!AirportWCL::decodeModernScan(data,0x1550,scan))return kIOReturnBadArgument;

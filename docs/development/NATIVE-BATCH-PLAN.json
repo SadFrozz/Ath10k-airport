@@ -23,9 +23,9 @@
   "execution_policy": {
     "unit_of_work": "A complete related contract group, not one callback or one failing check",
     "active_group": [
-      "Recover macOS address/traffic/keepalive callback group and caller failure handling",
-      "Distinguish host address notification from firmware ARP/NDP and sleep offload contracts",
-      "Implement only confirmed ownership, cancellation and capability semantics together"
+      "Preserve macOS packet service class through native/mbuf TX admission and HTT submission",
+      "Integrate recovered Fastlane mode lifecycle without unsupported ACM claims",
+      "Recover remaining congestion/battery policy consumers and cancellation together"
     ],
     "acceptance": "Review the entire group, run affected regressions during development, then one consolidated full regression and one candidate build after final edits",
     "publication": "Keep intermediate edits local; publish one reviewed batch without per-fix pushes or Actions runs",
@@ -35,68 +35,37 @@
     "version": "Advance build number only after successful push and verified remote head; local edits/unpushed commits keep previous number"
   },
   "current_candidate": {
-    "version": "1.0.109",
-    "uuid": "8EDCBD5B-73D0-3488-8703-FED8837683F9",
+    "version": "1.0.110",
+    "uuid": "E39009FE-C6F8-385B-8B0C-B6DC48AED01A",
+    "source_commit": "add6acf41627edc4d7158a31db7bec597c752d08",
     "installed": true,
     "boot_verified": true,
-    "boot_uuid": "2667E42D-9EF0-4D07-B60F-37E461F4007D",
+    "boot_uuid": "CF493E4E-E6A4-406D-85DA-C5DDA4C4D505",
     "enterprise_enabled": false,
-    "source_commit": "a88bbedb9c0113ff93219eda53a741ff28fa9a6a",
-    "evidence": "outputs/NATIVE-installed-1.0.109-runtime-20261030/result.json"
+    "evidence": "outputs/NATIVE-installed-1.0.110-runtime-20261030/result.json",
+    "bounded_runtime": "120/120 en1 gateway replies; SAE/PMF ready; NoAck unchanged 12->12; one descriptive latency spike (0.83%) accepted under user policy"
   },
   "active_scope": {
-    "name": "Roam ownership and notification progress",
-    "status": "Published and loaded as 1.0.109; bounded native SAE traffic passed, latency remains open",
-    "contract": "docs/contracts/NATIVE-EAP-CONTRACT.md",
+    "name": "Host traffic priority and native Fastlane policy",
+    "status": "Local host-priority/Fastlane package passed consolidated validation; unpublished and uninstalled",
+    "contract": "docs/contracts/NATIVE-CONTRACT.md",
     "groups": [
-      "Retain pending PTK/EAP owners before roam retirement",
-      "Allow old-link notifications to progress while roam waits",
-      "Recover installed-client EAP cache/session behavior without fabricating an acknowledgement",
-      "Complete consolidated regression and preserve candidate evidence"
+      "Preserve macOS packet service class through native/mbuf TX admission and HTT submission",
+      "Integrate recovered Fastlane mode lifecycle without unsupported ACM claims",
+      "Recover remaining congestion/battery policy consumers and cancellation together"
     ],
-    "acceptance": "Affected production-path regressions and native build; one consolidated regression after the entire batch is finalized; no repeated hardware scan/reboot benchmarks",
     "validation": {
-      "affected_sanitized_tests": "native_notifications and native_sae_radio passed",
-      "full_regression": "68 C++ tests plus runner checks passed with ASan/UBSan",
+      "focused": "Priority, production TX submission, policy dispatch and termination fixtures passed with ASan/UBSan",
       "native_build": "passed",
-      "offline_dependencies": "isolated signature and exact-UUID inclusion passed",
-      "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
-      "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
+      "offline_dependencies": "Isolated signature and exact UUID 9A28E4F5-FD99-3724-9599-3B470EFC47AE inclusion passed",
+      "full_regression": "71 tests plus runner checks passed ASan/UBSan; session 68932 exited zero",
+      "hardware": "Not installed"
     },
-    "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
-    "next_group": {
-      "name": "Address and traffic configuration callbacks",
-      "status": "Four host address notifications locally validated: 69 sanitized tests, native build, signature and exact offline UUID passed; publication pending",
-      "remaining": [
-        "Review and publish coherent host-address batch; hardware validation separate",
-        "Radio offload command capacity, replacement and retirement still unimplemented",
-        "DHCP sleep hint and conditional traffic engineering remain unimplemented"
-      ]
-    },
-    "completed_predecessor": {
-      "name": "Enterprise same-association reauthentication",
-      "validation": {
-        "affected_sanitized_tests": "Passed; see reauthentication evidence",
-        "full_regression": "68 tests plus runner checks passed with explicit ASan/UBSan",
-        "native_build": "Passed",
-        "offline_dependencies": "Strict ad-hoc signature on isolated copy and exact-UUID inclusion passed",
-        "hardware": false,
-        "evidence": "outputs/NATIVE-eap-reauth-contract-20261030"
-      },
-      "publication": {
-        "functional_commit": "45335d8aad632b603660c2ef73cd423e6f18ccd4",
-        "remote_tree_verified": true,
-        "source_version_after_publication": "1.0.108",
-        "version_metadata_published": false
-      }
-    },
-    "publication": {
-      "functional_commit": "a88bbedb9c0113ff93219eda53a741ff28fa9a6a",
-      "remote_tree_verified": true,
-      "validated_candidate_version": "1.0.108",
-      "source_version_after_publication": "1.0.109",
-      "version_metadata_published": false
-    }
+    "remaining_boundaries": [
+      "Enabled ACM override remains rejected before host-side mutation",
+      "Congestion monitor and battery policy remain unimplemented; producer gates recovered, caller requirement not fully established",
+      "Firmware ARP/NS offload and DHCP sleep activity hint remain separate unfinished work"
+    ]
   },
   "implemented": {
     "personal": "Native association/traffic, SAE, PMF, internal PTK/GTK/IGTK paths and bounded PTK notification implemented; radio evidence and remaining scenarios are separate",
@@ -138,5 +107,77 @@
     "commit": "826c310abf1c1e1888679a07bd9a22442e5b5e7b",
     "full_regression": "outputs/NATIVE-eap-integration-20261030/FULL-REGRESSION.json",
     "note": "Historical verification of 826c310, not proof for subsequent changes"
-  }
+  },
+  "prepared_candidate": {
+    "version": "1.0.110",
+    "uuid": "E39009FE-C6F8-385B-8B0C-B6DC48AED01A",
+    "source_commit": "add6acf41627edc4d7158a31db7bec597c752d08",
+    "installed": true,
+    "authorization": "explicitly authorized and executed",
+    "evidence": "outputs/NATIVE-1.0.110-hardware-candidate-20261030/READY.json",
+    "validation": "69 sanitized tests for same runtime code; metadata rebuild, strict signature and exact UUID offline inclusion; SD candidate and current EFI rollback hashes verified",
+    "boot_verified": true
+  },
+  "completed_groups": [
+    {
+      "name": "Roam ownership and notification progress",
+      "status": "Published and loaded as 1.0.109; bounded native SAE traffic passed, latency remains open",
+      "contract": "docs/contracts/NATIVE-EAP-CONTRACT.md",
+      "groups": [
+        "Retain pending PTK/EAP owners before roam retirement",
+        "Allow old-link notifications to progress while roam waits",
+        "Recover installed-client EAP cache/session behavior without fabricating an acknowledgement",
+        "Complete consolidated regression and preserve candidate evidence"
+      ],
+      "acceptance": "Affected production-path regressions and native build; one consolidated regression after the entire batch is finalized; no repeated hardware scan/reboot benchmarks",
+      "validation": {
+        "affected_sanitized_tests": "native_notifications and native_sae_radio passed",
+        "full_regression": "68 C++ tests plus runner checks passed with ASan/UBSan",
+        "native_build": "passed",
+        "offline_dependencies": "isolated signature and exact-UUID inclusion passed",
+        "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
+        "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
+      },
+      "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
+      "next_group": {
+        "name": "Address and traffic configuration callbacks",
+        "status": "Host-cache batch published and 1.0.110 boot-verified; bounded native traffic passed. Radio offload, sleep hint and conditional traffic engineering remain separate unfinished work",
+        "remaining": [
+          "Radio offload command capacity, replacement and retirement still unimplemented",
+          "DHCP sleep hint and conditional traffic engineering remain unimplemented"
+        ],
+        "publication": {
+          "commit": "add6acf41627edc4d7158a31db7bec597c752d08",
+          "tree": "2354846b9f29e95366c4a32b37ee5a008d96a6b5",
+          "remote_verified": true,
+          "post_publication_version": "1.0.110",
+          "metadata_published": false
+        }
+      },
+      "completed_predecessor": {
+        "name": "Enterprise same-association reauthentication",
+        "validation": {
+          "affected_sanitized_tests": "Passed; see reauthentication evidence",
+          "full_regression": "68 tests plus runner checks passed with explicit ASan/UBSan",
+          "native_build": "Passed",
+          "offline_dependencies": "Strict ad-hoc signature on isolated copy and exact-UUID inclusion passed",
+          "hardware": false,
+          "evidence": "outputs/NATIVE-eap-reauth-contract-20261030"
+        },
+        "publication": {
+          "functional_commit": "45335d8aad632b603660c2ef73cd423e6f18ccd4",
+          "remote_tree_verified": true,
+          "source_version_after_publication": "1.0.108",
+          "version_metadata_published": false
+        }
+      },
+      "publication": {
+        "functional_commit": "a88bbedb9c0113ff93219eda53a741ff28fa9a6a",
+        "remote_tree_verified": true,
+        "validated_candidate_version": "1.0.108",
+        "source_version_after_publication": "1.0.109",
+        "version_metadata_published": false
+      }
+    }
+  ]
 }

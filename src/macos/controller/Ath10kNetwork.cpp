@@ -485,9 +485,10 @@ UInt32 Ath10kPCIDevice::outputPacket(mbuf_t packet,void *)
        !Ath10k::sameMAC(data+6,_connection.local)){
         ++_connection.txErrors;freePacket(packet);return kIOReturnOutputDropped;
     }
-    if(Ath10k::txPriorityTID(_connection,data,length)==255){++_connection.txAdmissionDropped;freePacket(packet);return kIOReturnOutputDropped;}
+    const UInt8 hostPriority=Ath10k::hostTrafficPriority(static_cast<UInt32>(mbuf_get_traffic_class(packet)));
+    if(Ath10k::txPriorityTID(_connection,data,length,hostPriority)==255){++_connection.txAdmissionDropped;freePacket(packet);return kIOReturnOutputDropped;}
     uint64_t now=0,ns=0;clock_get_uptime(&now);absolutetime_to_nanoseconds(now,&ns);
-    const char *error=submitDataPacket(data,length,ns/1000000u);
+    const char *error=submitDataPacket(data,length,ns/1000000u,hostPriority);
     freePacket(packet);
     if(error){
         ++_connection.txErrors;_connection.error=error;_connection.stage=Ath10k::LinkStage::Failed;
@@ -1295,12 +1296,12 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
 
 // Data-only pipeline. Management/EAPOL retain the existing serial path; the
 // two paths never own CE4 concurrently. Work-loop gating serializes all access.
-const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UInt64 nowMs)
+const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UInt64 nowMs,UInt8 hostPriority)
 {
     auto &s=_connection;
     if(powerIOBlocked() || !data || bytes<14 || bytes>Ath10k::kEthernetFrameMax || !Ath10k::ethernetFrameAllowed(data,bytes) || !_wmiLive.active || _dmaQuarantine ||
        !Ath10k::dataTXAdmissionOpen(s))return "data-tx-not-ready";
-    const UInt8 tid=Ath10k::txPriorityTID(s,data,bytes);
+    const UInt8 tid=Ath10k::txPriorityTID(s,data,bytes,hostPriority);
     if(tid==255){++s.txAdmissionDropped;return nullptr;}
     UInt32 index=0;while(index<Ath10k::kDataTxSlots && s.dataTX[index].owned)++index;
     if(index==Ath10k::kDataTxSlots)return "data-tx-slot-accounting";
@@ -1325,7 +1326,7 @@ const char *Ath10kPCIDevice::submitDataPacket(const UInt8 *data,UInt32 bytes,UIn
     Ath10k::htcWriteLE32(frags,static_cast<UInt32>(buf.payload.dmaAddress()));Ath10k::htcWriteLE32(frags+4,bytes);
     do{s.txId=static_cast<UInt16>((s.txId+1)%1056);}while(Ath10k::dataTxSlotForID(s,s.txId)>=0);
     const UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(buf.command.virtualAddress()),256,data,bytes,
-        static_cast<UInt32>(buf.payload.dmaAddress()),static_cast<UInt32>(buf.fragments.dmaAddress()),_htcHTTData.endpoint,s,false);
+        static_cast<UInt32>(buf.payload.dmaAddress()),static_cast<UInt32>(buf.fragments.dmaAddress()),_htcHTTData.endpoint,s,false,AthSecurity::ManagementTX::Plain,hostPriority);
     if(!length || !buf.payload.syncForDevice() || !buf.fragments.syncForDevice() || !buf.command.syncForDevice())return "data-tx-buffer-sync";
     auto *ring=static_cast<Ath10k::CEDescriptor32 *>(_ceSrcRings[4].virtualAddress());auto &desc=ring[s.dataWrite];
     bzero(&desc,sizeof(desc));desc.address=static_cast<UInt32>(buf.command.dmaAddress());desc.nbytes=static_cast<UInt16>(length);

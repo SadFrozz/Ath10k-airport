@@ -77,6 +77,27 @@ def inventory():
                 address='0xffffff800212933e', command=0x1aa, input_bytes=0xbc,
                 observed_fields=dict(channel_count=0x94, flags=0x98, ssid=0x99, ssid_length=0xb9),
                 failure_effect='nonzero cmdIouc result triggers compensating bulletin-board message; full state semantics not yet established')]
+        if name in ('setWCL_UPDATE_FAST_LANE', 'setCONGESTION_CTRL_IND', 'setBATTERY_POWERSAVE_CONFIG', 'setPOWERSAVE'):
+            policy = {
+                'setWCL_UPDATE_FAST_LANE': ('0xffffff8001550ac0', 'Byte0 updates IOSkywalkNetworkInterface::setFastlaneCapable; byte0 AND byte1 additionally invokes asynchronous ACM override. Local host marking now applies outside radio within WCL; link-down resets marking. Existing WCL termination fence protects synchronous calls. Enabled ACM override is rejected before mutation. Focused tests/native build passed; offline linking and radio evidence pending.'),
+                'setCONGESTION_CTRL_IND': ('0xffffff8001643dee', 'Stores normalized byte0 at core+0x791a. Inspected collectRealTimeAppCongestionState consumer at 0xffffff800163f7ca returns false unless traffic-engineering gate +0x74cc equals one. Caller failure handling and other consumers remain open.'),
+                'setBATTERY_POWERSAVE_CONFIG': ('0xffffff8001643812', 'Forwards u32 mode to PowerManager at 0xffffff800157d402. Feature bit 0x2c and a runtime state gate precede storage and possible configureMRCThreshold. Not equivalent to ordinary station powersave; capability and OS caller semantics remain open.'),
+                'setPOWERSAVE': ('0xffffff800160ff60', 'Stock accepts only word+4 zero/one; greater values return 0x66. Current boolean domain agrees; this does not certify application timing or every power transition.')
+            }[name]
+            row['requirement_audit'] = policy[1]
+            if name == 'setWCL_UPDATE_FAST_LANE':
+                row['queue_contract'] = 'WCL caller -> gated validation -> WCL-only host marking; reject entry while radio held'
+            row['stock_producer_evidence'] = [dict(module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66', address=policy[0], evidence='outputs/NATIVE-traffic-policy-contract-20261030/queue-power-producers.json')]
+        if name == 'setTRAFFIC_ENG_PARAMS':
+            row['requirement_audit'] = 'Stock feature-gated capability acknowledgement, not a parameter setter. Unsupported matches disabled traffic-engineering mode; enabling the separate monitor/queue policy remains unimplemented'
+            row['stock_producer_evidence'] = [dict(
+                module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
+                producer='AppleBCMWLANInfraProtocol::setTRAFFIC_ENG_PARAMS', address='0xffffff8001550892',
+                semantics='Null returns 0xe00002bc; no payload read. Returns zero only when core+0x74cc is nonzero, otherwise 0xe00002c7. initTrafficEngineering starts gate at zero and reads wlan.trafficengineering.enabled; debug override separately starts/stops monitor')]
+            row['stock_consumer_evidence'] = [dict(
+                module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',
+                consumer='set ioctl handler', address='0xffffff8002220c05', ioctl_operation=0x202, input_bytes=4,
+                semantics='Exact record size and nonnull; WCL dispatch and typed fallback; propagates return status. Does not establish all traffic-policy callbacks optional')]
         if name == 'setEAP_FILTER_CONFIG':
             row['requirement_audit'] = 'stock producer stores a WoW EAPOL-filter option; not evidence of ordinary EAP-port startup. Wake-filter behavior and caller failure handling remain unverified; rejected rather than fake success'
             row['stock_producer_evidence'] = [dict(
@@ -90,7 +111,7 @@ def inventory():
                 'setIPV6_PARAMS': ('0xffffff8001643e80', 'Forwards to IO80211InfraInterface::setIPv6Params at 0xffffff80022dbd92 (copies 164 bytes), clamps count to ten, updates address context and invokes gated handleIPv6AddressNotificationGated. Host record layout recovered; radio offload remains separately unimplemented.'),
                 'setDHCP_RENEWAL_DATA': ('0xffffff8001643764', 'Stores whether the first input byte is nonzero at core-context+0x1a52. Diagnostic identifies active-during-sleep support. No DHCP packet construction in this setter; downstream uses and caller failure handling require recovery.')
             }[name]
-            row['requirement_audit'] = ('Host parameter cache forwarding implemented locally with validated/zeroed records and propagated OS status; focused sanitized tests and exact-UUID offline inclusion passed; not installed. Radio offload remains separate and unsupported' if name != 'setDHCP_RENEWAL_DATA' else 'Sleep activity hint under review; rejected, not an implemented no-op. Downstream alias consumers remain open')
+            row['requirement_audit'] = ('Host parameter cache forwarding implemented locally with validated/zeroed records and propagated OS status; 69-test sanitized regression and exact-UUID offline inclusion passed; installed 1.0.110 boot verified. Individual callback invocation remains unobserved; radio offload remains separate and unsupported' if name != 'setDHCP_RENEWAL_DATA' else 'Sleep activity hint under review; rejected, not an implemented no-op. Downstream alias consumers remain open')
             row['stock_producer_evidence'] = [dict(
                 module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
                 producer='AppleBCMWLANCore::'+name, address=address, semantics=semantics,
@@ -115,7 +136,7 @@ def inventory():
                     consumer='WCLNetManager::setIPV6_PARAMS', address='0xffffff8002128ac4',
                     semantics='Clamps address count to ten, copies 16-byte entries and calls receivedIPv6Address. No cmdIouc call in this handler; allocation failure returns 0xe00002c2. Other callers remain distinct.'))
         if name in ('setOFFLOAD_ARP', 'setOFFLOAD_NDP'):
-            row['requirement_audit'] = 'Legacy host address record translated into stock interface cache; empty replacement and partial IPv4 updates handled. No firmware offload capability enabled. Local implementation awaiting completed-batch validation and hardware evidence'
+            row['requirement_audit'] = 'Legacy host address record translated into stock interface cache; empty replacement and partial IPv4 updates handled. No firmware offload capability enabled. Published in add6acf; 69-test sanitized regression passed and installed 1.0.110 boot verified. Individual callback invocation and firmware offload remain unverified'
             arp = name == 'setOFFLOAD_ARP'
             row['stock_consumer_evidence'] = [dict(
                 module='IO80211Family', uuid='0D5AC570-04D4-38B6-8577-9F21350CDD50',

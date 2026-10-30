@@ -144,7 +144,7 @@ private:
     const char *serviceAPMaintenance(UInt64);
     const char *serviceStatsMaintenance(UInt64);
     const char *serviceDataTX(UInt64);
-    const char *submitDataPacket(const UInt8 *,UInt32,UInt64);
+    const char *submitDataPacket(const UInt8 *,UInt32,UInt64,UInt8 hostPriority=255);
     struct DataBuffers {Ath10kDMABuffer payload{},command{},fragments{};};
     DataBuffers _dataBuffers[Ath10k::kDataTxSlots]{};
     const char *submitNetworkCE(UInt32,Ath10kDMABuffer &,UInt32,UInt32 &);
