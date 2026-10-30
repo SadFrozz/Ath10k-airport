@@ -67,6 +67,7 @@ inline uint8_t wpa2GroupCipher(const uint8_t *ie,size_t n){
  if(suite(ie+4,cipherCCMP))return cipherCCMP;
  return 0;
 }
+static constexpr uint8_t stationRSNEAP[]={48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,1,0,0};
 static constexpr uint8_t stationRSNSHA256[]={48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,6,0,0};
 // Explicit software SAE profile: CCMP-128, AKM 8, mandatory PMF/BIP-CMAC-128.
 // Caller supplies an already verified SAE PMKID when association uses it.
@@ -101,6 +102,7 @@ inline bool validSAEPersonalRSN(const uint8_t *ie,size_t n){
  return bool(selectPersonal(ie,n,PersonalMode::WPA3,{true,true,true}));
 }
 inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n,uint8_t akm=2){
+ if(akm==1){if(group==cipherCCMP){n=sizeof(stationRSNEAP);return stationRSNEAP;}n=0;return nullptr;}
  if(akm==6){if(group==cipherCCMP){n=sizeof(stationRSNSHA256);return stationRSNSHA256;}n=0;return nullptr;}
  if(akm!=2){n=0;return nullptr;}
  if(group==cipherCCMP){n=sizeof(stationRSN);return stationRSN;}
@@ -122,6 +124,16 @@ inline bool supportsPSKAKM(const uint8_t *ie,size_t n,uint8_t akm){
  if(akm==2)return supportsWPA2(ie,n);
  RSNInfo ap{};
  return akm==6 && parseRSN(ie,n,ap) && !ap.mfpr() && ap.akmHas(6) &&
+  ap.pairwiseHas(4) && ap.group==4 && !(ap.capabilities&((1u<<9)|(1u<<13)));
+}
+}
+
+namespace AthSecurity {
+// Explicit ordinary 802.1X/CCMP profile. SHA256 enterprise, FT and Suite-B
+// are not aliases for this 32-byte PMK and descriptor-2 exchange.
+inline bool supportsEAPAKM(const uint8_t *ie,size_t n,uint8_t akm){
+ RSNInfo ap{};
+ return akm==1 && parseRSN(ie,n,ap) && !ap.mfpr() && ap.akmHas(1) &&
   ap.pairwiseHas(4) && ap.group==4 && !(ap.capabilities&((1u<<9)|(1u<<13)));
 }
 }

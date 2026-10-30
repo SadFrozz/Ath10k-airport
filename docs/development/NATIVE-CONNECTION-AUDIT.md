@@ -2126,3 +2126,33 @@ uses repository selection (-r probe -b br.com.jonasw8.driver.ath10kmac), explici
 aux output, existing boot/system collections and --allow-missing-kdk. Earlier
 bundle-path-only attempts supplied no binaries and are not counted as passes.
 No EFI change, live loading or hardware rekey validation performed.
+
+## 2026-10-30 — EAP receive preflight and OS startup boundary
+
+Reviewed Apple EAPOLSocket.c (public main; source snapshot hash retained in local evidence).
+Wireless link activity is inferred from a valid AP MAC, and ordinary wireless
+EAP transmission targets the BSSID; AF_NDRV carries the packet. This supports
+publishing association identity before controlled-port completion. It does not
+prove the installed IO80211 input path accepts pre-link packets or starts the
+system EAP client; those remain separate local-stack checks.
+Source: https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/EAPOLSocket.c
+
+Found releaseRXBatch's earlier preflight still imposed the internal four-way
+512-byte limit and queue capacity on every EAPOL frame, before native routing.
+Validated current-owner system EAP now bypasses only that internal slot budget;
+peer validation, secure RX checks and controlled-port blocking remain in place.
+An extracted production preflight/packet test covers 1024-byte EAP with a full
+internal key queue and rejects the same bypass for personal profiles. Sanitized
+fixture passed; native enterprise admission remains disabled/unimplemented.
+
+## 2026-10-30 — installed EAP client auth discriminator
+
+Re-read installed eapolclient, x86_64 UUID FAC5670D-77C2-3A38-9DE9-37B8A150A96B.
+At 0x10000c223 it requests Apple80211CopyValue selector 2, reads AUTH_UPPER,
+and at 0x10000c2ca–0x10000c2f2 recognizes exactly 1, 4, 0x80, 0x800, 0x4000,
+0x8000 as enterprise values. The ordinary AKM1 admission's upper-auth 4 therefore
+matches the installed client discriminator. Other values are not admission
+permission: this driver still rejects their distinct derivation/roam contracts.
+This proves the consumer's expected value, not current WCL getAUTH_TYPE output,
+EAP client startup or pre-link RX delivery. Fresh disassembly excerpt and hash
+are retained in NATIVE-eap-integration-20261030.

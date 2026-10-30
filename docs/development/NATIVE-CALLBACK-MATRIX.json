@@ -8,8 +8,8 @@
   "hardware_validation": false,
   "counts": {
     "total": 190,
-    "forwarded": 34,
-    "unsupported": 156
+    "forwarded": 35,
+    "unsupported": 155
   },
   "callbacks": [
     {
@@ -727,10 +727,10 @@
     {
       "callback": "setCIPHER_KEY",
       "parameters": "apple80211_key* data",
-      "implementation": "unsupported",
-      "operation": null,
-      "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "external key installation ownership unresolved; keep explicitly unsupported",
+      "implementation": "forwarded",
+      "operation": "setCIPHER_KEY",
+      "queue_contract": "WCL caller -> gated radio dispatcher",
+      "requirement_audit": "gated MSK-only callback for an active WPA2 EAP owner; enterprise join not yet admitted, traffic keys/PMKSA/password remain rejected",
       "stock_consumer_evidence": [
         {
           "module": "IO80211Family",

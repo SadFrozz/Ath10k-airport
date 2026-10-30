@@ -72,3 +72,12 @@ the captured result to its reply and association lifetime; process failure for
 all native EAPOL replies, including phase-5 rekey replies. Failed enqueue retains
 the same notification; successful enqueue consumes it once. Leave, radio-off,
 roaming retirement and stop invalidate the old owner and pending completion.
+
+Native PTK completion delivery has a fixed 5000 ms local recovery budget from
+consumption of the successful M4 completion receipt. This is driver policy, not an asserted IEEE deadline.
+Transient queue failures retain the original ticket and start time; preceding
+notification failures or temporarily unready PMF must not extend it. On expiry
+close the controlled port and cancel the association through normal teardown,
+without reporting successful completion. A retired key generation cannot expire
+or notify its replacement. Successful enqueue and association reset clear the
+pending timer. The radio service checks expiry independently of event admission.

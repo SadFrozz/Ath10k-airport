@@ -4,13 +4,16 @@ The fixture has fixed public credentials/nonces and is never used at runtime.
 """
 import hashlib,hmac,struct,sys
 from cryptography.hazmat.primitives.keywrap import aes_key_wrap
+enterprise='--enterprise' in sys.argv[2:]
 pmk=hashlib.pbkdf2_hmac('sha1',b'password',b'IEEE',4096,32)
 assert pmk.hex()=='f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e'
+if enterprise:pmk=bytes(range(32)) # Public test MSK prefix, not a password-derived PMK.
 sta=bytes.fromhex('020102030405');ap=bytes.fromhex('02060708090a')
 snonce=bytes(range(32));anonce=bytes(range(32,64))
 context=min(sta,ap)+max(sta,ap)+min(snonce,anonce)+max(snonce,anonce)
 ptk=b''.join(hmac.digest(pmk,b'Pairwise key expansion\0'+context+bytes([i]),'sha1') for i in range(3))[:48]
 rsn=bytes.fromhex('30140100000fac040100000fac040100000fac020000')
+if enterprise:rsn=rsn[:19]+bytes([1])+rsn[20:]
 gtk=bytes(range(80,96))
 kde=bytes.fromhex('dd16000fac010100')+gtk
 plain=rsn+kde+b'\xdd\x00'
@@ -35,4 +38,4 @@ retry=packet(0x13ca,3,anonce,aes_key_wrap(ptk[16:32],plain),sign=True)
 retry4=packet(0x30a,3,bytes(32),keylen=0,sign=True);retry4=ap+sta+retry4[12:]
 with open(sys.argv[1],'w') as out:
  for name,data in dict(pmk=pmk,sta=sta,ap=ap,snonce=snonce,rsn=rsn,gtk=gtk,ptk=ptk,m1=m1,m2=m2,m3=m3,m4=m4,bad_rsn=bad_rsn,group=group,retry=retry,retry4=retry4).items():
-  out.write('static const uint8_t v_'+name+'[]={'+','.join(str(x) for x in data)+'};\n')
+  out.write('static const uint8_t '+('e_' if enterprise else 'v_')+name+'[]={'+','.join(str(x) for x in data)+'};\n')

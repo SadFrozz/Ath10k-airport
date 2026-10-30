@@ -40,6 +40,17 @@ static std::array<UInt8,0x2cc> request(){
 }
 int main(){
     capabilities();
+    {AirportWCL::JoinRequest e{};e.lowerAuth=1;e.upperAuth=4;
+     assert(nativeJoinAuth(e)==NativeJoinAuth::Unsupported);
+     assert(nativeJoinAuth(e,false,true)==NativeJoinAuth::EAP);
+     for(unsigned bad=0;bad<7;++bad){auto q=e;
+      switch(bad){case 0:q.keyLength=32;break;case 1:q.keyCipher=9;break;
+       case 2:q.keyFlags=1;break;case 3:q.keyIndex=1;break;
+       case 4:q.upperAuth|=8;break;case 5:q.upperAuth=1u<<11;break;
+       case 6:q.transitionDisable=NativeTransitionDisable::Enterprise;break;}
+      assert(nativeJoinAuth(q,false,true)==NativeJoinAuth::Unsupported);
+     }
+    }
     struct Output {AirportWCL::JoinRequest join;UInt64 tail=0x1234567812345678ull;} out;
     static_assert(sizeof(out.join.key)==64,"Sequoia join decoder must retain full credential slot");
     auto p=request();assert(AirportWCL::decodeJoin(p.data(),p.size(),out.join));

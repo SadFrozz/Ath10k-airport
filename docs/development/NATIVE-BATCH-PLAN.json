@@ -1,5 +1,5 @@
 {
-  "branch": "repository-structure",
+  "branch": "native-sequoia-development",
   "policy": "Group related lifecycle gaps; one reviewed publication and hardware candidate per batch, no per-fix reboot",
   "batch": {
     "name": "Infrastructure lifecycle and WPA3 continuity",
@@ -219,10 +219,13 @@
     }
   },
   "active_scope": {
-    "name": "Repository organization only",
-    "status": "Reorganization and version metadata complete; Release/Debug and logic CI passed; 1.0.105 installed and exact loaded UUID verified, bounded native SAE traffic passed",
-    "hardware_evidence": "39B543D3 loaded; 30/30 en1-bound router replies, mean 4.388 ms; disconnects 0, TX errors unchanged at 12",
-    "deferred": "No new functional driver work in this branch; historical functional batches remain evidence, not new reorganization changes"
+    "name": "Native network contract and security continuity",
+    "base": "302a8c8291c2af16150204d5167b3f3b0e3afca7",
+    "priority": "Native macOS integration and stability; WPA3-Personal SAE/PMF implemented, remaining radio evidence tracked separately",
+    "status": "User requested closing current batch for hardware test. Freeze 1.0.106 candidate 316E8378; Enterprise default disabled. 68 sanitized regressions plus subsequent timeout fixture passed; signature/offline inclusion passed. Await explicit install/reboot approval.",
+    "publication": "Keep intermediate edits local; publish completed batches only",
+    "next_complete_group": "EAP/MSK integration: profile/RSN admission, uncontrolled-port RX/TX, native key callback, four-way owner, cancellation and OS completion",
+    "contract": "docs/contracts/NATIVE-EAP-CONTRACT.md"
   },
   "historical_candidate": "AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD installed and loaded through OpenCore; boot 87DD2905-4A4F-4305-B72B-40B525B9A789. Single-router SAE traffic observed; prolonged stability and AP-triggered rekey not yet verified.",
   "historical_roam_postboot_evidence": {
@@ -303,5 +306,51 @@
       "No AP-triggered rekey",
       "Not error-free operation"
     ]
+  },
+  "completed_repository_scope": {
+    "name": "Repository organization only",
+    "status": "Reorganization and version metadata complete; Release/Debug and logic CI passed; 1.0.105 installed and exact loaded UUID verified, bounded native SAE traffic passed",
+    "hardware_evidence": "39B543D3 loaded; 30/30 en1-bound router replies, mean 4.388 ms; disconnects 0, TX errors unchanged at 12",
+    "deferred": "No new functional driver work in this branch; historical functional batches remain evidence, not new reorganization changes"
+  },
+  "security_continuity_audit": {
+    "status": "Implemented locally; four affected sanitized regressions and all 64 consolidated tests passed. 1.0.106 built, signature/structure/exact-UUID offline dependencies verified; rollback on SD. Not installed or published.",
+    "evidence": [
+      "Ath10kNative.cpp:1655 blocks all subsequent EAPOL while ptkUpdatePending",
+      "Ath10kNative.cpp:1890-1901 retries notification without age/deadline",
+      "Existing notification regression covers transient failure and recovery, not persistent failure",
+      "Serial packet completion has a 5000ms timeout; firmware handshake has a 15000ms timeout, but neither bounds an already authorized pending PTK notification"
+    ],
+    "group": [
+      "Bound pending security delivery across enqueue failures, PMF readiness and generation retirement",
+      "Retire old notification and close/cancel affected association on expiry without claiming successful OS completion",
+      "Preserve transient retry, policy flags, exactly-once completion and no old-owner notification",
+      "Exercise expiry boundary, persistent earlier-event failure, cancellation and successful retry through production-path fixtures"
+    ],
+    "limitations": "Static code finding; not established as the cause of observed historical freezes or RF NoAck",
+    "delivery": "Intermediate 1.0.106 retained locally; user requested continued grouped work without reboot; do not request per-fix installation"
+  },
+  "eap_implementation": {
+    "status": "Local experimental AKM1 integration, default disabled; native build passed, hardware unverified",
+    "envelope": "Ethernet/EAPOL/EAP declared lengths, versions, minimum padding, EAP/Start/Logoff/RSN-Key classification implemented; security regression passed",
+    "remaining": [
+      "Confirm actual enterprise join envelope, system client startup and pre-link IO80211 delivery",
+      "Resolve cross-association late MSK callback serialization; callback has no transaction token",
+      "Enterprise reauthentication and host roaming semantics",
+      "Enterprise hardware evidence on separate infrastructure"
+    ],
+    "source": "Apple eap8021x EAP8021X.fproj/EAPOL.h, inspected 2026-10-30; wire facts only, no Apple implementation copied",
+    "owner": "Local generation/station/peer-bound MSK owner, queue and cancellation integrated; no incoming OS transaction token, so late cross-association MSK isolation remains unproven.",
+    "callback": "Native setCIPHER_KEY now reaches gated MSK-only handler; rejects personal profiles, malformed ABI fields, PMKSA addresses and conflicts. Extracted-production callback, owner and admission tests passed ASan/UBSan.",
+    "four_way": "Production supplicant opt-in supports ordinary AKM1/CCMP; independent enterprise vectors and combined production binding/export/receipt fixture passed ordinary runs. Unsupported enterprise variants rejected.",
+    "transport": "In-progress native hooks: uncontrolled-port RX route, bounded four-frame TX queue with mbuf backpressure, serial EAPOL completion ownership, 5s queue deadline, scan cancellation and power-save inhibition. Owner queue tests passed ASan/UBSan; extracted full transport tests/build still pending.",
+    "transport_validation": "Extracted production service passed ASan/UBSan: scan/PS blocking, serial completion, failure, queue deadline and clock reversal, submission errors, personal-profile exclusion. RX/TX mbuf integration remains pending. Terminal cleanup now includes EAP-only owner and in-flight marker; cancellation/disabled/failed/drain paths tested with production cleanup. PMF receive regression passed.",
+    "packet_validation": "Extracted nativeEAPOutput/nativeEAPReceive passed ASan/UBSan with packet ownership mocks: full queue preserves caller packet and retry consumes once; copy failures free once; allocation failures drop; declared length strips padding; foreign-peer EAP rejected; EAPOL-Key stays internal; retired owner rejects TX. These fixtures do not establish IO80211 inputPacket delivery before link-up or actual eapolclient startup.",
+    "rx_preflight": "Fixed earlier releaseRXBatch 512-byte/internal-slot gate for validated current-owner system EAP; extracted production preflight plus packet test passes with 1024-byte EAP and full key queue, preserving personal-profile restrictions.",
+    "admission": "Exact-kernel and explicit-property gated ordinary AKM1/CCMP profile; production join tests cover disabled gate, valid EAP AP and mismatched personal AP.",
+    "binding": "Translated PMK consumed once into EAP-enabled supplicant with fresh nonce, secret wiping, failure cancellation and separate four-way start clock. Focused production service fixtures passed before final rename/rebuild.",
+    "integrated_fixture": "Production join, real apple80211_key ABI callback, one-shot PMK binding, enterprise golden M1-M4 exports, M4 receipt generation matching, TX failure and clear-key cancellation passed. Firmware key ACKs emulated; port publication/hardware not established.",
+    "regression": "All 68 C++ tests and runner checks passed, exit 0, with explicit ASan/UBSan after fixing the anchored nativeLinkMetrics extraction. Earlier plain-clang focused runs are not sanitizer evidence.",
+    "timeout_validation": "Extracted nativeEAPWaiting and network deadline branch passed ASan/UBSan: EAP wait not cut at 15s, owner expires at deadline, MSK starts new 15s four-way budget, personal profiles do not bypass timer. Overall native join expiry remains separately covered by notifications regression."
   }
 }

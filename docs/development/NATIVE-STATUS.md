@@ -13,7 +13,8 @@ chronological entries in the audit/history are not current status overrides.
 | macOS notification after pairwise rekey | Implemented locally after matching M4/key-generation barrier | Production completion, lifecycle and notification regressions passed | Installed/loaded 39B543D3 (1.0.105); AP-triggered hardware update remains unverified |
 | Native host-requested roaming | Integrated | Request through teardown/common join/notifications covered | Ordinary SAE regression passed; physical inter-AP handoff unavailable with one router |
 | Autonomous roam-cache/offload | Not implemented | Parser does not establish firmware scheduling | Nonempty/enable requests rejected; clear/disable supported |
-| Enterprise/external key owner, FT/SAE-PK | Not implemented | Contract work remains | Not advertised |
+| Ordinary WPA2-Enterprise | Local opt-in EAP/MSK and AKM1 integration; default disabled | Focused fixtures and native build; integrated completion checks remain | No enterprise infrastructure test |
+| Enterprise reauthentication/roaming, FT/SAE-PK | Not implemented | Separate contracts remain | Not advertised |
 | Sleep/wake | Driver lifecycle implemented, possibly working | Local lifecycle regressions | Platform sleep deferred by user; do not claim fixed |
 | macOS 11–14, 15.0–15.1, 26 | Adapter work remains | Sequoia coverage is insufficient | See docs/compatibility/COMPATIBILITY.md |
 | AWDL/AirDrop | Not implemented | Separate feature stage | No interoperability claim |
@@ -30,8 +31,9 @@ chronological entries in the audit/history are not current status overrides.
 
 ## Current installed 1.0.105 checkpoint
 
-The active branch is `repository-structure`, based on main after PR #2 merged.
-It contains layout, pinned dependencies, firmware grouping, documentation, CI and
+Reorganization branch `repository-structure` merged through PR #3 as `302a8c8`.
+Functional work resumes in `native-sequoia-development` from that main.
+The completed reorganization contains layout, pinned dependencies, firmware grouping, documentation, CI and
 user-requested version metadata changes, without new radio behavior.
 
 Before the version change, all three files of the signed reorganized kext matched
@@ -85,8 +87,8 @@ Workspace `outputs/` and SD contain:
   SA Query verification on UUID `A3E38378-BAE6-346C-8E1D-88A192367DE1`.
 
 Do not transfer an earlier image's hardware observation to a later image as if
-it were retested. Callback inventory covers 190 inline overrides (34 forwarded,
-156 rejected); those counts do not mean 190 complete feature implementations.
+it were retested. Callback inventory covers 190 inline overrides (35 forwarded,
+155 rejected); those counts do not mean 190 complete feature implementations.
 
 ## Pairwise-completion implementation evidence
 
@@ -94,3 +96,50 @@ The D2D48A34 candidate passed the consolidated 64-test suite, signature,
 structural and exact-UUID offline checks before installation. Installation and
 bounded postboot observations are now recorded above. Its AP-triggered pairwise
 update notification and group-rekey interoperability remain separately unverified.
+
+## Local macOS notification reliability fix (not installed)
+
+PTK completion delivery now has a fixed 5000 ms budget from consumption of the successful M4
+completion receipt. Persistent WCL queue admission failure cancels the affected
+association and closes its controlled port, without a fabricated completion.
+Stale generations retire without cancelling a replacement; successful delivery
+and reset clear the timer. Four affected production-path regressions passed
+with ASan/UBSan, including deadline boundaries, clock reversal, generation
+replacement, transient enqueue failure, PMF readiness and lifecycle cleanup.
+All 64 consolidated regressions passed. Version 1.0.106 UUID C92C0F32-AA19-318E-B57C-15D9C5E1684A built; signature, structure and exact-UUID offline dependency inclusion passed. Current EFI rollback verified on SD. Hardware validation remains pending; installed version is still 1.0.105.
+
+## Current local EAP integration (default disabled)
+
+This is separate from implemented WPA3-Personal SAE/PMF. The installed image
+remains 1.0.105; the following source changes are local and unpublished.
+
+| Boundary | Current evidence | Remaining work |
+| --- | --- | --- |
+| Profile admission | Explicit property and examined-kernel gate; ordinary AKM1/CCMP only; production join fixture | Confirm actual enterprise join envelope from macOS |
+| Packet routing | Extracted RX/TX and batch preflight fixtures cover current-peer EAP, 1024-byte packets, full key queue, copy/allocation failure and retry ownership | Confirm IO80211 delivery before authorized link and system client startup |
+| MSK ownership | Real header ABI; zero-BSSID 32-byte translated key; duplicate/conflict/clear handling; generation/MAC-bound owner | OS callback has no generation token: late cross-association callback serialization remains unresolved |
+| Four-way binding | One-shot PMK, fresh nonce, AKM1 vectors, initialization failure and cleanup | Enterprise reauthentication and host roaming remain unimplemented |
+| Completion | Combined production admission/callback/binding/M1–M4/export/receipt fixture; wrong receipt ID and failed M4 do not authorize | Firmware ACKs emulated; actual port publication and enterprise radio interoperability unverified |
+| Cancellation | EAP-only owner retired on cancel/disable/failure/disconnect drain; bounded MSK/queue wait | Extracted wait/deadline boundaries additionally passed ASan/UBSan; overall join deadline fixture passed in full suite |
+| Local build | UUID 316E8378-1379-35B5-BCC9-BB4B99D59C0E compiled; ad-hoc signature and exact-UUID offline auxiliary inclusion passed | Not installed; no runtime claim |
+| Regression | All 68 C++ tests and supporting runner checks passed with explicit ASan/UBSan; extraction-boundary fix included | Portable fixtures do not prove hardware interoperability |
+
+Correction: recent local focused invocations used plain `--cxx clang++`, so
+prior EAP checkpoint wording claiming ASan/UBSan for those runs was incorrect.
+The completed full invocation explicitly included
+`-fsanitize=address,undefined -fno-omit-frame-pointer`. Its exit status was 0; `FULL-REGRESSION.json` and `full-sanitized.log` preserve
+the result. Passing earlier ordinary fixtures alone was not sanitizer evidence.
+
+Offline validation uses a separate copy without OSBundleRequired. The original
+OpenCore candidate remains intact; no system kernel collection was changed.
+Evidence: workspace/SD `NATIVE-eap-integration-20261030`, with
+`offline-validation/inclusion.json`, signed candidate and local test logs.
+
+Installed eapolclient UUID FAC5670D recognizes upper-auth 4 as Enterprise.
+That consumer-side observation does not establish the producer's current
+getAUTH_TYPE response, startup orchestration or radio interoperability.
+
+User requested ending the current batch for hardware testing. Candidate 1.0.106
+316E8378 is frozen with Enterprise off; existing WPA3 option matches installed
+1.0.105. Fresh EFI/config rollback is verified on SD. Installation/reboot still
+requires explicit approval; remaining Enterprise contracts stay open.

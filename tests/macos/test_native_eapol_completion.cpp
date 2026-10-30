@@ -4,10 +4,10 @@
 #include "../../src/core/Ath10kWMI.hpp"
 struct Driver {
     Ath10k::ConnectionState state{};
-    struct {bool authorizePending=false,pairUpdateReply=false,ptkUpdatePending=false;UInt32 ptkUpdateGeneration=0;} security;
+    struct {bool authorizePending=false,pairUpdateReply=false,ptkUpdatePending=false;UInt32 ptkUpdateGeneration=0;UInt64 ptkUpdateSince=0;} security;
     unsigned discarded=0;
     void discardNativeSecurity(){++discarded;security={};}
-    void service();
+    void service(UInt64 now=100);
 };
 #include "native_eapol_completion.inc"
 #include "native_eapol_retirement.inc"
@@ -18,6 +18,26 @@ static void start(Driver &d,unsigned phase){
 }
 int main(){
     Driver d;
+    // Persistent notification admission failure cannot freeze later key work.
+    // The deadline starts at the successful M4 receipt, including tick zero.
+    for(UInt64 started: {UInt64(0),UInt64(100)}){
+        start(d,5);d.security.pairUpdateReply=true;d.security.ptkUpdateGeneration=7;
+        d.state.securityGeneration=8;d.state.portAuthorized=true;
+        d.state.txStatus=0;retire(d.state);d.service(started);
+        assert(d.security.ptkUpdatePending && d.security.ptkUpdateSince==started);
+        d.service(started+4999);assert(!d.state.cancelRequested && !d.discarded);
+        d.service(started+5000);assert(d.state.cancelRequested && !d.state.portAuthorized);
+        assert(d.discarded==1 && !d.security.ptkUpdatePending);
+        assert(!strcmp(d.state.error,"native-ptk-notification-timeout"));
+    }
+    start(d,5);d.security.authorizePending=false;d.security.ptkUpdatePending=true;
+    d.security.ptkUpdateSince=100;d.service(99);assert(d.state.cancelRequested);
+    start(d,5);d.security.authorizePending=false;d.security.ptkUpdatePending=true;
+    d.security.ptkUpdateGeneration=7;d.state.securityGeneration=8;
+    d.service(10000);assert(!d.state.cancelRequested && !d.security.ptkUpdatePending);
+    start(d,5);d.security.authorizePending=false;d.security.ptkUpdateSince=100;
+    d.service(10000);assert(!d.state.cancelRequested); // Delivered/retired ticket.
+
     for(unsigned phase: {0u,3u,5u}){
         start(d,phase);d.service();assert(d.security.authorizePending);
         // Wrong/late ID cannot finish the outstanding reply.

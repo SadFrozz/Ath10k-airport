@@ -61,7 +61,7 @@ def inventory():
                     'limitation': 'Producer dispatch reconstructed; caller state ownership and host-supplicant interoperability remain pending'}
             row['requirement_audit'] = (
                 'stock debug-gated PMK export; retain unsupported, no PMK exposure added' if name == 'getCUR_PMK' else
-                'external key installation ownership unresolved; keep explicitly unsupported' if name == 'setCIPHER_KEY' else
+                'gated MSK-only callback for an active WPA2 EAP owner; enterprise join not yet admitted, traffic keys/PMKSA/password remain rejected' if name == 'setCIPHER_KEY' else
                 'no cross-association PMKSA cache implemented; successful no-op does not claim stock address side effects')
         if name in ('getHT_CAPABILITY', 'getVHT_CAPABILITY'):
             row['stock_consumer_evidence'] = [dict(

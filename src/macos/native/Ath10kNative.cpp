@@ -7,6 +7,7 @@
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
 #include "Ath10kNativeProfile.hpp"
+#include "Ath10kNativeEAPOwner.hpp"
 #include "Ath10kNativeRoamEvents.hpp"
 #include "Ath10kNativeRoamCache.hpp"
 #include "Ath10kNativeMAC.hpp"
@@ -19,6 +20,7 @@
 #include "Ath10kNativePSKPreparation.hpp"
 #include "../../security/Ath10kP256DiagnosticPolicy.hpp"
 #include <libkern/version.h>
+#include <IOKit/network/IOOutputQueue.h>
 #include "Ath10kKernelCrypto.hpp"
 #include "Ath10kNativePMFInbox.hpp"
 #include <kern/clock.h>
@@ -124,10 +126,12 @@ public:
     // SAE crypto is available to a future admitted join; native request
     // policy/capabilities still reject SAE until credentials, kernel crypto and
     // firmware PMF are validated together.
-    AthSecurity::Supplicant<Ath10kKernelCrypto,true,true> supplicant;
+    AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true> supplicant;
     AthSecurity::IGTKCMAC128 pendingManagement{};
     AthSecurity::TransitionDisableDelivery transitionPolicy;
     AthNative::ProfileCredentials profile;
+    AthNative::EAPOwner eapOwner;
+    bool eapTXInFlight=false;
     AthNative::PreparedRoam preparedRoam;
     AthNative::RoamEvents::Delivery roamDelivery;
     UInt64 roamRetirement=0;
@@ -141,6 +145,7 @@ public:
     bool ready=false,replyPending=false,keysPending=false,authorizePending=false;
     bool pairUpdateReply=false,ptkUpdatePending=false;
     UInt32 ptkUpdateGeneration=0;
+    UInt64 ptkUpdateSince=0;
     unsigned keyOperation=0;
     UInt8 reply[160]{},keys[56]{};
     UInt32 replyLength=0;
@@ -163,7 +168,8 @@ private:
     // Software association owners only. Firmware DELETE/STOP/ECHO and DMA
     // retirement remain the radio worker's responsibility.
     void resetAssociation(){
-        transitionPolicy.clear();pairUpdateReply=ptkUpdatePending=false;ptkUpdateGeneration=0;
+        eapOwner.clear();eapTXInFlight=false;
+        transitionPolicy.clear();pairUpdateReply=ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;
         pskPreparation.cancel();saePreparation.cancel();
         if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
         clearManagement();
@@ -272,6 +278,15 @@ bool Ath10kPCIDevice::nativeSAEEnabled() const {
     auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeSAEExperimental"));
     return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
         version_major,version_minor,version_revision,"24G90",version);
+}
+bool Ath10kPCIDevice::nativeEAPEnabled() const {
+    auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeEAPExperimental"));
+    return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
+        version_major,version_minor,version_revision,"24G90",version);
+}
+bool Ath10kPCIDevice::nativeEAPWaiting() const {
+    return _connection.securityAKM==1 && _nativeSecurity &&
+        _nativeSecurity->eapOwner.generation() && !_nativeSecurity->ready;
 }
 bool Ath10kPCIDevice::nativePMFStartupQueryEnabled() const {
     auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativePMFStartupQuery"));
@@ -902,7 +917,7 @@ bool Ath10kPCIDevice::nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &k
 // Consume only authenticated supplicant exports. Replies deliberately ignore
 // stale keyChanges/managementKey from the previous successful key result.
 bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
-    using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+    using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
     auto sec=_nativeSecurity;auto &s=_connection;
     if(!sec || sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending)return false;
     const bool data=result==S::Keys || result==S::GroupKeys || result==S::PairKeys;
@@ -948,6 +963,121 @@ bool Ath10kPCIDevice::nativePMFPortReady(){
     }
     return pmf->authorize();
 }
+// These packet hooks run under the radio gate, like normal TX/RX. Ordinary
+// data still uses the controlled-port admission path in Ath10kNetwork.cpp.
+UInt32 Ath10kPCIDevice::nativeEAPOutput(mbuf_t packet){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    const size_t length=mbuf_pkthdr_len(packet);UInt8 frame[Ath10k::kEthernetFrameMax]{};
+    if(!sec || !Ath10k::connectionAssociated(s) || length>sizeof(frame) || length<18 ||
+       mbuf_copydata(packet,0,length,frame)){
+        freePacket(packet);return kIOReturnOutputDropped;
+    }
+    const auto result=sec->eapOwner.enqueuePacket(sec->eapOwner.generation(),s.local,s.bssid,
+        frame,length,Ath10k::uptimeNS()/1000000u);
+    AthSecurity::wipe(frame,sizeof(frame));
+    if(result==AthNative::EAPOwner::Enqueue::Full)return kIOReturnOutputStall;
+    freePacket(packet);
+    if(result!=AthNative::EAPOwner::Enqueue::Queued)return kIOReturnOutputDropped;
+    s.eapolPause=true;if(!_wmiScan.completed)_wmiScan.cancelRequested=true;
+    requestNativeService();return kIOReturnOutputSuccess;
+}
+bool Ath10kPCIDevice::nativeEAPSystemFrame(const UInt8 *frame,UInt32 length){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    return s.securityAKM==1 && sec && sec->eapOwner.generation() &&
+        sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false)==
+            AthNative::EAPOwner::PacketOwner::SystemEAP;
+}
+bool Ath10kPCIDevice::nativeEAPReceive(const UInt8 *frame,UInt32 length){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(s.securityAKM!=1 || !sec || !sec->eapOwner.generation())return false;
+    const auto owner=sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false);
+    if(owner==AthNative::EAPOwner::PacketOwner::InternalKey)return false;
+    if(owner!=AthNative::EAPOwner::PacketOwner::SystemEAP){Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);return true;}
+    const auto envelope=AthSecurity::classifyEAPOL(frame,length);
+    mbuf_t packet=takeRXPacket(envelope.bytes);
+    if(!packet || mbuf_copyback(packet,0,envelope.bytes,frame,MBUF_DONTWAIT)){
+        if(packet)freePacket(packet);Ath10k::rxDrop(s,Ath10k::ConnectionState::Allocation);return true;
+    }
+    _networkInterface->inputPacket(packet,envelope.bytes);
+    ++s.rxPackets;s.rxBytes+=envelope.bytes;return true;
+}
+void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation() || !Ath10k::connectionAssociated(s))return;
+    auto fail=[&](const char *error){s.error=error;s.cancelRequested=true;s.portAuthorized=false;};
+    if(sec->eapOwner.expire(now)){fail("native-eap-msk-timeout");return;}
+    if(!sec->ready){
+        // Consume the translated PMK once, only for the still-current station
+        // and peer. Secrets never outlive this gated invocation.
+        struct Material {UInt8 pmk[32]{},nonce[32]{};
+            ~Material(){AthSecurity::wipe(this,sizeof(*this));}} material;
+        if(sec->eapOwner.takePMK(sec->eapOwner.generation(),s.local,s.bssid,now,material.pmk)){
+            if(!Ath10kKernelCrypto::random(material.nonce,sizeof(material.nonce)) ||
+               !sec->supplicant.begin(material.pmk,material.nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,1) ||
+               !sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false)){
+                sec->supplicant.reset();fail("native-eap-supplicant-initialization");return;
+            }
+            sec->ready=true;
+            // EAP authentication and the subsequent four-way exchange have
+            // distinct clocks. Never inherit time spent talking to the server.
+            s.sinceMs=now;
+        }
+    }
+    if((sec->eapOwner.pending() || sec->eapTXInFlight) && !_wmiScan.completed)_wmiScan.cancelRequested=true;
+    if(sec->eapTXInFlight){
+        if(!s.eapolCompletion.complete)return;
+        const bool failed=s.eapolCompletion.status!=0;
+        s.eapolCompletion.clear();sec->eapTXInFlight=false;
+        if(failed){fail("native-eap-tx-failed");return;}
+    }
+    size_t length=0;UInt64 since=0;const auto frame=sec->eapOwner.front(length,since);
+    if(!frame){s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending || sec->supplicant.pairwisePending();return;}
+    s.eapolPause=true;
+    if(now<since || now-since>=5000){fail("native-eap-queue-timeout");return;}
+    if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.rekeyKind ||
+       sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending ||
+       s.maintenance.step || s.radio.blocked || s.radio.powerBlocked || s.radio.appliedPS ||
+       s.csa.blocked || s.txPauseMask || !_wmiScan.completed)return;
+    const char *error=submitNetworkPacket(frame,length,false,now);
+    if(error){fail(error);return;}
+    sec->eapTXInFlight=true;sec->eapOwner.pop();
+    if(getOutputQueue())getOutputQueue()->service(1);
+}
+
+// Borrowed OS buffer is never retained or modified. Native request dispatch
+// already owns the radio gate and rejects stopped/inactive/power-blocked state.
+IOReturn Ath10kPCIDevice::nativeSetCipherKey(void *data){
+    if(!data)return kIOReturnBadArgument;
+    auto sec=_nativeSecurity;auto &s=_connection;
+    // No enterprise join is advertised yet. Personal supplicant ownership must
+    // never be overwritten by a late or unrelated system key request.
+    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation())return kIOReturnUnsupported;
+    if(!Ath10k::connectionAssociated(s))return kIOReturnNotReady;
+    static_assert(sizeof(apple80211_key)==0x94,"Sequoia cipher-key callback ABI");
+    struct Request {apple80211_key value{};~Request(){AthSecurity::wipe(&value,sizeof(value));}} request;
+    bcopy(data,&request.value,sizeof(request.value));const auto &key=request.value;
+    if(key.version!=1 || key.key_flags || key.key_index || key.key_rsc_len ||
+       key.wowl_kck_len || key.wowl_kek_len)return kIOReturnBadArgument;
+    // MSK selects the current association; a nonzero address is PMKSA's
+    // separate preauthentication contract, not permission to reuse this owner.
+    const auto address=reinterpret_cast<const UInt8 *>(&key.key_ea);
+    for(unsigned i=0;i<6;++i)if(address[i])return kIOReturnBadArgument;
+    const auto result=sec->eapOwner.setMSK(sec->eapOwner.generation(),s.local,s.bssid,
+        key.key_cipher_type,key.key,key.key_len,Ath10k::uptimeNS()/1000000u);
+    using R=AthNative::EAPOwner::KeyResult;
+    switch(result){
+    case R::Accepted:requestNativeService();return kIOReturnSuccess;
+    case R::Duplicate:return kIOReturnSuccess;
+    case R::Cleared:
+        s.cancelRequested=true;s.portAuthorized=false;discardNativeSecurity();
+        requestNativeService();return kIOReturnSuccess;
+    case R::Conflict:return kIOReturnBusy;
+    case R::Stale:return kIOReturnNotReady;
+    case R::Invalid:return kIOReturnBadArgument;
+    }
+    return kIOReturnBadArgument;
+}
+
 // Exact Sequoia getRSN_XE contract: a 264-byte record, u16 length at 4,
 // outgoing association IE at 6. Export the same encoder as association/M2,
 // never the AP's advertised RSNXE or an independently writable shadow cache.
@@ -1322,9 +1452,9 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
         setProperty("Ath10kNativeSAEKernelBackendReady",backendReady);
         setProperty("Ath10kNativeJoinKeyFlags",UInt64(join.keyFlags),16);
         setProperty("Ath10kNativeJoinKeyIndex",UInt64(join.keyIndex),16);
-        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady);
-        const bool sae=auth==NativeJoinAuth::SAE;
-        const UInt8 selectedAKM=sae?8:(auth==NativeJoinAuth::PSKSHA256?6:2);
+        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady,nativeEAPEnabled());
+        const bool sae=auth==NativeJoinAuth::SAE,eap=auth==NativeJoinAuth::EAP;
+        const UInt8 selectedAKM=eap?1:sae?8:(auth==NativeJoinAuth::PSKSHA256?6:2);
         const bool personal=auth==NativeJoinAuth::PSK || auth==NativeJoinAuth::PSKSHA256;
         if(auth==NativeJoinAuth::Unsupported){
             setProperty("Ath10kNativeJoinReason",join.upperAuth&((1u<<12)|(1u<<13))?
@@ -1340,7 +1470,7 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
         // before candidate/security setup can fail. Busy requests leave it intact.
         _nativeSecurity->preparedRoam.clear();
         _nativeSecurity->profile.clear();
-        s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal || sae;s.pmfRequired=sae;s.ssidLength=join.ssidLength;
+        s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal || sae || eap;s.pmfRequired=sae;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
         s.firmwareMFPSupport=payload().kSupportsMFP;s.pmfQoSTransported=_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;s.rfChains=1;
@@ -1359,6 +1489,12 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
                 AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
             }
         }
+        if(eap){const UInt64 now=Ath10k::uptimeNS()/1000000u;
+            if(!_nativeSecurity->eapOwner.begin(s.local,s.bssid,now,now+30000)){
+                _nativeSecurity->reset();AthSecurity::wipe(&join,sizeof(join));
+                Ath10k::resetDisconnected(s);return kIOReturnNotReady;
+            }
+        }
         if(personal && join.keyCipher==10){
             auto sec=_nativeSecurity;
             if(!sec->saeWorker || sec->ready || sec->pskPreparation.active() || sec->saePreparation.active() ||
@@ -1372,7 +1508,7 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
                 _nativeSecurity->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){_nativeSecurity->supplicant.reset();setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
-        if(!_nativeSecurity->profile.replace(join,s.local,sae)){
+        if(!_nativeSecurity->profile.replace(join,s.local,sae,eap)){
             _nativeSecurity->reset();setProperty("Ath10kNativeJoinReason","profile-retention-failed");
             AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
         }
@@ -1390,6 +1526,7 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
        op!=N::NativeReady)return kIOReturnBadArgument;
     if((_nativeMACActive || _nativeMACWaiting) && op!=N::MACSet && op!=N::PowerGet && op!=N::getHW_ADDR)return kIOReturnBusy;
     switch(op){
+    case N::setCIPHER_KEY:return nativeSetCipherKey(data);
     case N::getRSN_XE:return nativeAssociationRSNXE(data)?kIOReturnSuccess:kIOReturnNotReady;
     case N::getHT_CAPABILITY:case N::getVHT_CAPABILITY:return nativePHYCapabilities(op,data);
     case N::MACSet:{
@@ -1601,10 +1738,12 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
     const bool associated=Ath10k::connectionAssociated(s);
     // A completed radio-side teardown must not retain PMK/PTK/replies merely
     // because WCL cannot yet allocate Deauth or LinkDown notifications.
-    if(sec && (sec->profile.generation() || sec->preparedRoam.generation() || sec->roamRetirement || sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
+    if(sec && (sec->eapOwner.generation() || sec->eapTXInFlight || sec->profile.generation() || sec->preparedRoam.generation() || sec->roamRetirement || sec->ready || sec->replyPending || sec->keysPending || sec->authorizePending || sec->pairDeadline ||
                sec->pskPreparation.active() || sec->saePreparation.active() || sec->saeSession || sec->saeRadio || sec->saePendingTX || sec->pmfSession || sec->managementPending) &&
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None) && !sec->preserveRoamRetirement(s,now))discardNativeSecurity();
+    serviceNativeEAP(now);
+    if(sec && s.cancelRequested){discardNativeSecurity();serviceNativeNotifications(now);return;}
     // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
         // Retire an expired candidate before transmitting its M2 or consuming
@@ -1615,6 +1754,15 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         // Every reply owns its completion, including rekey M4 and group ACK.
         // The serial slot may already contain a later management transmission.
+        // Bound delivery even when an earlier WCL event repeatedly fails or
+        // the notification path cannot yet admit the PTK event. Never report
+        // success for a notification the OS did not accept.
+        if(sec->ptkUpdatePending && s.securityGeneration!=sec->ptkUpdateGeneration){
+            sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;
+        }
+        if(sec->ptkUpdatePending && (now<sec->ptkUpdateSince || now-sec->ptkUpdateSince>=5000)){
+            s.error="native-ptk-notification-timeout";s.cancelRequested=true;s.portAuthorized=false;
+        }
         if(sec->authorizePending && s.eapolCompletion.complete){
             if(s.eapolCompletion.status){s.error="native-eapol-tx-failed";s.cancelRequested=true;}
             else if(sec->pairUpdateReply){
@@ -1623,7 +1771,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
                 if(s.securityPhase!=5 || !s.portAuthorized || s.rekeyKind ||
                    s.securityGeneration!=UInt32(sec->ptkUpdateGeneration+1)){
                     s.error="native-ptk-completion-owner";s.cancelRequested=true;
-                }else {sec->ptkUpdateGeneration=s.securityGeneration;sec->ptkUpdatePending=true;}
+                }else {sec->ptkUpdateGeneration=s.securityGeneration;sec->ptkUpdatePending=true;sec->ptkUpdateSince=now;}
             }else if(s.securityPhase==3)s.authorizeRequested=true;
             sec->pairUpdateReply=false;
             sec->authorizePending=false;s.eapolCompletion.clear();
@@ -1631,8 +1779,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         if(s.cancelRequested){discardNativeSecurity();return;}
         if(sec->keysPending && !s.wmiOwned && !s.submitted && !s.txOwned && !s.dataPending &&
            !s.stats.step && !s.maintenance.step && !s.radio.step && _wmiScan.completed && !_wmi.credits.outstanding){
-            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>::Keys;
-            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>::PairKeys;
+            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>::Keys;
+            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>::PairKeys;
             if((initial && !s.securityPhase) || (!initial && s.securityPhase==5 && s.portAuthorized)){
                 const unsigned keyBytes=s.groupCipher==AthSecurity::cipherTKIP?32:16;
                 bool sameGroup=s.groupInstalled[sec->keys[49]] && AthSecurity::equal(sec->keys+16,s.installedGroups[sec->keys[49]],keyBytes);
@@ -1644,7 +1792,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
                 s.portAuthorized=false;s.sinceMs=now;sec->keysPending=false;AthSecurity::wipe(sec->keys,sizeof(sec->keys));
             }
         }
-        if(sec->replyPending && !sec->keysPending && !s.txOwned && !s.dataPending && !s.wmiOwned &&
+        if(sec->replyPending && !sec->eapTXInFlight && !sec->keysPending && !s.txOwned && !s.dataPending && !s.wmiOwned &&
            !s.maintenance.step && !s.radio.blocked && !s.radio.powerBlocked && !s.radio.appliedPS && !s.csa.blocked && !s.txPauseMask &&
            (!s.securityPhase || s.securityPhase==3 || s.securityPhase==5)){
             const char *error=submitNetworkPacket(sec->reply,sec->replyLength,false,now);
@@ -1652,10 +1800,10 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
             else {sec->replyPending=false;sec->authorizePending=true;
                 AthSecurity::wipe(sec->reply,sizeof(sec->reply));sec->replyLength=0;}
         }
-        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && s.eapolCount && !s.rekeyKind){
+        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && !sec->eapTXInFlight && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
-            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
             if(result==Supplicant::Fatal){s.error="native-wpa2-handshake-failed";s.cancelRequested=true;}
             else if(result!=Supplicant::Ignore && !nativeAcceptSecurityResult(static_cast<UInt32>(result))){
                 s.error="native-security-result-rejected";s.cancelRequested=true;s.portAuthorized=false;
@@ -1663,7 +1811,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         if(sec->supplicant.pairwisePending()){
             s.eapolPause=true;if(!sec->pairDeadline)sec->pairDeadline=now+5000;
-        }else {sec->pairDeadline=0;s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending;}
+        }else {sec->pairDeadline=0;s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending || sec->eapTXInFlight || sec->eapOwner.pending();}
     }
     publishNativeSecurityState(now);
     serviceNativeNotifications(now);
@@ -1890,7 +2038,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
     if(sec && sec->ptkUpdatePending){
         if(!associated || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None ||
            !_wmiLive.active || s.securityGeneration!=sec->ptkUpdateGeneration){
-            sec->ptkUpdatePending=false;
+            sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;
         }else if(up && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
                  !sec->replyPending && !sec->keysPending && !sec->authorizePending &&
                  !_nativeJoinPending && !_nativeJoinFailed && _nativeLinkUpSent && _nativeBeaconSent &&
@@ -1898,7 +2046,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             const UInt64 generation=sec->pmfSession?sec->pmfSession->activeGeneration():0;
             auto event=AirportWCL::completedPairwiseUpdate(
                 sec->transitionPolicy.currentFlags(s.local,s.bssid,generation));
-            if(post(AirportWCL::SupplicantEvent,&event,sizeof(event)))sec->ptkUpdatePending=false;
+            if(post(AirportWCL::SupplicantEvent,&event,sizeof(event))){sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;}
         }
     }
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;

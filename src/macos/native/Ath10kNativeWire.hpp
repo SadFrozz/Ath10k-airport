@@ -9,7 +9,7 @@ static_assert(offsetof(AirportWCL::BeaconMetadata,flags)==0x3c, "Sequoia beacon 
 #include <string.h>
 // Keep wire decoding separate from implemented authentication. In particular,
 // a 64-byte password slot is not a 32-byte PMK and must never be truncated.
-enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256, SAE };
+enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256, SAE, EAP };
 // WFA Transition Disable bitmap. Stock WCL forwards bits 0..4 unchanged;
 // bit 4 has not been identified for this ABI and cannot be silently ignored.
 namespace NativeTransitionDisable {
@@ -28,8 +28,13 @@ inline bool nativePSKPasswordEnvelope(const AirportWCL::JoinRequest &join){
        !AthSecurity::validPSKPassword(join.key,join.keyLength) || (join.bssid[0]&1))return false;
     UInt8 any=0;for(auto value:join.bssid)any|=value;return any!=0;
 }
-inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false){
+inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false,bool allowEAP=false){
     if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join))return NativeJoinAuth::Unsupported;
+    // Ordinary WPA2-Enterprise only: credentials belong to the system EAP
+    // client. Never interpret a supplied password/PMK as an enterprise profile.
+    if(allowEAP && join.upperAuth==(1u<<2) && !join.keyLength && !join.keyFlags &&
+       !join.keyIndex && !join.keyCipher && !(join.transitionDisable&NativeTransitionDisable::Enterprise))
+        return NativeJoinAuth::EAP;
     if(allowSAE && nativeSAEPasswordEnvelope(join) && !join.keyFlags && !join.keyIndex)return NativeJoinAuth::SAE;
     if(!join.upperAuth && !join.keyLength){
         if(join.transitionDisable&NativeTransitionDisable::EnhancedOpen)return NativeJoinAuth::Unsupported;

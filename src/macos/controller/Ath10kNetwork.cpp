@@ -456,6 +456,14 @@ void Ath10kPCIDevice::publishConnection()
 }
 UInt32 Ath10kPCIDevice::outputPacket(mbuf_t packet,void *)
 {
+#ifdef ATH10K_NATIVE
+    if(!powerIOBlocked() && _networkEnabled && _wmiLive.active && _connection.securityAKM==1 &&
+       Ath10k::connectionAssociated(_connection) && mbuf_pkthdr_len(packet)>=14){
+        UInt8 header[14]{};
+        if(!mbuf_copydata(packet,0,sizeof(header),header) && header[12]==0x88 && header[13]==0x8e)
+            return nativeEAPOutput(packet);
+    }
+#endif
     if(powerIOBlocked() || !_networkLinkUp || !_networkEnabled || !_wmiLive.active || _connection.stage!=Ath10k::LinkStage::Connected){
         freePacket(packet);return kIOReturnOutputDropped;
     }
@@ -519,7 +527,13 @@ void Ath10kPCIDevice::releaseRXBatch(Ath10k::RXBatch &b)
        s.disconnect!=Ath10k::DisconnectStage::None)return;
     UInt32 eapols=0;
     if(s.secure)for(UInt32 i=0;i<b.count;++i){const UInt8 *frame=b.data+b.offsets[i];
-        if(frame[12]==0x88 && frame[13]==0x8e){++eapols;
+        if(frame[12]==0x88 && frame[13]==0x8e){
+#ifdef ATH10K_NATIVE
+            // OS EAP has its own packet owner and may carry certificate fragments
+            // larger than the internal four-way queue's 512-byte slots.
+            if(nativeEAPSystemFrame(frame,b.lengths[i]))continue;
+#endif
+            ++eapols;
             if(b.lengths[i]>512 || !Ath10k::sameMAC(frame+6,s.bssid)){
                 Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);return;}}
         else if(!(Ath10k::connLE32(b.descriptor+12)&(1u<<13))){Ath10k::rxDrop(s,Ath10k::ConnectionState::Plaintext);return;}
@@ -534,6 +548,9 @@ void Ath10kPCIDevice::releaseRXBatch(Ath10k::RXBatch &b)
     if(b.count>1)s.rxAmsduSubframes+=b.count;
     for(UInt32 i=0;i<b.count;++i){const UInt8 *frame=b.data+b.offsets[i];const UInt32 length=b.lengths[i];
         if(s.secure && frame[12]==0x88 && frame[13]==0x8e){
+#ifdef ATH10K_NATIVE
+            if(nativeEAPReceive(frame,length))continue;
+#endif
             if(length>512 || s.eapolCount==4 || !Ath10k::sameMAC(frame+6,s.bssid)){Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);continue;}
             bcopy(frame,s.eapolFrames[s.eapolWrite],length);s.eapolLength[s.eapolWrite]=static_cast<UInt16>(length);
             s.eapolWrite=(s.eapolWrite+1)%4;++s.eapolCount;
@@ -781,6 +798,11 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             }
             if(s.spectrum.inFlight)return nullptr;
             return serviceStatsMaintenance(nowMs);}
+#ifdef ATH10K_NATIVE
+        // Native EAP owner enforces its own bounded server/MSK deadline.
+        // Start the ordinary four-way budget only when that key is consumed.
+        if(nativeEAPWaiting())return nullptr;
+#endif
         if(nowMs-s.sinceMs>=15000){s.error="wpa2-handshake-timeout";s.cancelRequested=true;return nullptr;}
         if(!s.securityPhase || s.securityPhase>=5 || (s.securityPhase==3 && !s.authorizeRequested))return nullptr;
         if(!s.submitted){

@@ -102,7 +102,7 @@ public:
     IOReturn getFW_CLOCK_INFO(apple80211_fw_clock_info* data) override { return kIOReturnUnsupported; }
     IOReturn getTIMESYNC_STATS(apple80211_timesync_stats* data) override { return kIOReturnUnsupported; }
     IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config* data) override { return kIOReturnUnsupported; }
-    IOReturn setCIPHER_KEY(apple80211_key* data) override { return kIOReturnUnsupported; }
+    IOReturn setCIPHER_KEY(apple80211_key* data) override { return perform(AthNativeOp::setCIPHER_KEY,data); }
     IOReturn setCHANNEL(apple80211_channel_data* data) override { return kIOReturnUnsupported; }
     IOReturn setPOWERSAVE(apple80211_powersave_data* data) override { return perform(AthNativeOp::setPOWERSAVE,data); }
     IOReturn setTXPOWER(apple80211_txpower_data* data) override { return kIOReturnUnsupported; }

@@ -3,6 +3,7 @@
 #include <vector>
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
+#include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamEvents.hpp"
 #include "../../src/macos/native/Ath10kNativePMFInbox.hpp"
 #include "../../src/macos/native/Ath10kNativeWire.hpp"
@@ -98,6 +99,18 @@ int main(){
         d.discardIfStopped(now);assert(sec.profile.generation()==profile);
         d._connection.cancelRequested=true;d.discardIfStopped(now);assert(!sec.profile.generation());
       }
+    }
+
+    // EAP can be alive before a profile or four-way key owner is ready.
+    for(unsigned terminal=0;terminal<4;++terminal){
+      Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
+      assert(security.eapOwner.begin(s_sta,s_ap,100,1000));
+      security.eapTXInFlight=true;
+      if(terminal==0)d._connection.cancelRequested=true;
+      if(terminal==1)d._connection.stage=Ath10k::LinkStage::Disabled;
+      if(terminal==2)d._connection.stage=Ath10k::LinkStage::Failed;
+      if(terminal==3)d._connection.disconnect=Ath10k::DisconnectStage::Drain;
+      d.discardIfStopped();assert(!security.eapOwner.generation() && !security.eapTXInFlight);
     }
 
     // Open profiles have no crypto owner; terminal cleanup must still retire
@@ -209,7 +222,8 @@ int main(){
     security.supplicant.outputLength=123;
     security.ready=security.replyPending=security.keysPending=security.authorizePending=true;
     security.replyLength=120;security.keyOperation=3;security.pairDeadline=5000;
-    security.cachedGeneration=12;security.pairUpdateReply=security.ptkUpdatePending=true;security.ptkUpdateGeneration=7;
+    assert(security.eapOwner.begin(s_sta,s_ap,100,1000));
+    security.cachedGeneration=12;security.pairUpdateReply=security.ptkUpdatePending=true;security.ptkUpdateGeneration=7;security.ptkUpdateSince=100;
     memset(d._nativeJoin.key,0x7d,sizeof(d._nativeJoin.key));
     memcpy(d._nativeJoin.bssid,s_ap,6);
     security.cancelPairwiseAttempt();
@@ -224,7 +238,8 @@ int main(){
     assert(security.retireForRoam(profileGeneration));
     assert(security.profile.generation()==profileGeneration);
     assert(!security.ready && !security.keysPending && !security.authorizePending);
-    assert(!security.pairUpdateReply && !security.ptkUpdatePending && !security.ptkUpdateGeneration);
+    assert(!security.eapOwner.generation());
+    assert(!security.pairUpdateReply && !security.ptkUpdatePending && !security.ptkUpdateGeneration && !security.ptkUpdateSince);
     for(auto v:security.keys)assert(!v);
     for(auto v:security.reply)assert(!v);
     AirportWCL::JoinRequest transfer{};

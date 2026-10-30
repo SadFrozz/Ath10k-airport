@@ -40,12 +40,12 @@ public:
         AthNative::PreparedRoam preparedRoam;
         AthNative::RoamEvents::Delivery roamDelivery;
         bool replyPending=false,keysPending=false,authorizePending=false,ptkUpdatePending=false;
-        UInt32 ptkUpdateGeneration=0;
+        UInt32 ptkUpdateGeneration=0;UInt64 ptkUpdateSince=0;
         UInt64 roamRetirement=0;
         bool preserve=false;
         template<class State> bool preserveRoamRetirement(const State &,UInt64){return preserve;}
         unsigned resets=0;
-        void reset(){++resets;ptkUpdatePending=false;ptkUpdateGeneration=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
+        void reset(){++resets;ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
     } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
@@ -276,7 +276,7 @@ static void pairwiseNotifications(){
         auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);
         d->serviceNativeNotifications(100);d->events.clear();
         auto &s=d->_connection;s.securityGeneration=8;
-        d->security.ptkUpdateGeneration=8;d->security.ptkUpdatePending=true;
+        d->security.ptkUpdateGeneration=8;d->security.ptkUpdatePending=true;d->security.ptkUpdateSince=100;
         if(mode==1)s.cancelRequested=true;
         if(mode==2)++s.securityGeneration;
         if(mode==3){d->security.pmf.ready=false;d->serviceNativeNotifications(110);
@@ -290,7 +290,7 @@ static void pairwiseNotifications(){
             memcpy(&event,e.data.data(),40);assert(event.reason==0xe0822c15u);
             assert(event.status==0xe0820406u && event.transitionDisabledFlags==17);++updates;
         }
-        assert(updates==((mode==1 || mode==2)?0u:1u));assert(!d->security.ptkUpdatePending);
+        assert(updates==((mode==1 || mode==2)?0u:1u));assert(!d->security.ptkUpdatePending && !d->security.ptkUpdateSince);
         d->events.clear();d->serviceNativeNotifications(130);
         for(const auto &e:d->events)assert(e.id!=AirportWCL::SupplicantEvent);
     }

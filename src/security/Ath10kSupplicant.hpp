@@ -8,10 +8,11 @@ namespace AthSecurity {
 // RSN/PSK descriptor 2; opt-in PSK-SHA256 descriptor 3; separately opt-in SAE
 // descriptor 0 from a verified SAE-derived PMK. Native SAE remains disabled.
 // SHA256 mode requires CCMP group/pairwise and an AP not requiring PMF.
-// No EAP/TKIP pairwise. SAE stages IGTK delivery; firmware PMF protection/key
+// Ordinary EAP AKM1 is separately opt-in and requires an OS-supplied PMK.
+// No TKIP pairwise. SAE stages IGTK delivery; firmware PMF protection/key
 // acknowledgement and replay counters remain caller responsibilities.
 // Retransmitted M3 returns cached M4; never asks the driver to reinstall a key.
-template<class Crypto,bool AllowSHA256=false,bool AllowSAE=false> class Supplicant {
+template<class Crypto,bool AllowSHA256=false,bool AllowSAE=false,bool AllowEAP=false> class Supplicant {
  uint8_t pmk[32]{},ptk[48]{},snonce[32]{},anonce[32]{},local[6]{},ap[6]{};
  uint8_t apRSN[257]{},savedM3[512]{},m2[160]{},m4[128]{};
  size_t rsnLength=0,savedLength=0,m2Length=0,m4Length=0;
@@ -127,6 +128,7 @@ public:
      const uint8_t *pmkid=nullptr,size_t idBytes=0){
   reset();if(!master || !nonce || !station || !bssid)return false;
   if(akm==8){if(!AllowSAE || !validSAEPersonalRSN(rsn,n) || (idBytes && (idBytes!=16 || !pmkid)))return false;}
+  else if(akm==1){if(!AllowEAP || idBytes || !supportsEAPAKM(rsn,n,akm))return false;}
   else if(idBytes || (akm==6 && !AllowSHA256) || !supportsPSKAKM(rsn,n,akm))return false;
   selectedAKM=akm;sae=akm==8;sha256=akm==6 || sae;
   if(sae && idBytes){copy(saePMKID,pmkid,16);havePMKID=true;}

@@ -25,9 +25,9 @@ public:
         // Never recycle a retired token after forget/radio-off/profile change.
     }
     UInt64 generation() const {return active_;}
-    bool replace(const AirportWCL::JoinRequest &request,const UInt8 *local,bool allowSAE){
+    bool replace(const AirportWCL::JoinRequest &request,const UInt8 *local,bool allowSAE,bool allowEAP=false){
         clear(); // Even a rejected replacement must not expose the old secret.
-        const auto auth=nativeJoinAuth(request,allowSAE);
+        const auto auth=nativeJoinAuth(request,allowSAE,allowEAP);
         if(sequence_==~UInt64(0) || !validMAC(local) || !validMAC(request.bssid) ||
            !request.ssidLength || request.ssidLength>sizeof(request.ssid) ||
            request.keyLength>sizeof(request.key) || request.rsnLength>sizeof(request.rsn) ||
@@ -54,7 +54,7 @@ public:
         const UInt8 combined=request_.transitionDisable|flags;
         if(combined==request_.transitionDisable)return true;
         request_.transitionDisable=combined;
-        if(sequence_==~UInt64(0) || nativeJoinAuth(request_,auth_==NativeJoinAuth::SAE)!=auth_){
+        if(sequence_==~UInt64(0) || nativeJoinAuth(request_,auth_==NativeJoinAuth::SAE,auth_==NativeJoinAuth::EAP)!=auth_){
             clear();return false;
         }
         active_=++sequence_;return true;

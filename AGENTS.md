@@ -4,8 +4,8 @@
 
 Read docs/development/NATIVE-STATUS.md, docs/development/NATIVE-BATCH-PLAN.json, the relevant requirement contract,
 CHANGELOG.md and current git status. Inspect evidence before trusting historical
-conversation or journal text. Work in repository-structure (branched from main after PR #2 merged); preserve local
-changes. User instructions override these conventions.
+conversation or journal text. Work in native-sequoia-development, resumed from main after PR #3 merged; preserve local
+changes. The previous local functional branch is archived without rewriting its history. User instructions override these conventions.
 
 ## Documents and evidence
 
@@ -57,10 +57,11 @@ Never expose passwords, keys or secret-bearing dumps in documentation or logs.
 
 ## Current branch scope
 
-repository-structure is exclusively for repository organization, pinned
-dependencies, documentation and necessary build/test path updates. Do not add
-driver features or behavior fixes here. Merge readiness requires the completed
-layout, consolidated tests, a compiled/validated kext and an on-machine check.
-Do not merge before that hardware checkpoint. Reboot approval remains required.
-Keep submodules pinned and clean; maintain local ABI overrides outside upstream
-working trees and verify generated headers against their manifest.
+Repository reorganization is complete and merged as 302a8c8 (PR #3).
+Functional development resumes in native-sequoia-development from that main.
+Keep WPA3/PMF continuity and stability first; process whole related groups with
+ownership, cancellation, failures and regression coverage. EAP/MSK integration,
+other OS adapters and AWDL remain distinct stages. Do not conflate an untested
+hardware scenario with missing implementation. Keep intermediate edits local;
+publish only completed batches. Do not restart closed scan/boot benchmarks.
+Preserve pinned dependencies and ABI overrides outside upstream working trees.

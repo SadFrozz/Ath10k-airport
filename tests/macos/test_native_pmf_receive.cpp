@@ -9,6 +9,7 @@
 #include "../../src/security/Ath10kSupplicant.hpp"
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
+#include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamEvents.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamCache.hpp"
 #include "../../src/macos/native/Ath10kNativePMFInbox.hpp"
@@ -83,11 +84,17 @@ public:
   if(!strcmp(k,"Ath10kNativePMFStartupQueryStarted")){assert(v);++pmfProbeAnnouncements;}}
  void setProperty(const char *k,UInt64 v,unsigned){++propertyWrites;numericProperties[k]=v;}
  bool linkUp=true;void networkLink(bool up){linkUp=up;}
+ bool experimentalEAP=false;bool nativeEAPEnabled() const {return experimentalEAP;}
  bool nativeSAEEnabled() const {return experimentalSAE;}
  int nativeJoinRequest(void *);int nativeRoamRequest(void *);
     int nativeRoamCacheRequest(void *);
     bool nativeRetainSystemLink();
  void requestNativeService(){}
+ void serviceNativeEAP(UInt64);
+ int nativeSetCipherKey(void *);
+ void serviceEAPCompletion(UInt64);
+ struct OutputQueue {void service(int){}} outputQueue;
+ OutputQueue *getOutputQueue(){return &outputQueue;}
  int nativeBeginJoin(AirportWCL::JoinRequest &);
     bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
     int nativeContinueRoam(UInt64);

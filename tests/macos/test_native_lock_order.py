@@ -226,6 +226,9 @@ class NativeLockOrder(unittest.TestCase):
     def test_security_progress_does_not_wait_for_notification_allocation(self):
         native=(Path(__file__).resolve().parents[2]/"src/macos/native/Ath10kNative.cpp").read_text()
         worker=native.split("void Ath10kPCIDevice::serviceNative(UInt64 now) {",1)[1].split("void Ath10kPCIDevice::serviceNativeNotifications",1)[0]
+        terminal="if(sec && s.cancelRequested){discardNativeSecurity();serviceNativeNotifications(now);return;}"
+        self.assertIn(terminal,worker)
+        worker=worker.replace(terminal, "")
         self.assertLess(worker.index("sec->supplicant.receive"),worker.index("serviceNativeNotifications(now)"))
         self.assertNotIn("postMessage(",worker)
 

@@ -641,6 +641,7 @@ inline UInt32 buildRadioMaintenance(UInt8 *f,UInt32 capacity,UInt8 endpoint,cons
 }
 // Prepared AP/PHY configuration only: no keys, queues or firmware ownership.
 inline bool connectionRSNAccepted(const ConnectionState &s,const UInt8 *ie,size_t bytes){
+    if(s.securityAKM==1)return !s.pmfRequired && AthSecurity::supportsEAPAKM(ie,bytes,1);
     if(s.securityAKM==8)return s.pmfRequired && AthSecurity::validSAEPersonalRSN(ie,bytes);
     return AthSecurity::supportsPSKAKM(ie,bytes,s.securityAKM);
 }

@@ -70,11 +70,13 @@ def main():
         (include/'native_release_method.inc').write_text(native[native.index('void Ath10kPCIDevice::releaseNativeInterface()'):native.index('IOReturn Ath10kPCIDevice::nativeRequest(')])
         (include/'native_registration_methods.inc').write_text(native[native.index('bool Ath10kNativeInterface::prepareRegistrationInfo('):native.index('IOWorkLoop *Ath10kNativeInterface::getWorkLoop() const')])
         (include/'native_security_class.inc').write_text(native[native.index('class Ath10kPCIDevice::NativeSecurity {'):native.index('IO80211WorkQueue *Ath10kPCIDevice::getWorkQueue()')])
-        terminal=native[native.index('    if(sec && (',native.index('    // A completed radio-side teardown')):native.index('    // Crypto/radio progress must not wait')]
+        terminal=native[native.index('    if(sec && (',native.index('    // A completed radio-side teardown')):native.index('    serviceNativeEAP(now);')]
         (include/'native_security_terminal_cleanup.inc').write_text('void Ath10kPCIDevice::discardIfStopped(UInt64 now){auto sec=_nativeSecurity;auto &s=_connection;\n'+terminal+'}\n')
+        (include/'native_eap_callback.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeSetCipherKey('):native.index('// Exact Sequoia getRSN_XE contract:')])
         network_source=(ROOT/'src/macos/controller/Ath10kNetwork.cpp').read_text()
-        completion=native[native.index('        if(sec->authorizePending && s.eapolCompletion.complete)'):native.index('        if(sec->keysPending && !s.wmiOwned')]
-        (include/'native_eapol_completion.inc').write_text('void Driver::service(){auto sec=&security;auto &s=state;\n'+completion+'}\n')
+        completion=native[native.index('        // Bound delivery even when an earlier WCL event'):native.index('        if(sec->keysPending && !s.wmiOwned')]
+        (include/'native_eap_integration_completion.inc').write_text('void Ath10kPCIDevice::serviceEAPCompletion(UInt64 now){auto sec=_nativeSecurity;auto &s=_connection;\n'+completion+'}\n')
+        (include/'native_eapol_completion.inc').write_text('void Driver::service(UInt64 now){auto sec=&security;auto &s=state;\n'+completion+'}\n')
         retirement=network_source[network_source.index('            s.txOwned=false;'):network_source.index('            if(s.txStatus){',network_source.index('            s.txOwned=false;'))]
         (include/'native_eapol_retirement.inc').write_text('void retire(Ath10k::ConnectionState &s){\n'+retirement+'}\n')
 
@@ -89,7 +91,7 @@ def main():
         firmware_guard=before_key_build[before_key_build.rindex('            if(s.securityPhase==3 && !nativePMFPortReady())'):].splitlines()[0]
         (include/'native_pmf_firmware_guard.inc').write_text('const char *Ath10kPCIDevice::beforeFirmwareAuthorization(unsigned phase){struct {unsigned securityPhase;} s{phase};\n'+firmware_guard+'\nreturn nullptr;}\n')
         (include/'native_pmf_receive.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativePMFManagement('):native.index('// Invoked by the radio-gated data-key state machine')])
-        (include/'native_pmf_key_hooks.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativeStageManagementKey('):native.index('// Exact Sequoia getRSN_XE contract:')])
+        (include/'native_pmf_key_hooks.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativeStageManagementKey('):native.index('// These packet hooks run under the radio gate')])
         (include/'native_rsnxe_query.inc').write_text(native[native.index('bool Ath10kPCIDevice::nativeAssociationRSNXE('):native.index('// Radio-gated terminal cleanup.')])
         (include/'native_security_discard.inc').write_text(native[native.index('void Ath10kPCIDevice::discardNativeSecurity()'):native.index('IOReturn Ath10kPCIDevice::nativeStopAction(')])
         leave=native[native.index('    case N::setWCL_JOIN_ABORT:case N::setWCL_LEAVE_NETWORK:'):native.index('    case N::setCLEAR_PMKSA_CACHE:')]
@@ -126,7 +128,7 @@ def main():
         (include/'native_capability_abi.inc').write_text('#define APPLE80211_VERSION 1\n#ifndef __offsetof\n#define __offsetof __builtin_offsetof\n#endif\n'+caps+enum)
         (include/'native_card_capabilities.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::getCARD_CAPABILITIES('):native.index('IOReturn Ath10kPCIDevice::getPOWER(')])
         (include/'native_phy_capabilities.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativePHYCapabilities('):native.index('bool Ath10kPCIDevice::nativeRetainSystemLink(')])
-        (include/'native_link_metrics.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeLinkMetrics('):native.index('static_assert(sizeof(apple80211_key)')])
+        (include/'native_link_metrics.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeLinkMetrics('):native.index('static_assert(sizeof(apple80211_key)',native.index('IOReturn Ath10kPCIDevice::nativeLinkMetrics('))])
         (include/'native_link_state.inc').write_text(native[native.index('IOReturn Ath10kPCIDevice::nativeCurrentAPInfo('):native.index('static UInt32 channelFlags(')])
         (include/'native_notifications.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeNotifications('):native.index('// Runs under the network workloop gate;',native.index('void Ath10kPCIDevice::serviceNativeNotifications('))])
         worker_header=(ROOT/'src/macos/native/Ath10kSAEWorker.hpp').read_text()
@@ -158,7 +160,15 @@ def main():
         pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'pmf_session.inc').write_text(pmf+'\n')
-        names=['native_eapol_completion', 'wmi_scan', 'network_medium', 'transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'power_notifications', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_profile', 'native_status', 'native_capture']
+        waiting=native[native.index('bool Ath10kPCIDevice::nativeEAPWaiting() const {'):native.index('bool Ath10kPCIDevice::nativePMFStartupQueryEnabled() const {')]
+        timeout_start=network_source.index('        // Native EAP owner enforces its own bounded server/MSK deadline.')
+        timeout=network_source[timeout_start:network_source.index('        if(!s.securityPhase',timeout_start)].replace('#endif','')
+        (include/'native_eap_timeout.inc').write_text(waiting+'const char *Ath10kPCIDevice::serviceEAPDeadline(UInt64 nowMs){auto &s=_connection;\n'+timeout+'return nullptr;}\n')
+        (include/'native_eap_service.inc').write_text(native[native.index('void Ath10kPCIDevice::serviceNativeEAP('):native.index('// Borrowed OS buffer')])
+        (include/'native_eap_packets.inc').write_text(native[native.index('UInt32 Ath10kPCIDevice::nativeEAPOutput('):native.index('void Ath10kPCIDevice::serviceNativeEAP(')])
+        preflight=network_source[network_source.index('    UInt32 eapols=0;'):network_source.index('    if(!Ath10k::acceptSecureRX(s,b.descriptor')].replace('return;', 'return false;')
+        (include/'native_eap_preflight.inc').write_text('bool Ath10kPCIDevice::preflight(Ath10k::RXBatch &b){auto &s=_connection;\n'+preflight+'return true;}\n')
+        names=['native_eap_packets', 'native_eap_service', 'native_eap_callback', 'native_eap_owner', 'native_eapol_completion', 'wmi_scan', 'network_medium', 'transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'power_notifications', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_profile', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.extend(['psk_password','p256_backend','sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session','native_pmf_receive','native_key_stage','native_sae_radio','native_rsnxe_query'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))

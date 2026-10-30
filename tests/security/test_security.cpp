@@ -11,8 +11,10 @@
 #include <openssl/hmac.h>
 #endif
 #include "../../src/security/Ath10kSupplicant.hpp"
+#include "../../src/security/Ath10kEAPOL.hpp"
 #include "../../src/core/Ath10kControl.hpp"
 #include "../fixtures/security_vectors.inc"
+#include "../fixtures/eap_vectors.inc"
 #include "../fixtures/rekey_vectors.inc"
 #ifdef _WIN32
 // The BCrypt-backed adapter is defined above; the same vectors run on each OS.
@@ -101,7 +103,51 @@ static void rekeyTests(){
  s.reset();assert(s.receive(r_pair1,sizeof(r_pair1))==S::Ignore);
 }
 
+static void eapEnvelopeChecks(){
+ using namespace AthSecurity;
+ uint8_t frame[160]{};frame[12]=0x88;frame[13]=0x8e;frame[14]=2;
+ for(size_t n=0;n<18;++n)assert(classifyEAPOL(frame,n).kind==EAPOLKind::Invalid);
+ assert(classifyEAPOL(nullptr,160).kind==EAPOLKind::Invalid);
+ frame[15]=1;assert(classifyEAPOL(frame,60).kind==EAPOLKind::Start);
+ assert(classifyEAPOL(frame,60).bytes==18);
+ frame[17]=1;assert(classifyEAPOL(frame,60).kind==EAPOLKind::Invalid);
+ frame[15]=0;frame[17]=5;frame[18]=1;frame[21]=5;frame[22]=1;
+ assert(classifyEAPOL(frame,60).kind==EAPOLKind::EAP);
+ assert(classifyEAPOL(frame,22).kind==EAPOLKind::Invalid);
+ frame[21]=4;assert(classifyEAPOL(frame,60).kind==EAPOLKind::Invalid);
+ frame[17]=frame[21]=4;frame[18]=3;
+ assert(classifyEAPOL(frame,60).kind==EAPOLKind::EAP);
+ frame[18]=5;assert(classifyEAPOL(frame,60).kind==EAPOLKind::Invalid);
+ frame[15]=3;frame[17]=95;frame[18]=2;
+ assert(classifyEAPOL(frame,113).kind==EAPOLKind::Key);
+ assert(classifyEAPOL(frame,112).kind==EAPOLKind::Invalid);
+ frame[112]=1;assert(classifyEAPOL(frame,160).kind==EAPOLKind::Invalid);
+ frame[17]=96;assert(classifyEAPOL(frame,160).bytes==114);
+ frame[18]=1;assert(classifyEAPOL(frame,160).kind==EAPOLKind::Invalid);
+ frame[14]=4;assert(classifyEAPOL(frame,160).kind==EAPOLKind::Invalid);
+}
+static void enterpriseExchange(){
+ using E=AthSecurity::Supplicant<OpenSSLCrypto,false,false,true>;
+ S personal;assert(!personal.begin(e_pmk,e_snonce,e_sta,e_ap,e_rsn,sizeof(e_rsn),1));
+ E e;assert(e.begin(e_pmk,e_snonce,e_sta,e_ap,e_rsn,sizeof(e_rsn),1));
+ uint8_t association[64]{};size_t bytes=0;
+ assert(e.copyAssociationRSN(association,sizeof(association),bytes));
+ assert(bytes==sizeof(e_rsn) && !memcmp(association,e_rsn,bytes));
+ assert(e.receive(e_m1,sizeof(e_m1))==E::Reply);
+ assert(e.outputLength==sizeof(e_m2) && !memcmp(e.output,e_m2,sizeof(e_m2)));
+ assert(e.receive(e_m3,sizeof(e_m3))==E::Keys);
+ assert(e.outputLength==sizeof(e_m4) && !memcmp(e.output,e_m4,sizeof(e_m4)));
+ assert(!memcmp(e.keys,e_ptk+32,16) && !memcmp(e.keys+16,e_gtk,16));
+ assert(e.receive(e_m3,sizeof(e_m3))==E::Reply); // No key reinstallation.
+ e.reset();assert(e.receive(e_m3,sizeof(e_m3))==E::Ignore);
+ assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,e_rsn,sizeof(e_rsn),5));
+ assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,v_rsn,sizeof(v_rsn),1));
+ uint8_t required[sizeof(e_rsn)];memcpy(required,e_rsn,sizeof(required));required[20]=0xc0;
+ assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,required,sizeof(required),1));
+}
 int main(){
+ enterpriseExchange();
+ eapEnvelopeChecks();
  { AthSecurity::PMFKeyEpochs state;AthSecurity::IGTKCMAC128 key{},snapshot{};
    key.keyID=4;key.ipn=3;key.key[0]=9;uint64_t epoch=0;
    assert(state.activate(key) && state.snapshot(4,snapshot,epoch));const auto first=epoch;

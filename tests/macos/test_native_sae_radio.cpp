@@ -25,6 +25,11 @@ constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNotReady=2,kIOR
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
 #include "native_join_request.inc"
 #include "native_security_snapshot.inc"
+#include <Airport/apple80211_var.h>
+#include "native_eap_callback.inc"
+#include "native_eap_service.inc"
+#include "native_eap_integration_completion.inc"
+#include "../fixtures/eap_vectors.inc"
 
 static uint8_t pwe[64]{},randomScalar[32]{},mask[32]{};
 static AthSecurity::SAEGroup19AuthMessage request;
@@ -244,7 +249,7 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
    assert(AthSecurity::saeGroup19Confirm<HMAC>(peerKeys.kck,32,1,remote.commit,96,localCommit.commit,96,remoteConfirm.confirm+2,32));
    const auto confirmWire=apFrame(remoteConfirm);nativeSAEClockMS=5;assert(deliver(d,confirmWire.data(),confirmWire.size()));
    assert(!tick(d,5));run(latest);assert(!tick(d,6) && !sec->ready && !s.authReply);retired(d);
-   assert(!tick(d,7) && sec->ready && s.authReply);using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+   assert(!tick(d,7) && sec->ready && s.authReply);using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
    assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply);
    // The M2 MIC must use this freshly authenticated peer PMK, not the old fixture PMK.
    uint8_t context[76]{},ptk[48]{},mic[16]{};memcpy(context,w_sta,6);memcpy(context+6,w_ap,6);
@@ -300,7 +305,7 @@ static void pskPasswordAdmissionTests(){
   ownerGate=true;const bool ready=d->advanceSAEAuth(1);ownerGate=false;
   if(scenario){assert(!ready && s.cancelRequested && !sec->ready && !sec->pskPreparation.active());stop(d);continue;}
   assert(ready && sec->ready && !sec->pskPreparation.active() && !s.cancelRequested && nativeHMACCalls-before==8192);
-  using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+  using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
   assert(sec->supplicant.receive(s_m1,sizeof(s_m1))==Supplicant::Reply);
   assert(sec->supplicant.outputLength==sizeof(s_m2) && !memcmp(sec->supplicant.output,s_m2,sizeof(s_m2)));stop(d);
  }
@@ -387,7 +392,7 @@ int main(){
   Ath10k::receiveStationManagement(sha,pskResponse.data(),pskResponse.size(),0,6);assert(!sha.assocReply);
   shaResponse.insert(shaResponse.end(),AthSecurity::stationRSNSHA256,AthSecurity::stationRSNSHA256+sizeof(AthSecurity::stationRSNSHA256));
   Ath10k::receiveStationManagement(sha,shaResponse.data(),shaResponse.size(),0,6);assert(sha.assocReply);
-  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
   assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply);
   assert(sec->supplicant.outputLength==157 && !memcmp(sec->supplicant.output+113,station,44));
   assert(sec->supplicant.receive(w_m3,sizeof(w_m3))==S::Keys && !memcmp(sec->supplicant.keys,w_ptk+32,16));stop(d);
@@ -414,7 +419,7 @@ int main(){
   retired(d);assert(!tick(d,5) && sec->ready && s.authReply);
   s.stage=Ath10k::LinkStage::Assoc;uint8_t assoc[256]{};const auto n=d->buildNativeSAEAssociation(assoc,sizeof(assoc));
   assert(n>3 && !memcmp(assoc+n-3,x_rsnxe,3));
-  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
   assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply && sec->supplicant.outputLength==160);
   assert(!memcmp(sec->supplicant.output,x_m2,sizeof(x_m2)));
   s.stage=Ath10k::LinkStage::Connected;ownerGate=true;assert(d->nativeAcceptSecurityResult(S::Reply));ownerGate=false;
@@ -430,6 +435,50 @@ int main(){
 #define FIELD(member,name) field.member=reinterpret_cast<decltype(field.member)>(dlsym(lib,name));assert(field.member)
  FIELD(units,"cczp_n");FIELD(prime,"cczp_prime");FIELD(multiply,"cczp_mul");FIELD(inverse,"cczp_inv");FIELD(add,"cczp_add");FIELD(subtract,"cczp_sub");
 #undef FIELD
+ for(unsigned scenario=0;scenario<4;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+  s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,w_sta,6);
+  memcpy(ap.rsn,AthSecurity::stationRSNEAP,sizeof(AthSecurity::stationRSNEAP));ap.rsnLength=sizeof(AthSecurity::stationRSNEAP);
+  if(scenario==2)ap.rsn[19]=2;
+  sec->candidates.add(ap,0);d->experimentalEAP=scenario!=0;
+  AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=4;join.ssidLength=ap.ssidLength;
+  memcpy(join.ssid,ap.ssid,ap.ssidLength);memcpy(join.bssid,ap.bssid,6);
+  ownerGate=true;const auto result=d->nativeBeginJoin(join);ownerGate=false;
+  assert(result==((scenario==1 || scenario==3)?kIOReturnSuccess:kIOReturnUnsupported));
+  if(scenario==1 || scenario==3){assert(s.securityAKM==1 && s.secure && !s.portAuthorized && !sec->ready && sec->eapOwner.generation());
+   assert(sec->profile.generation() && d->_nativeJoinPending);
+   // Continue the admitted enterprise profile through the real native callback,
+   // PMK binding, authenticated exports and durable M4 completion barrier.
+   s.stage=Ath10k::LinkStage::Connected;
+   apple80211_key key{};key.version=1;key.key_cipher_type=9;key.key_len=32;memcpy(key.key,e_pmk,32);
+   nativeSAEClockMS=100;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+   ownerGate=true;d->serviceNativeEAP(100);ownerGate=false;
+   assert(sec->ready && !s.portAuthorized && s.sinceMs==100);
+   using E=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+   assert(sec->supplicant.receive(e_m1,sizeof(e_m1))==E::Reply);
+   assert(d->nativeAcceptSecurityResult(E::Reply));
+   assert(sec->replyLength==sizeof(e_m2) && !memcmp(sec->reply,e_m2,sizeof(e_m2)));
+   sec->replyPending=false;sec->replyLength=0;
+   assert(sec->supplicant.receive(e_m3,sizeof(e_m3))==E::Keys);
+   assert(d->nativeAcceptSecurityResult(E::Keys));
+   assert(sec->keysPending && !s.portAuthorized && !memcmp(sec->keys,e_ptk+32,16));
+   assert(sec->replyLength==sizeof(e_m4) && !memcmp(sec->reply,e_m4,sizeof(e_m4)));
+   // Emulate firmware key acknowledgements, not radio interoperability.
+   sec->keysPending=false;s.securityPhase=3;sec->authorizePending=true;
+   s.eapolCompletion.begin(77);d->serviceEAPCompletion(101);
+   assert(!s.authorizeRequested && !s.portAuthorized);
+   s.eapolCompletion.retire(76,0);d->serviceEAPCompletion(102);assert(!s.authorizeRequested);
+   s.eapolCompletion.retire(77,scenario==3?1:0);d->serviceEAPCompletion(103);
+   if(scenario==3){assert(s.cancelRequested && !s.authorizeRequested && !s.portAuthorized && !sec->eapOwner.generation());}
+   else {
+    assert(s.authorizeRequested && !s.portAuthorized && !sec->authorizePending);
+    key.key_len=0;assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
+    assert(s.cancelRequested && !s.portAuthorized && !sec->eapOwner.generation());
+   }}
+  else assert(!sec->eapOwner.generation());
+  stop(d);
+ }
  passwordPreparationTests(field);
  pskPasswordAdmissionTests();
  securitySnapshotTests();

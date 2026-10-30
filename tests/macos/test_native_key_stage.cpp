@@ -3,7 +3,7 @@
 #include "../fixtures/sae_eapol_vectors.inc"
 #include "../fixtures/native_igtk_vectors.inc"
 #include "../fixtures/sha256_vectors.inc"
-using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
+using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
 static Ath10kPCIDevice *keyDevice(){
  auto d=new Ath10kPCIDevice;auto &s=d->_connection;s.stage=Ath10k::LinkStage::Connected;
  s.pmfRequired=s.secure=s.pmfQoSTransported=true;s.groupCipher=AthSecurity::cipherCCMP;

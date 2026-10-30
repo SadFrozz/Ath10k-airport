@@ -36,6 +36,8 @@ public:
     IOReturn nativeDisconnectForRoam(UInt64);
     bool nativePreparePersonalAuth(UInt64,const char *&);
     bool nativeSAEEnabled() const;
+    bool nativeEAPEnabled() const;
+    bool nativeEAPWaiting() const;
     bool nativePMFStartupQueryEnabled() const;
     bool _nativePMFStartupQueryAttempted=false;
     void publishNativeSecurityState(UInt64);
@@ -59,6 +61,11 @@ public:
     UInt32 buildNativeSAEAssociation(UInt8 *,UInt32);
     bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
     bool nativeAcceptSecurityResult(UInt32);
+    IOReturn nativeSetCipherKey(void *);
+    UInt32 nativeEAPOutput(mbuf_t);
+    bool nativeEAPSystemFrame(const UInt8 *frame,UInt32 length);
+    bool nativeEAPReceive(const UInt8 *,UInt32);
+    void serviceNativeEAP(UInt64);
     bool nativePMFPairwiseAcknowledged(const UInt8 *);
     bool nativePMFPortReady();
     bool nativeAssociationRSNXE(void *);

@@ -6,6 +6,23 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.106 — 2026-10-30
+
+- Bound native pairwise-key completion delivery to five seconds after consuming the successful M4
+  transport completion. Cancel the affected association and close its controlled
+  port if macOS never accepts the completion event; do not report false success.
+- Retire notification timers across key-generation replacement, successful
+  delivery and association reset, preserving retries within the original budget.
+
+- Add default-disabled experimental ordinary WPA2-Enterprise integration: system
+  EAP packet routing, bounded TX ownership, translated MSK callback and AKM1/CCMP
+  four-way exchange. Keep mixed/unsupported enterprise modes rejected.
+- Separate OS EAP packet size/queue accounting from the internal EAPOL-Key queue,
+  and retire pending EAP owners during association cancellation and shutdown.
+- Start the four-way timeout after consuming the system key, while retaining the
+  bounded overall join deadline. Enterprise interoperability, reauthentication
+  and roaming are not yet verified or advertised as supported.
+
 ## 1.0.105 — 2026-10-30
 
 - Move native driver version metadata from `0.0.105` to `1.0.105`, retaining
