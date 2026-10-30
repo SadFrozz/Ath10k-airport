@@ -1,46 +1,62 @@
-# Save as .github/workflows/ath10kmac-release.yml in the kext repository.
-# Run from the repository root; the kext template is in packaging/Ath10kMac.kext.
-# Push v0.0.91 to release the current source; future tags must match its version.
-# Branch pushes, pull requests, and manual branch runs produce build artifacts.
-
-name: Ath10kMac Build and Release
-
+name: Kext builds / NIGHTLY
 on:
-  push:
-    branches: ["**"]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
-
+    inputs:
+      source_commit:
+        description: 'Commit SHA from the selected branch (empty = branch HEAD)'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_commit:
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: kext-build-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
 defaults:
   run:
     shell: bash
 
 jobs:
   build:
-    name: Build x86_64 kext
+    name: ${{ matrix.configuration }} x86_64 kext
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, Debug]
     runs-on: macos-15-intel
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
-    outputs:
-      version: ${{ steps.metadata.outputs.version }}
-      package_version: ${{ steps.metadata.outputs.package_version }}
-      prerelease: ${{ steps.metadata.outputs.prerelease }}
-      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
     steps:
+      - name: Validate requested commit
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          if [[ -n "$SOURCE_COMMIT" && ! "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo 'Use a full 40-character commit SHA, or leave the field empty.' >&2
+            exit 1
+          fi
       - name: Check out source and submodules
         uses: actions/checkout@v6.1.0
         with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Verify source belongs to selected revision
+        env:
+          SELECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD "$SELECTED_REVISION"
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Verify toolchain and MacKernelSDK
         run: |
@@ -50,17 +66,19 @@ jobs:
           xcrun --show-sdk-path
           python3 --version
 
-          git submodule update --init --recursive
           test -f vendor/MacKernelSDK/Headers/Availability.h
           test -f vendor/MacKernelSDK/Library/x86_64/libkmod.a
           test -f vendor/MacKernelSDK/Library/universal/libkmodc++.a
 
       - name: Validate version and release tag
         id: metadata
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os
+          from datetime import datetime, timezone
           import plistlib
           import re
           from pathlib import Path
@@ -84,22 +102,37 @@ jobs:
                   raise SystemExit(f"Tag {tag!r} does not match source version {version}. Use v{version}.")
               package_version = tag[1:]
               prerelease = "-" in package_version
+          elif os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+              stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+              package_version = f'{version}-NIGHTLY.{stamp}.{os.environ["SOURCE_SHA"][:12]}'
+              prerelease = False
           else:
-              package_version = f'{version}-dev.{os.environ["GITHUB_SHA"][:12]}'
+              package_version = f'{version}-dev.{os.environ["SOURCE_SHA"][:12]}'
               prerelease = False
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={version}\n")
               output.write(f"package_version={package_version}\n")
               output.write(f"prerelease={str(prerelease).lower()}\n")
-              output.write(f"artifact_name=Ath10kMac-{package_version}-x86_64\n")
+              output.write(f"artifact_name=Ath10kMac-{package_version}-{os.environ['CONFIGURATION']}-x86_64\n")
           PY
 
       - name: Build and check kext symbols
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
         run: |
           set -euo pipefail
           make clean
-          make NATIVE=1 DIAGNOSTIC_STAGE=0 -j"$(sysctl -n hw.logicalcpu)" kext
+          flags=(-O2)
+          diagnostics=0
+          if [[ "$CONFIGURATION" == Debug ]]; then
+            flags=(-O1 -g)
+            diagnostics=1
+          fi
+          make NATIVE=1 DIAGNOSTIC_STAGE=0 DIAGNOSTICS="$diagnostics" OPT="${flags[*]}" -j"$(sysctl -n hw.logicalcpu)" kext
+          codesign --force --sign - build/native/out/Ath10kMac.kext
+          codesign --verify --strict build/native/out/Ath10kMac.kext
+          python3 scripts/build/windows/validate.py build/native/out/Ath10kMac.kext
           plutil -lint build/native/out/Ath10kMac.kext/Contents/Info.plist
           xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
           test "$(xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
@@ -108,10 +141,11 @@ jobs:
       - name: Package kext, notices, and checksum
         env:
           PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+          CONFIGURATION: ${{ matrix.configuration }}
         run: |
           set -euo pipefail
           stage="build/release"
-          archive="Ath10kMac-${PACKAGE_VERSION}-x86_64.zip"
+          archive="Ath10kMac-${PACKAGE_VERSION}-${CONFIGURATION}-x86_64.zip"
           mkdir -p "$stage/Licenses" build/dist
           ditto build/native/out/Ath10kMac.kext "$stage/Ath10kMac.kext"
           chmod 755 "$stage/Ath10kMac.kext/Contents/MacOS/Ath10kMac"
@@ -121,6 +155,8 @@ jobs:
           fi
           ditto docs "$stage/docs"
           cp CHANGELOG.md "$stage/CHANGELOG.md"
+          cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+          cp packaging/licenses/APSL-1.1.txt "$stage/Licenses/APSL-1.1.txt"
           for license in LICENSE LICENSE.txt LICENSE.md COPYING; do
             if [[ -f "$license" ]]; then
               cp "$license" "$stage/$license"
@@ -134,8 +170,8 @@ jobs:
           cp regulatory/LICENSE "$stage/Licenses/wireless-regdb.txt"
 
           # Record the exact source commit without changing the driver version.
-          printf 'Ath10kMac package: %s\nSource commit: %s\nArchitecture: x86_64\n' \
-            "$PACKAGE_VERSION" "$GITHUB_SHA" > "$stage/BUILD-INFO.txt"
+          printf 'Ath10kMac package: %s\nSource commit: %s\nArchitecture: x86_64\nConfiguration: %s\n' \
+            "$PACKAGE_VERSION" "$SOURCE_SHA" "$CONFIGURATION" > "$stage/BUILD-INFO.txt"
           ditto -c -k --norsrc "$stage" "build/dist/$archive"
           (cd build/dist && shasum -a 256 "$archive" > "$archive.sha256")
           unzip -t "build/dist/$archive"
@@ -155,81 +191,4 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
-
-  native-sequoia:
-    name: Sequoia native stage 3
-    runs-on: macos-15-intel
-    timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v6.1.0
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - name: Portable native regressions
-        run: python3 tests/run-development-tests.py
-      - name: Build and sign diagnostic controller
-        run: |
-          set -euo pipefail
-          make NATIVE=1 DIAGNOSTIC_STAGE=3 -j2 kext
-          codesign --force --sign - build/native/out/Ath10kMac.kext
-          codesign --verify --strict --verbose=2 build/native/out/Ath10kMac.kext
-          python3 scripts/build/windows/validate.py build/native/out/Ath10kMac.kext
-      - name: Package stage-3 candidate
-        run: |
-          set -euo pipefail
-          mkdir -p build/native/dist
-          ditto -c -k --norsrc build/native/out/Ath10kMac.kext build/native/dist/Ath10kMac-Sequoia-stage3.zip
-          cp build/native/out/validation.json build/native/dist/
-          shasum -a 256 build/native/dist/Ath10kMac-Sequoia-stage3.zip > build/native/dist/SHA256SUMS.txt
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: Ath10kMac-Sequoia-stage3
-          path: build/native/dist/*
-          if-no-files-found: error
-          retention-days: 14
-
-  release:
-    name: Publish GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - name: Download validated build artifacts
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}
-          path: dist
-
-      - name: Verify package checksum
-        working-directory: dist
-        run: |
-          set -euo pipefail
-          sha256sum --check --strict ./*.sha256
-
-      - name: Create release and attach assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          PACKAGE_VERSION: ${{ needs.build.outputs.package_version }}
-          PRERELEASE: ${{ needs.build.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          options=()
-          if [[ "$PRERELEASE" == "true" ]]; then
-            options+=(--prerelease)
-          fi
-          gh release create "$RELEASE_TAG" \
-            "dist/Ath10kMac-${PACKAGE_VERSION}-x86_64.zip" \
-            "dist/Ath10kMac-${PACKAGE_VERSION}-x86_64.zip.sha256" \
-            --repo "$GH_REPO" \
-            --verify-tag \
-            --title "Ath10kMac ${PACKAGE_VERSION}" \
-            --generate-notes \
-            "${options[@]}"
 

@@ -104,4 +104,8 @@ include network passwords or key material.
 
 Project licensing is recorded in [LICENSE](LICENSE). Dependencies and firmware
 retain their own licenses. The [dependency guide](docs/guides/dependencies.md)
-records pinned revisions and local ABI overrides.
+records pinned revisions and local ABI overrides. The [licensing review](docs/guides/license-audit.md)
+records unresolved third-party compatibility questions; the root license does
+not cover every bundled component.
+
+See [CI and releases](docs/guides/ci.md) for triggers, Release/Debug packages and tag publication.

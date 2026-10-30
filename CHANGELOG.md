@@ -2,6 +2,8 @@
 
 ## Unreleased — repository organization
 
+- Consolidate CI into logic tests, Release/Debug builds and tag-only publication; remove duplicate branch/PR runs and automatic diagnostic builds.
+
 - Organize original firmware by chipset/revision, document provenance, and move generated payload files to build/generated/firmware; firmware bytes and profile selection are unchanged.
 
 - Separate radio/security/macOS sources, test groups, packaging and developer documentation.
