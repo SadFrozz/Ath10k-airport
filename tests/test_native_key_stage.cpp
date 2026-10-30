@@ -81,6 +81,7 @@ int main(){
   assert(!sec->keysPending && !sec->managementPending && sec->replyPending && d->_connection.securityPhase==phase);
   assert(bip(d,n_igtk5,sizeof(n_igtk5)) && !bip(d,n_igtk4,sizeof(n_igtk4)));clearReply(d);
   assert(sec->supplicant.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys && accept(d,S::GroupKeys));
+  assert(!sec->pairUpdateReply);
   assert(sec->managementPending && sec->keysPending);d->_connection.portAuthorized=false;d->_connection.securityPhase=2;
   assert(!d->nativePMFPortReady() && sec->managementPending);
   d->_connection.securityPhase=5;assert(d->nativePMFPortReady() && !sec->managementPending);
@@ -107,6 +108,7 @@ int main(){
  {auto d=keyDevice();auto sec=d->_nativeSecurity;initial(d);
   assert(sec->supplicant.receive(w_rekey1,sizeof(w_rekey1))==S::Reply && accept(d,S::Reply));clearReply(d);
   assert(sec->supplicant.receive(w_rekey3,sizeof(w_rekey3))==S::PairKeys && accept(d,S::PairKeys));
+  assert(sec->pairUpdateReply && sec->ptkUpdateGeneration==d->_connection.securityGeneration);
   assert(!sec->managementPending && sec->keysPending);d->_connection.securityPhase=1;
   assert(d->nativePMFPairwiseAcknowledged(sec->keys));d->_connection.securityPhase=5;assert(d->nativePMFPortReady());
   assert(bip(d,n_igtk4,sizeof(n_igtk4)));stop(d);}
@@ -116,6 +118,7 @@ int main(){
   assert(deliver(d,n_igtk4,sizeof(n_igtk4)));service(d,0);assert(sec->pmfRXInFlight);
   run(latest); // Authenticated old-key result has not been committed yet.
   assert(sec->supplicant.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys && accept(d,S::GroupKeys));
+  assert(!sec->pairUpdateReply);
   assert(sec->managementPending && sec->keysPending);
   state.portAuthorized=false;state.securityPhase=2;assert(!d->nativePMFPortReady());
   // Mock the completed data-key barrier; this is not a firmware hardware test.

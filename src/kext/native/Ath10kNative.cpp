@@ -139,6 +139,8 @@ public:
     AthNative::CandidateCache candidates;
     UInt32 cachedGeneration=~0u;
     bool ready=false,replyPending=false,keysPending=false,authorizePending=false;
+    bool pairUpdateReply=false,ptkUpdatePending=false;
+    UInt32 ptkUpdateGeneration=0;
     unsigned keyOperation=0;
     UInt8 reply[160]{},keys[56]{};
     UInt32 replyLength=0;
@@ -161,7 +163,7 @@ private:
     // Software association owners only. Firmware DELETE/STOP/ECHO and DMA
     // retirement remain the radio worker's responsibility.
     void resetAssociation(){
-        transitionPolicy.clear();
+        transitionPolicy.clear();pairUpdateReply=ptkUpdatePending=false;ptkUpdateGeneration=0;
         pskPreparation.cancel();saePreparation.cancel();
         if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
         clearManagement();
@@ -902,7 +904,7 @@ bool Ath10kPCIDevice::nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &k
 bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
     using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
     auto sec=_nativeSecurity;auto &s=_connection;
-    if(!sec || sec->replyPending || sec->keysPending || sec->authorizePending)return false;
+    if(!sec || sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending)return false;
     const bool data=result==S::Keys || result==S::GroupKeys || result==S::PairKeys;
     const bool management=result==S::ManagementKeys;
     if(result!=S::Reply && !data && !management)return false;
@@ -921,6 +923,8 @@ bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
         // firmware GTK/key-index transaction; the existing pairwise key is live.
         if(management && !nativePMFPortReady())return false;
     }
+    sec->pairUpdateReply=result==S::PairKeys;
+    if(sec->pairUpdateReply)sec->ptkUpdateGeneration=s.securityGeneration;
     bcopy(sec->supplicant.output,sec->reply,sec->supplicant.outputLength);
     sec->replyLength=static_cast<UInt32>(sec->supplicant.outputLength);sec->replyPending=true;
     if(data){bcopy(sec->supplicant.keys,sec->keys,sizeof(sec->keys));sec->keysPending=true;sec->keyOperation=result;}
@@ -1609,11 +1613,22 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
             sec->cancelPairwiseAttempt();
             s.eapolPause=sec->keysPending || sec->authorizePending;
         }
-        if(sec->authorizePending && !s.txOwned && s.txComplete){
-            if(s.txStatus || s.eapolTxFailed){s.error="native-eapol-tx-failed";s.cancelRequested=true;}
-            else if(s.securityPhase==3)s.authorizeRequested=true;
-            sec->authorizePending=false;
+        // Every reply owns its completion, including rekey M4 and group ACK.
+        // The serial slot may already contain a later management transmission.
+        if(sec->authorizePending && s.eapolCompletion.complete){
+            if(s.eapolCompletion.status){s.error="native-eapol-tx-failed";s.cancelRequested=true;}
+            else if(sec->pairUpdateReply){
+                // Phase 5 follows PTK acknowledgement, PMF activation and the
+                // firmware ECHO/RX barrier. This receipt belongs to its M4.
+                if(s.securityPhase!=5 || !s.portAuthorized || s.rekeyKind ||
+                   s.securityGeneration!=UInt32(sec->ptkUpdateGeneration+1)){
+                    s.error="native-ptk-completion-owner";s.cancelRequested=true;
+                }else {sec->ptkUpdateGeneration=s.securityGeneration;sec->ptkUpdatePending=true;}
+            }else if(s.securityPhase==3)s.authorizeRequested=true;
+            sec->pairUpdateReply=false;
+            sec->authorizePending=false;s.eapolCompletion.clear();
         }
+        if(s.cancelRequested){discardNativeSecurity();return;}
         if(sec->keysPending && !s.wmiOwned && !s.submitted && !s.txOwned && !s.dataPending &&
            !s.stats.step && !s.maintenance.step && !s.radio.step && _wmiScan.completed && !_wmi.credits.outstanding){
             const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>::Keys;
@@ -1634,10 +1649,10 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
            (!s.securityPhase || s.securityPhase==3 || s.securityPhase==5)){
             const char *error=submitNetworkPacket(sec->reply,sec->replyLength,false,now);
             if(error){s.error=error;s.cancelRequested=true;}
-            else {sec->replyPending=false;sec->authorizePending=s.securityPhase==3;
+            else {sec->replyPending=false;sec->authorizePending=true;
                 AthSecurity::wipe(sec->reply,sizeof(sec->reply));sec->replyLength=0;}
         }
-        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && s.eapolCount && !s.rekeyKind){
+        if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
             using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true>;
@@ -1868,6 +1883,22 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
                 auto event=AirportWCL::completedSupplicantPolicy(ticket.flags);
                 if(post(AirportWCL::SupplicantEvent,&event,sizeof(event)))policy.delivered(ticket);
             }
+        }
+    }
+    // Keep the accepted pairwise update until macOS accepts its notification.
+    // No new EAPOL exchange is consumed while this single completion is pending.
+    if(sec && sec->ptkUpdatePending){
+        if(!associated || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None ||
+           !_wmiLive.active || s.securityGeneration!=sec->ptkUpdateGeneration){
+            sec->ptkUpdatePending=false;
+        }else if(up && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
+                 !sec->replyPending && !sec->keysPending && !sec->authorizePending &&
+                 !_nativeJoinPending && !_nativeJoinFailed && _nativeLinkUpSent && _nativeBeaconSent &&
+                 (!s.pmfRequired || (sec->pmfSession && sec->pmfSession->portReady()))){
+            const UInt64 generation=sec->pmfSession?sec->pmfSession->activeGeneration():0;
+            auto event=AirportWCL::completedPairwiseUpdate(
+                sec->transitionPolicy.currentFlags(s.local,s.bssid,generation));
+            if(post(AirportWCL::SupplicantEvent,&event,sizeof(event)))sec->ptkUpdatePending=false;
         }
     }
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;

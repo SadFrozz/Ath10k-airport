@@ -36,7 +36,7 @@ def inventory():
         if name in ('getCUR_PMK', 'setCIPHER_KEY', 'setCLEAR_PMKSA_CACHE'):
             evidence = {
                 'getCUR_PMK': ('0xffffff800163e294', 'Stock getter requires development/internal CSR and allowWiFiDebug gates before exporting PMK; rejection is normal outside these gates. Not an ordinary association prerequisite.'),
-                'setCIPHER_KEY': ('0xffffff800160dc76', 'Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. Native external-key ownership and caller requirements remain unresolved.'),
+                'setCIPHER_KEY': ('0xffffff800160dc76', 'Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. The setKey jump table distinguishes traffic keys, PMK/MSK (6/9), PMKSA (7) and password (10). Traffic keys map through mapAppleKeyToBcomKey, then runtime-selected async/sync firmware programming. External owner and completion contracts remain unresolved; see NATIVE-CONNECTION-AUDIT.md.'),
                 'setCLEAR_PMKSA_CACHE': ('0xffffff80015ec6e4', 'Core and infrastructure wrapper obtain an address through vtable offset 0xcf0 and call setCurEtheraddr. Downstream cache and address lifetime must be traced; function name alone does not prove active PTK destruction.')
             }[name]
             row['stock_producer_evidence'] = [dict(
@@ -150,6 +150,8 @@ def inventory():
     return dict(schema=1, abi='Sequoia 15.2+ native adapter',
                 scope='Inline IOReturn protocol overrides only; lifecycle/non-inline methods are covered separately in NATIVE-CONTRACT.md',
                 source='src/kext/native/Ath10kNativeInterface.hpp',
+                feature_status='NATIVE-STATUS.md',
+                hardware_validation_scope='False means the entire callback inventory is not hardware-certified; see feature_status for positive bounded evidence',
                 hardware_validation=False,
                 counts=dict(total=len(rows), forwarded=sum(r['implementation']=='forwarded' for r in rows),
                             unsupported=sum(r['implementation']=='unsupported' for r in rows)),

@@ -38,6 +38,9 @@ public:
  bool matches(const uint8_t *local,const uint8_t *ap,uint64_t epoch) const {
   return generation && epoch==generation && local && ap && equal(station,local,6) && equal(bssid,ap,6);
  }
+ uint8_t currentFlags(const uint8_t *local,const uint8_t *ap,uint64_t epoch) const {
+  return matches(local,ap,epoch)?flags:0;
+ }
  bool observe(const TransitionDisableUpdate &update,uint64_t epoch){
   if(!matches(update.station,update.bssid,epoch) || !update.length ||
      update.length>sizeof(update.bitmap) || !update.replay || update.replay<=lastReplay)return false;

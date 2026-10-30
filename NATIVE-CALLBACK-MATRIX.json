@@ -3,6 +3,8 @@
   "abi": "Sequoia 15.2+ native adapter",
   "scope": "Inline IOReturn protocol overrides only; lifecycle/non-inline methods are covered separately in NATIVE-CONTRACT.md",
   "source": "src/kext/native/Ath10kNativeInterface.hpp",
+  "feature_status": "NATIVE-STATUS.md",
+  "hardware_validation_scope": "False means the entire callback inventory is not hardware-certified; see feature_status for positive bounded evidence",
   "hardware_validation": false,
   "counts": {
     "total": 190,
@@ -749,7 +751,7 @@
           "uuid": "4C3822FC-8902-3AF6-A791-DD4A8D9E9C66",
           "producer": "AppleBCMWLANCore::setCIPHER_KEY",
           "address": "0xffffff800160dc76",
-          "semantics": "Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. Native external-key ownership and caller requirements remain unresolved.",
+          "semantics": "Core forwards to AppleBCMWLANJoinAdapter::setKey at 0xffffff8001586450 with argument true and null auxiliary data. The setKey jump table distinguishes traffic keys, PMK/MSK (6/9), PMKSA (7) and password (10). Traffic keys map through mapAppleKeyToBcomKey, then runtime-selected async/sync firmware programming. External owner and completion contracts remain unresolved; see NATIVE-CONNECTION-AUDIT.md.",
           "join_adapter_dispatch": {
             "jump_table": "0xffffff8001586ad4",
             "selector_offset": 8,

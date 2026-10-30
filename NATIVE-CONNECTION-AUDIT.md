@@ -1,5 +1,7 @@
 # Native connection audit (2026-10-28)
 
+Current feature state: [NATIVE-STATUS.md](NATIVE-STATUS.md). The entries below are chronological evidence; early unsupported/uninstalled statements are superseded by later checkpoints. Requirements live in NATIVE-CONTRACT.md and WPA3-CONTRACT.md.
+
 Current hardware checkpoint (2026-10-29): experimental native image
 A3E38378-BAE6-346C-8E1D-88A192367DE1 booted on Sequoia 15.6.1/24G90.
 macOS selected SAE (upper auth 4096, password cipher 10, zero flags/index).
@@ -1862,3 +1864,265 @@ Integrated candidate AF185664-F6A2-3EE4-B3D6-723E5CB4C1BD passed the final
 signature and exact-UUID offline dependency inclusion. The offline probe omits
 only OSBundleRequired from its plist; executable program sections match the
 normal signed candidate. Installed EFI is unchanged; rollback is verified on SD.
+
+## Documentation reconciliation — 2026-10-30
+
+The previous leading WPA3 status was stale: SAE/PMF are implemented, with an
+earlier protected SA Query hardware checkpoint. Current requirements now live
+in the two normative contracts; original investigation text is preserved in
+docs/history. NATIVE-STATUS.md records implementation, local coverage and
+hardware evidence separately. CHANGELOG.md and AGENTS.md establish batch-level
+maintenance and one consolidated regression for implemented functionality.
+The installed AF185664 image remains unchanged; ordinary SAE traffic was
+observed after boot. AP-triggered key updates are a missing radio observation,
+not an absent PMF implementation. No new driver feature is claimed by this
+documentation reconciliation.
+
+## External key dispatch evidence — 2026-10-30
+
+Examined local AppleBCMWLANCoreMac UUID
+4C3822FC-8902-3AF6-A791-DD4A8D9E9C66, matching Sequoia 24G90.
+Core setCIPHER_KEY at 0xffffff800160dc76 forwards the input to JoinAdapter
+setKey at 0xffffff8001586450 with true and null auxiliary data. Decoded the
+11 signed-relative jump entries at 0xffffff8001586ad4 from the Mach-O segment:
+
+| Cipher selector | Target | Observed path |
+| --- | --- | --- |
+| 0 | 0xffffff80015865a3 | Return path after initial owner lookup |
+| 1–5, 8 | 0xffffff80015865cc | mapAppleKeyToBcomKey then firmware programming |
+| 6, 9 | 0xffffff80015864c0 | PMK/MSK path; programPMK, optional supplicant events and 6000 ms timeout |
+| 7 | 0xffffff8001586682 | Separate PMKSA path; detailed semantics pending |
+| 10 | 0xffffff80015866f4 | Separate password path; detailed semantics pending |
+
+Ordinary key mapping at 0xffffff8001652189 reads index at +0x0e, length
+at +4, cipher at +8, bytes at +0x10, flags at +0x0c, peer address at +0x5c.
+It bounds copied key material to 32 bytes, requires at least 32 for TKIP and
+swaps its two MIC halves. This is evidence about Broadcom translation, not a
+policy to truncate external input in Ath10k. Program dispatch selects
+programKeyAsync (0xffffff800158998a) or programKeySync (0xffffff8001589abe)
+after a runtime virtual query; callback return cannot alone establish the
+actual firmware/key authorization barrier.
+
+Conclusion: the external callback is a discriminated credential/key operation,
+not an alias for internal PTK/GTK installation. Before enabling it, recover
+PMKSA/password handling, owning interface/session selection, completion and
+controlled-port transitions, and define mutually exclusive internal/external
+supplicant ownership. Existing internal SAE/PMF implementation is unaffected.
+No new capability or hardware certification is claimed by this investigation.
+
+### External-key PMKSA/password/completion follow-up — 2026-10-30
+
+Same matching BCM image as above. PMKSA selector 7 at 0xffffff8001586682
+returns zero after a feature-flag check and optional logging: no firmware key
+programming occurs in this branch. It is not evidence of a working PMKSA cache.
+Password selector 10 at 0xffffff80015866f4 bounds its copy to 64 bytes, builds
+wsec_pmk with flag 1, optionally enables supplicant events and 6000 ms timeout,
+then calls programPMK. Core setCIPHER_KEY supplies null auxiliary data, so it
+skips the subsequent auxiliary-data command path. Ath10k must validate its
+accepted password contract, not copy Broadcom truncation behavior.
+
+programPMK (0xffffff8001589840) uses runIOCtlSet command 0x10c.
+programKeySync (0xffffff8001589abe) uses runIOCtlSet command 0x2d.
+programKeyAsync (0xffffff800158998a) submits 0x2d with 0xa4-byte payload through
+issueCommand and returns that submission result. Its callback at
+0xffffff8001589bb0 immediately returns on success; on failure it optionally
+logs. It neither publishes WCL link success nor authorizes the controlled port.
+Therefore a separate handshake/port event path must be recovered before
+external owner support can be considered integrated. These callbacks do not
+justify inventing a WCL key-complete event or authorizing on submission.
+
+### Firmware supplicant completion is separate from external key submission — 2026-10-30
+
+BCM handleSupplicantEvent at 0xffffff800158af00 consumes event status at +8
+and reason at +0x0c; it matches event peer +0x18 against retained records.
+The mapping at 0xffffff8001652463 returns success only for status 6 with
+reason 0 or 21. The reason mask 0xcace maps to 0x3f6; status 5 with reason
+0/21 maps to 0x35; other reasons/statuses use failure/unknown values.
+The handler stores status at context+0x280, reason at +0x282 and invokes
+sendConnectComplete (0xffffff800158abce) on its terminal branches. It is
+distinct from the logging-only programKeyAsyncCallback.
+
+This traces the firmware-supplicant completion path, not the externally owned
+802.1X controlled-port path. It corroborates the existing internal-supplicant
+design: completion follows the authenticated exchange rather than key-command
+submission. Do not map raw Broadcom status numbers onto Ath10k firmware, nor
+claim external enterprise ownership resolved by this finding. Next unresolved
+contract is the OS-owned EAPOL/controlled-port path and its profile admission.
+
+### STA_AUTHORIZE scope and EAPOL ownership — 2026-10-30
+
+IO80211Family setSTA_Authorize ioctl wrapper at 0xffffff80022cb8ac requires
+exactly 20 input bytes, attempts WCL command 0x4a and falls back to
+apple80211setSTA_AUTHORIZE at 0xffffff80021fbf2a. The fallback casts to
+IO80211SapProtocol before invoking vtable slot 0x1020, rejecting an interface
+that does not satisfy that cast. BCM implements this on APSTAInterface at
+0xffffff800169be42. Therefore this inspected fallback cannot be treated as
+the infrastructure client's controlled-port authorization callback. The WCL
+handled route is a separate unresolved path; this observation is not a proof
+that every route for command 0x4a is SAP-only.
+
+Current Ath10k releaseRXBatch consumes secure EtherType 0x888e into its internal
+four-frame queue, rejects lengths above 512 and checks source BSSID. Ordinary
+outputPacket requires dataTXAdmissionOpen; there is no external EAPOL bypass
+for a closed controlled port. These are intentional internal-supplicant
+constraints, not sufficient transport for general OS-owned 802.1X/EAP frames.
+External support must integrate RX/TX ownership, bounded frame validation and
+controlled-port state alongside key commands. Enabling setCIPHER_KEY alone
+would advertise an unusable path. No internal WPA3 regression is inferred.
+
+### Apple EAP client boundary corrects the external-owner plan — 2026-10-30
+
+Primary source inspected: apple-oss-distributions/eap8021x, main on 2026-10-30:
+- [EAPOLSocket.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/EAPOLSocket.c), blob a82591c5bd96afe2bf98057b261c225759596577.
+- [Supplicant.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/Supplicant.c), blob 552c261964a5eee7382a0e54bba952a29731bb47.
+- [InterestNotification.c](https://github.com/apple-oss-distributions/eap8021x/blob/main/eapolclient.tproj/InterestNotification.c), blob 5f3767c8a74d942d77f904940b58e04a6354d8de.
+
+Supplicant set_wpa_key_info exports MSK and calls EAPOLSocketSetWPAKey; clear
+passes NULL/zero. EAPOLSocketSetWPAKey requires wireless WPA-enterprise. For
+the primary supplicant it uses null BSSID and registers completion interest
+when MSK is nonempty; preauthentication uses a specific BSSID. It calls
+wireless_set_wpa_msk. Handshake completion can renew configuration or recover
+a lost EAP Success, then unregisters the interest. InterestNotification listens
+for kIOMessageServicePropertyChange on the interface's selected parent object.
+The public wireless implementation is omitted, so exact private ioctl mapping
+and compatibility with installed 24G90 userspace still require local recovery.
+
+Architectural correction: OS-owned EAP does not imply OS-owned PTK/GTK install.
+An enterprise mode may route EAP to the OS, accept MSK, and retain the existing
+internal four-way/PMF implementation. Explicit EAP versus EAPOL-Key ownership,
+MSK admission, peer/generation cancellation and completion notification must
+be integrated together. Prior notes requiring a wholly external handshake
+owner are superseded by this split, not a reason to duplicate working crypto.
+
+### Installed EAPOL client MSK ABI — 2026-10-30
+
+Read-only disassembly of installed eapolclient x86_64 UUID
+FAC5670D-77C2-3A38-9DE9-37B8A150A96B (Sequoia 15.6.1).
+The set_msk logging path calls 0x10000c324 at 0x100009111. The callee
+accepts lengths only 0 or 64 (test ecx against 0xffffffbf), constructs a
+zeroed 0x94-byte apple80211_key record with version 1, length +4, cipher +8,
+key bytes +0x10. Null BSSID selects MSK cipher 9; explicit BSSID selects
+PMKSA cipher 7 and copies its six bytes to +0x5c. It invokes Apple80211Set
+at 0x10000c3ee with selector 3, zero second selector and size 0x94; return
+zero maps to true. This confirms the public source architecture on the local
+binary, including zero-length clearing. It does not yet prove the private
+framework's translation or native kernel completion behavior.
+
+The same executable imports Apple80211Set/Get and IOKit interest registration.
+At 0x10000f00c it registers IOGeneralInterest after selecting a parent object.
+Disassembly is local analysis only, not distributed Apple code. No driver
+capability was enabled or key material accessed in this inspection.
+
+### Kernel MSK transformation and completion notification — 2026-10-30
+
+Matched IO80211Family setCipherKey at 0xffffff80022c9dbe validates a 0x94-byte
+request and calls checkValidationForApple80211Key. For interface type 1 it
+queries auth via WCL command 2 (fallback getAUTH_TYPE). Cipher mask 0x340
+selects 6/8/9: auth 0x4000 or 0x8000 clamps length to 48, other auth clamps
+to 32. Auth 0x80 with a nonempty key copies the next 32-byte source portion
+over the outgoing key start. It then sends WCL command 3, size 0x94, with
+apple80211setCIPHER_KEY fallback. Thus the observed userspace 64-byte MSK is
+NOT the expected native callback length; consumer validation must use the
+post-translation association profile. Meaning of every auth mask remains to
+be checked before enabling broader profiles.
+
+IO80211InfraInterface::handleKeyDone at 0xffffff80022d4d9c emits
+kIOMessageServicePropertyChange (0xe0000130) on its interface after success
+and property update, for interface type 1. setLinkStateInternal invokes it
+for link states 1/2, with success true for state 2. postMessage also invokes
+it with true/true for ID 0x4c when payload+4 equals 0xe0822c15. These are
+stock notification producers, not grounds to send arbitrary duplicate
+property-change messages from Ath10k. The existing native link publication
+may already traverse the correct initial completion route; verify its exact
+link state mapping before adding another event. Rekey notification is distinct.
+
+### Existing native LinkUp already reaches initial key-done — 2026-10-30
+
+Ath10k nativeLinkStateUpdate invokes the stock interface setLinkState with
+kIO80211NetworkLinkUp when WCL byte7 requests the link update. The included
+ABI enum assigns Down=1 and Up=2. The recovered stock setLinkStateInternal
+path invokes handleKeyDone(true,false) for state2 on type1 interfaces. Thus
+initial EAP completion has an existing stock notification route; adding an
+unconditional messageClients(property-change) would duplicate it. This is
+source/ABI path evidence, not a new enterprise radio test.
+
+Native key replacement deliberately retains carrier and does not republish
+LinkUp. The separately recovered stock postMessage branch ID0x4c/reason
+0xe0822c15 invokes handleKeyDone(true,true). Before adding any such event,
+recover its producer payload and WCL routing and determine which enterprise
+reauthentication scenarios require it. Do not confuse it with the already
+implemented 40-byte transition-disable SupplicantEvent.
+
+### Rekey event shares the existing supplicant wire record — 2026-10-30
+
+Resolved producer AppleBCMWLANCore::handlePSKEvent at 0xffffff80015cdd46:
+it builds the 40-byte record and posts ID0x4c at 0xffffff80015cdf71, then
+invokes JoinAdapter::handleSupplicantEvent. Firmware status6 maps to
+0xe0820406; reason21 maps to 0xe0822c15. This is the SAME SupplicantEvent
+wire record already declared in vendor/itlwm/WCL.hpp (enum76), not a new
+event type. Earlier wording about a separate event refers only to different
+reason/semantics and must not be read as a separate payload or event ID.
+Current completedSupplicantPolicy emits reason0 (0xe0822c00), so it does not
+enter Infra's reason21 key-done notification branch. The policy delivery
+mechanism must not be repurposed into unconditional rekey notification.
+
+Implementation decision pending: tie reason21 publication to a successfully
+completed applicable key exchange and its association generation, with
+one accepted enqueue and cancellation handling. Do not synthesize it for
+IGTK-only updates or every security counter increment without confirming
+stock reason21 semantics and distinguishing pairwise from group exchanges.
+
+### Reason21 identified as PTK update — 2026-10-30
+
+The maintained Broadcom driver header
+[bcmevent.h](https://github.com/StreamUnlimited/broadcom-bcmdhd-4359/blob/master/include/bcmevent.h)
+defines WLC_E_SUP_PTK_UPDATE=21, separately from GTK_UPDATE=23. Its PTK
+update payload describes the PN when M4 was sent. This explains the locally
+recovered Infra reason0xe0822c15 key-done branch: it is pairwise replacement,
+not a blanket GTK/IGTK completion signal. Header version is independent of
+Apple 24G90; numeric mapping is corroborated by the local producer/consumer,
+not evidence that all newer Broadcom event extensions exist on this Mac.
+
+Next implementation boundary: preserve a pairwise-update completion ticket
+from authenticated PairKeys through firmware PTK acknowledgement, PMF epoch,
+ECHO/RX retirement and M4 transport completion, then post the existing
+40-byte SupplicantEvent with success/reason21 once. Cancel the ticket on
+leave/failure/profile retirement; retry failed enqueue without replaying an
+accepted event. Do not trigger on initial keys, GTK-only or IGTK-only changes.
+No runtime implementation has been added in this investigation yet.
+
+## 2026-10-30 — native EAPOL completion ownership gap
+
+Source review confirms that `serviceNative` sets `authorizePending` only when
+submitting at security phase 3. Rekey replies are submitted at phase 5, so the
+existing native completion branch does not inspect their failure. The serial
+retirement path in `serviceConnection` sets `eapolTxFailed`, but does not itself
+cancel that native rekey. Moreover, `serviceConnection` can submit a management
+frame later in the same invocation, and `serviceNativePMF` runs before native
+reply processing. Therefore reading the shared latest `txStatus`/`txId` from a
+later native tick cannot identify M4 reliably.
+
+The implementation batch must capture completion at retirement and cover reply
+ownership, every EAPOL failure, pairwise-only notification, duplicate replies,
+cancellation and enqueue retry together. This is a source-confirmed integration
+gap, not evidence of a particular observed radio failure. No driver changes or
+new hardware test have been made at this checkpoint.
+
+## 2026-10-30 — integrated EAPOL/PTK completion candidate
+
+Implemented durable EAPOL completion at serial DMA retirement and failure
+handling for every native reply. A PairKeys export binds the expected security
+generation; only successful M4 completion after the phase-5 key/PMF/ECHO barrier
+creates the pending PTK event. While pending, the next EAPOL exchange is not
+consumed. Event 76/reason 0xe0822c15 preserves policy flags and is consumed only
+on accepted enqueue. Association retirement clears its owner. Initial keys,
+group-only updates and duplicate replies do not arm this event.
+
+Consolidated 64-test suite passed, including production-fragment completion,
+notification and reset tests. Candidate D2D48A34-9F25-327E-A916-7C7D4C297822
+built and signed; exact UUID included in isolated auxiliary linking after
+removing OSBundleRequired only from its validation copy. The successful command
+uses repository selection (-r probe -b br.com.jonasw8.driver.ath10kmac), explicit
+aux output, existing boot/system collections and --allow-missing-kdk. Earlier
+bundle-path-only attempts supplied no binaries and are not counted as passes.
+No EFI change, live loading or hardware rekey validation performed.

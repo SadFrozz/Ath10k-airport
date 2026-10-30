@@ -639,7 +639,10 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     _connection.lastTxEAPOL=!mgmt && bytes>=14 && data[12]==0x88 && data[13]==0x8e;
     _connection.txSinceMs=nowMs;
     const char *error=submitNetworkCE(4,_packetCommand,length,_connection.txNext);
-    if(!error)++_connection.httSequence;
+    if(!error){
+        ++_connection.httSequence;
+        if(_connection.lastTxEAPOL)_connection.eapolCompletion.begin(_connection.txId);
+    }
     return error;
 }
 const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
@@ -663,6 +666,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(snapshot.currentSrcRead==s.txNext && s.txComplete){
             if(!_packetCommand.syncFromDevice() || !_ceSrcRings[4].syncFromDevice())return "packet-completion-sync";
             s.txOwned=false;
+            if(s.lastTxEAPOL)s.eapolCompletion.retire(s.txId,s.txStatus);
             if(s.txStatus){
                 if(s.lastTxEAPOL)s.eapolTxFailed=true;
                 ++s.txErrors;

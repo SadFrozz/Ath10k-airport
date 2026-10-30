@@ -90,6 +90,11 @@ inline SupplicantEventData completedSupplicantPolicy(uint8_t flags){
     event.transitionDisabledFlags=flags;return event;
 }
 
+// Stock PTK-update completion, not initial join or GTK/IGTK-only replacement.
+inline SupplicantEventData completedPairwiseUpdate(uint8_t flags){
+    auto event=completedSupplicantPolicy(flags);event.reason=0xe0822c15u;return event;
+}
+
 struct SequoiaLqmUpdate {
     uint8_t rssiValid;
     uint8_t reserved0[3];

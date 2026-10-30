@@ -44,7 +44,7 @@ public:
     class NativeSecurity;
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
-    struct {UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
+    struct {UInt32 securityGeneration=0;UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
         Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4;unsigned securityPhase=0;
         struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
     void discardIfStopped(UInt64 now=0);
@@ -209,7 +209,7 @@ int main(){
     security.supplicant.outputLength=123;
     security.ready=security.replyPending=security.keysPending=security.authorizePending=true;
     security.replyLength=120;security.keyOperation=3;security.pairDeadline=5000;
-    security.cachedGeneration=12;
+    security.cachedGeneration=12;security.pairUpdateReply=security.ptkUpdatePending=true;security.ptkUpdateGeneration=7;
     memset(d._nativeJoin.key,0x7d,sizeof(d._nativeJoin.key));
     memcpy(d._nativeJoin.bssid,s_ap,6);
     security.cancelPairwiseAttempt();
@@ -224,6 +224,7 @@ int main(){
     assert(security.retireForRoam(profileGeneration));
     assert(security.profile.generation()==profileGeneration);
     assert(!security.ready && !security.keysPending && !security.authorizePending);
+    assert(!security.pairUpdateReply && !security.ptkUpdatePending && !security.ptkUpdateGeneration);
     for(auto v:security.keys)assert(!v);
     for(auto v:security.reply)assert(!v);
     AirportWCL::JoinRequest transfer{};

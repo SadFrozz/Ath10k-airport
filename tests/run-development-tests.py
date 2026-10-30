@@ -72,6 +72,11 @@ def main():
         terminal=native[native.index('    if(sec && (',native.index('    // A completed radio-side teardown')):native.index('    // Crypto/radio progress must not wait')]
         (include/'native_security_terminal_cleanup.inc').write_text('void Ath10kPCIDevice::discardIfStopped(UInt64 now){auto sec=_nativeSecurity;auto &s=_connection;\n'+terminal+'}\n')
         network_source=(ROOT/'src/kext/Ath10kNetwork.cpp').read_text()
+        completion=native[native.index('        if(sec->authorizePending && s.eapolCompletion.complete)'):native.index('        if(sec->keysPending && !s.wmiOwned')]
+        (include/'native_eapol_completion.inc').write_text('void Driver::service(){auto sec=&security;auto &s=state;\n'+completion+'}\n')
+        retirement=network_source[network_source.index('            s.txOwned=false;'):network_source.index('            if(s.txStatus){',network_source.index('            s.txOwned=false;'))]
+        (include/'native_eapol_retirement.inc').write_text('void retire(Ath10k::ConnectionState &s){\n'+retirement+'}\n')
+
         (include/'network_carrier.inc').write_text(network_source[network_source.index('void Ath10kPCIDevice::networkLink('):network_source.index('bool Ath10kPCIDevice::prepareNetwork(')])
         medium_constants=network_source[network_source.index('#ifdef ATH10K_NATIVE'):network_source.index('const OSString *')]
         medium_select=network_source[network_source.index('IOReturn Ath10kPCIDevice::selectMedium('):network_source.index('IOReturn Ath10kPCIDevice::setPromiscuousMode(')]
@@ -152,7 +157,7 @@ def main():
         pmf='\n'.join(line for source in pmf_sources for line in source.read_text().splitlines()
                       if not line.startswith('#include') and line!='#pragma once')
         (include/'pmf_session.inc').write_text(pmf+'\n')
-        names=['wmi_scan', 'network_medium', 'transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'power_notifications', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_profile', 'native_status', 'native_capture']
+        names=['native_eapol_completion', 'wmi_scan', 'network_medium', 'transition_disable_delivery','regulatory','dma_radio','wmi_radio','native_leave', 'connection', 'tx_watchdog', 'security_disconnect', 'rx_security_diagnostics', 'reconnect_090', 'station_maintenance', 'channel_switch', 'ap_maintenance', 'runtime_power', 'wmi_notifications', 'restore_aspm', 'wake_recovery', 'first_probe', 'pci_match', 'native_bsd_reference', 'native_termination', 'native_release', 'native_registration', 'native_request_admission', 'native_security_lifecycle', 'power', 'power_notifications', 'control_drain', 'native_provider', 'native_bridge', 'native_notifications', 'native_link_state', 'native_link_metrics', 'native_phy_capabilities', 'native_join', 'native_mac', 'native_scan', 'rsn_policy', 'pmf_transport', 'pmf_inbox', 'sa_query', 'sae_wire', 'sae_exchange', 'sae_worker', 'lunnen_payload', 'security', 'native_wire', 'native_profile', 'native_status', 'native_capture']
         if sys.platform == 'darwin': names.extend(['psk_password','p256_backend','sha256_supplicant','sae_session','sae_eapol','pmf_ccmp','pmf_session','native_pmf_receive','native_key_stage','native_sae_radio','native_rsnxe_query'])
         if args.only:
             unknown = sorted(set(args.only) - set(names))
@@ -169,7 +174,7 @@ def main():
         'passed': passed, 'assertions_enabled': True,
         'full_development_suite': args.only is None, 'selected_tests': names,
         'macos_kext_build': False, 'hardware_validation': False,
-        'native_adapter_present': True, 'sae_pmf_implemented': False,
+        'native_adapter_present': True, 'feature_status': 'NATIVE-STATUS.md',
     }, indent=2) + '\n')
 
 if __name__ == '__main__':

@@ -6,6 +6,13 @@ Wi-Fi is controlled through macOS system settings and the Wi-Fi menu.
 There is no companion application, login agent or application bundle to install.
 The driver does not require OpenCore Legacy Patcher or changes to system volumes.
 
+## Documentation
+
+- [Requirements](NATIVE-CONTRACT.md) and [security requirements](WPA3-CONTRACT.md)
+- [Current implementation and evidence](NATIVE-STATUS.md)
+- [Changelog](CHANGELOG.md), [development audit](NATIVE-CONNECTION-AUDIT.md), [batch plan](NATIVE-BATCH-PLAN.json)
+- [Agent working instructions](AGENTS.md)
+
 ## Status
 
 Native discovery, scanning and WPA2 traffic have worked on the development laptop.

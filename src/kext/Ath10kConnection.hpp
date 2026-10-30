@@ -217,6 +217,16 @@ struct ConnectionState {
     UInt16 eapolLength[4]{};UInt8 eapolFrames[4][512]{};
     UInt32 eapolRead=0,eapolWrite=0,eapolCount=0;
     bool lastTxEAPOL=false,eapolTxFailed=false;
+    // Separate from the reusable serial TX slot. Native WCL service runs later
+    // and must not mistake a subsequent management packet for its EAPOL reply.
+    struct EAPOLCompletion {
+        bool pending=false,complete=false;UInt16 id=0;UInt32 status=0;
+        void begin(UInt16 value){pending=true;complete=false;id=value;status=0;}
+        void retire(UInt16 value,UInt32 result){
+            if(pending && !complete && id==value){status=result;complete=true;}
+        }
+        void clear(){pending=complete=false;id=0;status=0;}
+    } eapolCompletion{};
     RegulatoryPolicy regulatory{};
     WMIBSS ap{};
     UInt8 local[6]{},ssid[32]{},bssid[6]{},ssidLength=0;

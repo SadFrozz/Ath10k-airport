@@ -87,8 +87,11 @@ def collect():
                 report['network_bundles'][name + '/' + plugin.name] = kext_record(plugin)
     report['implemented_in_this_branch'] = {
         'lunnen_board_profile': True, 'rsn_parser_and_no_downgrade_policy': True,
-        'native_skywalk_interface': True, 'sae_authentication': False,
-        'pmf_key_install_and_validation': False, 'awdl': False,
+        'native_skywalk_interface': True, 'sae_authentication': True,
+        'pmf_key_install_and_validation': True, 'awdl': False,
+        'scope': 'Source capabilities, not proof of the loaded binary or interoperability. '
+                 'SAE/PMF require the experimental build gate and supported kernel ABI. '
+                 'AP-triggered rekey and other macOS versions remain unverified',
     }
     return report
 
