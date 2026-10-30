@@ -2,6 +2,8 @@
 
 ## Unreleased — repository organization
 
+- Organize original firmware by chipset/revision, document provenance, and move generated payload files to build/generated/firmware; firmware bytes and profile selection are unchanged.
+
 - Separate radio/security/macOS sources, test groups, packaging and developer documentation.
 - Replace copied MacKernelSDK and Airport headers with pinned submodules and four reviewed ABI overrides; generated headers are hash-verified.
 - Update Make, Xcode, Windows tooling, diagnostics and CI paths; rewrite README for users and contributors.

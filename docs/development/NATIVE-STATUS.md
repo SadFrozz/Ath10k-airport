@@ -18,7 +18,23 @@ chronological entries in the audit/history are not current status overrides.
 | macOS 11–14, 15.0–15.1, 26 | Adapter work remains | Sequoia coverage is insufficient | See docs/compatibility/COMPATIBILITY.md |
 | AWDL/AirDrop | Not implemented | Separate feature stage | No interoperability claim |
 
-## Current checkpoint
+## Repository organization checkpoint
+
+The active branch is `repository-structure`, based on main after PR #2 merged.
+Only layout, dependencies, documentation and necessary build/test paths change.
+Firmware inputs are grouped by chipset/revision; generated files are under
+`build/generated/firmware`. Original firmware and board-calibration bytes match.
+
+The consolidated 64-test suite and native build pass after the firmware move.
+The signed executable SHA-256 is
+`694d1cd8d75b2eda229f8654a446445012cb2861f78789b85fea82ac8975af3d`,
+identical to the installed candidate with UUID
+`D2D48A34-9F25-327E-A916-7C7D4C297822`. This is binary-equivalence evidence,
+not a fresh installation, reboot or broader stability certification.
+PR #3 remains subject to final remote packaging checks and merge review.
+Evidence: workspace/SD `NATIVE-repository-restructure-20261030`.
+
+## Previous functional checkpoint
 
 - Published source: remote commit `a3ab0b5a08ba3d085e75b45ee936891f53941ae2`,
   tree `373e552399ed81016ba04b6af8e73848ebfdff60`.

@@ -237,7 +237,7 @@ def prepare_profile(root, folder, namespace, board_key, profile, identity, allow
                   if not any(line.startswith(f"static constexpr {kind} {name}")
                              for name in aliases for kind in ("char", "UInt32", "bool"))]
         header += [f"using {reuse_namespace}::{name};" for name in aliases] + ["}", ""]
-    outdir = root / "firmware/prepared" / (output_name if output_name is not None else ("QCA9377" if allow_fallback else ""))
+    outdir = root / "build/generated/firmware" / (output_name if output_name is not None else ("QCA9377" if allow_fallback else "QCA6174"))
     outputs = {
         outdir / "board.bin": board,
         outdir / "otp.bin": parts[4],
@@ -263,7 +263,7 @@ def prepare(root):
               '#pragma once', '#include "Ath10kPayloadProfile.hpp"']
     entries = []
     profiles = [
-        (root / 'firmware', 'Ath10kPayload', BOARD_KEY, 'QCA6174/hw3.2',
+        (root / 'firmware/QCA6174/hw3.2', 'Ath10kPayload', BOARD_KEY, 'QCA6174/hw3.2',
          ('0x003e', '0x1028', '0x0310', '10', '0x05030000u'), False),
         (root / 'firmware/QCA9377/hw1.0', 'Ath10kPayload9377', QCA9377_BOARD_KEY, 'QCA9377/hw1.1',
          ('0x0042', '0x1028', '0x1810', '1', '0x05020001u'), True),

@@ -30,12 +30,12 @@ class PayloadTests(unittest.TestCase):
             'QCA9377/hw1.1-Lunnen-1a3b-2b51',
             ('0x0042', '0x1a3b', '0x2b51', '1', '0x05020001u'), True,
             'QCA9377-Lunnen', True, 'Ath10kPayload9377')
-        manifest = json.loads(files[ROOT / 'firmware/prepared/QCA9377-Lunnen/manifest.json'])
+        manifest = json.loads(files[ROOT / 'build/generated/firmware/QCA9377-Lunnen/manifest.json'])
         self.assertEqual(manifest['board_selection'], 'board-api2-exact')
         self.assertEqual(manifest['board_key'], p.LUNNEN_QCA9377_BOARD_KEY)
         self.assertEqual(manifest['board_sha256'],
                          'ba14e9b4d189bf213e144ad1936f16cbb2b5286f152d394c9d3f1750a723d991')
-        self.assertNotEqual(files[ROOT / 'firmware/prepared/QCA9377-Lunnen/board.bin'],
+        self.assertNotEqual(files[ROOT / 'build/generated/firmware/QCA9377-Lunnen/board.bin'],
                             p.select_board((folder / 'board-2.bin').read_bytes(), p.QCA9377_BOARD_KEY))
         self.assertIn('0x1a3b, 0x2b51', entry)
         generated = '\n'.join(header)
@@ -63,9 +63,9 @@ class PayloadTests(unittest.TestCase):
                     True, 'QCA9377-Lunnen', True)
 
     def test_real_inputs(self):
-        board = p.select_board((ROOT / "firmware/board-2.bin").read_bytes())
+        board = p.select_board((ROOT / "firmware/QCA6174/hw3.2/board-2.bin").read_bytes())
         self.assertEqual(len(board), 8124)
-        parts, version = p.parse_firmware((ROOT / "firmware/firmware-6.bin").read_bytes())
+        parts, version = p.parse_firmware((ROOT / "firmware/QCA6174/hw3.2/firmware-6.bin").read_bytes())
         self.assertEqual(version, "WLAN.RM.4.4.1-00309-")
         self.assertEqual(len(parts[3]), 681821)
         self.assertEqual(len(parts[4]), 24429)
@@ -84,7 +84,7 @@ class PayloadTests(unittest.TestCase):
             p.QCA9377_BOARD_KEY, 'QCA9377/hw1.1',
             ('0x0042', '0x1028', '0x1810', '1', '0x05020001u'), True)
         import json
-        manifest = json.loads(files[ROOT / 'firmware/prepared/QCA9377/manifest.json'])
+        manifest = json.loads(files[ROOT / 'build/generated/firmware/QCA9377/manifest.json'])
         self.assertEqual(manifest['board_selection'], 'board-api2-exact')
         self.assertEqual(manifest['firmware_version'], 'WLAN.TF.2.1-00021-QCARMSWP-1')
         self.assertEqual(manifest['otp_bytes'], 24193)
@@ -112,13 +112,13 @@ class PayloadTests(unittest.TestCase):
             foreign = container(p.BOARD_MAGIC, board_entry(
                 'bus=pci,vendor=168c,device=0042,subsystem-vendor=17aa,subsystem-device=0901',b'a'*8124))
             (tmp/'board-2.bin').write_bytes(foreign)
-            self.assertEqual(json.loads(p.prepare_profile(*args)[0][ROOT / 'firmware/prepared/QCA9377/manifest.json'])
+            self.assertEqual(json.loads(p.prepare_profile(*args)[0][ROOT / 'build/generated/firmware/QCA9377/manifest.json'])
                              ['board_selection'], 'board-api1-fallback')
             shutil.copyfile(folder/'board-2.bin',tmp/'board-2.bin')
-            (tmp/'board.bin').write_bytes((ROOT/'firmware/prepared/board.bin').read_bytes())
+            (tmp/'board.bin').write_bytes((ROOT/'build/generated/firmware/QCA6174/board.bin').read_bytes())
             p.prepare_profile(*args)  # exact API2 match must not consume the fallback board
             shutil.copyfile(folder/'board.bin',tmp/'board.bin')
-            shutil.copyfile(ROOT/'firmware/firmware-6.bin',tmp/'firmware-6.bin')
+            shutil.copyfile(ROOT/'firmware/QCA6174/hw3.2/firmware-6.bin',tmp/'firmware-6.bin')
             with self.assertRaises(ValueError): p.prepare_profile(*args)
 
     def test_segmented_image_validation(self):

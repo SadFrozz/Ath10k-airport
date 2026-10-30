@@ -1,5 +1,5 @@
 {
-  "branch": "native-sequoia-development",
+  "branch": "repository-structure",
   "policy": "Group related lifecycle gaps; one reviewed publication and hardware candidate per batch, no per-fix reboot",
   "batch": {
     "name": "Infrastructure lifecycle and WPA3 continuity",
@@ -226,5 +226,11 @@
       "validation": "Run the consolidated development suite after the complete implementation batch; do not claim AP-triggered hardware rekey from local tests",
       "local_validation": "64-test consolidated suite passed; signature, structure and exact-UUID auxiliary inclusion passed"
     }
+  },
+  "active_scope": {
+    "name": "Repository organization only",
+    "status": "Layout, pinned submodules and firmware grouping implemented; consolidated tests and native build passed; final remote packaging checks pending",
+    "hardware_evidence": "Signed executable is byte-identical to the installed D2D48A34-9F25-327E-A916-7C7D4C297822 candidate; no fresh reboot",
+    "deferred": "The functional batch below remains historical/pending and is not implemented in this branch"
   }
 }

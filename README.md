@@ -85,6 +85,7 @@ cross-compilation workflow.
 - `scripts`: build, validation and diagnostics tooling.
 - `packaging`: kext and Xcode project templates.
 - `vendor`: pinned upstream submodules; generated headers belong in `build`.
+- [`firmware`](firmware/README.md): chipset-specific inputs, provenance and licenses.
 - `docs`: requirements, current development state, guides and historical evidence.
 
 Read the [native contract](docs/contracts/NATIVE-CONTRACT.md),

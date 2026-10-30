@@ -47,7 +47,7 @@ units, links a real `MH_KEXT_BUNDLE`, generates the Lunnen native personality,
 signs it ad-hoc, and validates the resulting file. Commands, tool exits and hashes
 are saved alongside the bundle. A stack-frame limit is enforced.
 
-`src/core/Ath10kPayload.hpp` and `firmware/prepared/` are generated from the original
+`src/core/Ath10kPayload.hpp` and `build/generated/firmware/` are generated from the original
 tracked firmware containers. They are ignored build outputs and must not be added
 back to source control. Both Make and the Windows builder prepare them before use.
 

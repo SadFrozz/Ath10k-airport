@@ -1,5 +1,5 @@
 # Save as .github/workflows/ath10kmac-release.yml in the kext repository.
-# The Makefile, src/, scripts/, firmware/, and Ath10kMac.kext/ must be at its root.
+# Run from the repository root; the kext template is in packaging/Ath10kMac.kext.
 # Push v0.0.91 to release the current source; future tags must match its version.
 # Branch pushes, pull requests, and manual branch runs produce build artifacts.
 
@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           make clean
           make NATIVE=1 DIAGNOSTIC_STAGE=0 -j"$(sysctl -n hw.logicalcpu)" kext
-          plutil -lint build/native/out/packaging/Ath10kMac.kext/Contents/Info.plist
+          plutil -lint build/native/out/Ath10kMac.kext/Contents/Info.plist
           xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -verify_arch x86_64
           test "$(xcrun lipo build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac -archs)" = "x86_64"
           xcrun dwarfdump --uuid build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac
@@ -129,7 +129,7 @@ jobs:
           cp vendor/MacKernelSDK/LICENSE.txt "$stage/Licenses/MacKernelSDK.txt"
           cp build/generated/itlwm/LICENSE "$stage/Licenses/itlwm.txt"
           cp firmware/LICENSE.QualcommAtheros_ath10k "$stage/Licenses/"
-          cp firmware/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA6174-firmware-notice.txt"
+          cp firmware/QCA6174/hw3.2/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA6174-firmware-notice.txt"
           cp firmware/QCA9377/hw1.0/notice_ath10k_firmware-6.txt "$stage/Licenses/QCA9377-firmware-notice.txt"
           cp regulatory/LICENSE "$stage/Licenses/wireless-regdb.txt"
 
@@ -165,6 +165,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.1.0
         with:
+          submodules: recursive
           persist-credentials: false
       - name: Portable native regressions
         run: python3 tests/run-development-tests.py
