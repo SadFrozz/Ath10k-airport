@@ -233,7 +233,7 @@ IOReturn Ath10kPCIDevice::controlAction(OSObject *owner,void *who,void *input,vo
   if(s.groupCipher==AthSecurity::cipherCCMP)for(unsigned i=16;i<32;++i)if(r.data[16+i])return kIOReturnBadArgument;
   bcopy(r.data,s.temporalKey,16);bcopy(r.data+16,s.groupKey,32);s.groupIndex=r.data[49];bcopy(r.data+50,s.groupRSC,6);
   UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);
-  for(auto &v:s.groupPN)v=pn;
+  for(auto &v:s.groupPN[s.groupIndex])v=pn;
   s.securityPhase=1;s.submitted=false;return kIOReturnSuccess;
  }
  if(r.operation==Authorize){

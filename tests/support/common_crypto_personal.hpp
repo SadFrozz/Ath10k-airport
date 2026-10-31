@@ -4,6 +4,7 @@
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonCryptor.h>
 struct PersonalTestCrypto {
+ static bool hmacMD5(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){CCHmac(kCCHmacAlgMD5,k,kl,d,n,o);return true;}
  static bool random(uint8_t *out,size_t n){for(size_t i=0;i<n;++i)out[i]=uint8_t(i);return true;}
  static bool hmac(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){CCHmac(kCCHmacAlgSHA1,k,kl,d,n,o);return true;}
  static bool hmac256(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){CCHmac(kCCHmacAlgSHA256,k,kl,d,n,o);return true;}

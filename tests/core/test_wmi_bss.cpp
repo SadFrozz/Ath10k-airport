@@ -14,12 +14,30 @@ static std::vector<UInt8> wrapMgmt(const std::vector<UInt8> &f,UInt32 status=0,b
     std::copy(f.begin(),f.end(),p.begin()+60);if(credit)addPkgCredit(p);return p;
 }
 int main(){
+    { const UInt8 owe[]={221,14,0x50,0x6f,0x9a,0x1c,2,1,2,3,4,5,3,'o','w','e'};
+      auto frame=beacon();frame.insert(frame.end(),owe,owe+sizeof(owe));
+      Ath10k::WMIBSSCache cache;Ath10k::recordWMIBSS(cache,frame.data(),frame.size(),1,20,0);
+      assert(cache.count==1 && cache.entries[0].oweTransitionLength==sizeof(owe));
+      assert(!memcmp(cache.entries[0].oweTransition,owe,sizeof(owe)));
+      auto truncated=frame;truncated.pop_back();Ath10k::WMIBSSCache malformed;
+      Ath10k::recordWMIBSS(malformed,truncated.data(),truncated.size(),1,20,0);assert(!malformed.count && malformed.malformed==1);
+      auto replacement=beacon();Ath10k::recordWMIBSS(cache,replacement.data(),replacement.size(),1,20,0);
+      assert(cache.count==1 && !cache.entries[0].oweTransitionLength);
+      for(auto byte:cache.entries[0].oweTransition)assert(byte==0);
+      frame.insert(frame.end(),owe,owe+sizeof(owe));Ath10k::WMIBSSCache duplicate;
+      Ath10k::recordWMIBSS(duplicate,frame.data(),frame.size(),1,20,0);assert(!duplicate.count && duplicate.malformed==1);
+    }
+
     ScanDriver d;d.launch();d.deliver(2,scanPacket(1,7));d.tick(1040);
     d.deliver(2,wrapMgmt(beacon()));d.tick(1050);
     assert(d._wmiBSS.count==1 && d._wmiBSS.accepted==1 && d._wmiBSS.beacons==1);
     const auto &e=d._wmiBSS.entries[0];
     assert(e.ssidLength==4 && !memcmp(e.ssid,"Test",4) && e.bssid[5]==1);
     assert(e.snr==42 && e.rxChannel==1 && e.advertisedChannel==1 && e.privacy && e.rsnPresent && e.wpaPresent);
+    assert(e.wpaLength==6 && !memcmp(e.wpa,"\xdd\x04\x00\x50\xf2\x01",6));
+    {auto duplicate=beacon();duplicate.insert(duplicate.end(),{221,4,0,0x50,0xf2,1});
+     Ath10k::WMIBSSCache bad;Ath10k::recordWMIBSS(bad,duplicate.data(),duplicate.size(),1,20,0);
+     assert(!bad.count && bad.malformed==1);}
     d.deliver(2,wrapMgmt(beacon()));d.tick(1060);assert(d._wmiBSS.count==1 && e.seen==2);
     d.deliver(2,scanPacket(2));d.tick(1600);assert(d._wmiScan.completed && d._wmiLive.active);
     d.releaseWMIRuntime();

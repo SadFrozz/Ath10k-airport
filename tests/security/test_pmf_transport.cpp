@@ -5,7 +5,33 @@
 #include "Ath10kConnection.hpp"
 #include "../fixtures/pmf_ccmp_vectors.inc"
 using Mode=AthSecurity::ManagementTX;
+static void sharedWEPTransport(){
+ Ath10k::ConnectionState s{};s.stage=Ath10k::LinkStage::Auth;s.secure=s.sharedKeyAuth=true;s.pairCipher=1;
+ s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+ AthSecurity::WEPSharedAuthentication owner;uint8_t key[5]{},iv[3]={1,2,3};
+ uint8_t challenge[263]={1,0,2,0,0,0,16,255};
+ assert(owner.begin(8,s.local,s.bssid,key,5,0,iv,100,1000));assert(owner.requestSubmitted());
+ assert(owner.receive(8,s.local,s.bssid,challenge,sizeof(challenge),110));
+ uint8_t frame[296]{},cmd[256]{};
+ assert(!owner.buildResponseFrame(8,s.local,s.bssid,111,1,frame,256));
+ const auto n=owner.buildResponseFrame(8,s.local,s.bssid,111,4095,frame,sizeof(frame));assert(n==295);
+ Ath10k::WEPAuthenticationTX proof{&owner,8,111};
+ auto build=[&](){return Ath10k::buildHTTPacket(cmd,sizeof(cmd),frame,n,0x1000,0x2000,5,s,true,Mode::SoftwareWEPAuthentication,255,&proof);};
+ assert(build() && cmd[9]==0x65); // explicit NO_ENCRYPT, no firmware CCMP/WEP rewrite
+ assert(!Ath10k::buildHTTPacket(cmd,sizeof(cmd),frame,n,0x1000,0x2000,5,s,true,Mode::SoftwareWEPAuthentication));
+ for(unsigned at:{0u,1u,2u,4u,10u,16u,22u,24u,27u,294u}){frame[at]^=1;assert(!build());frame[at]^=1;}
+ proof.generation=7;assert(!build());proof.generation=8;
+ proof.now=1000;assert(!build());proof.now=111;
+ s.cancelRequested=true;assert(!build());s.cancelRequested=false;
+ s.stage=Ath10k::LinkStage::Connected;assert(!build());s.stage=Ath10k::LinkStage::Auth;
+ s.portAuthorized=true;assert(!build());s.portAuthorized=false;
+ s.pairCipher=4;assert(!build());s.pairCipher=5;assert(!build());s.pairCipher=1;
+ s.pmfRequired=true;assert(!build());s.pmfRequired=false;
+ s.sharedKeyAuth=false;assert(!build());s.sharedKeyAuth=true;
+ assert(build());owner.cancel();assert(!build());
+}
 int main(){
+ sharedWEPTransport();
  Ath10k::ConnectionState s{};s.stage=Ath10k::LinkStage::Connected;s.secure=true;s.pairInstalled=true;s.pmfRequired=true;
  memcpy(s.local,c_sta,6);memcpy(s.bssid,c_ap,6);s.txId=19;s.httSequence=7;
  AthSecurity::PMFCCMPResult result;assert(AthSecurity::PMFHardwareCCMP::prepare(c_txpn1_plain,sizeof(c_txpn1_plain),c_sta,c_ap,1,result));

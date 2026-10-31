@@ -12,17 +12,20 @@ constexpr int kIOReturnSuccess=0,kIOReturnBadArgument=1;
 class IO80211SkywalkInterface;
 class Ath10kPCIDevice {
 public:
+ bool wep=false;bool nativeWEPEnabled() const {return wep;}
+ bool legacy=false;bool nativeLegacyEnabled() const {return legacy;}
  bool enabled=false;bool nativeSAEEnabled() const {return enabled;}
+ bool owe=false;bool nativeOWEEnabled() const {return owe && enabled;}
  IOReturn getCARD_CAPABILITIES(IO80211SkywalkInterface *,apple80211_capability_data *);
 };
 #include "native_card_capabilities.inc"
 static void capabilities(){
  Ath10kPCIDevice d;assert(d.getCARD_CAPABILITIES(nullptr,nullptr)==kIOReturnBadArgument);
  struct Guard {apple80211_capability_data caps;uint64_t end=0x123456789abcdef0ull;} out;
- for(bool enabled:{false,true}){d.enabled=enabled;memset(&out.caps,0xa5,sizeof(out.caps));
+ for(bool wep:{false,true})for(bool legacy:{false,true})for(bool enabled:{false,true})for(bool owe:{false,true}){d.owe=owe;d.wep=wep;d.legacy=legacy;d.enabled=enabled;memset(&out.caps,0xa5,sizeof(out.caps));
   assert(d.getCARD_CAPABILITIES(nullptr,&out.caps)==kIOReturnSuccess && out.caps.version==1 && out.end==0x123456789abcdef0ull);
   for(size_t i=0;i<sizeof(out.caps.capabilities);++i){
-   const unsigned expected=i==0?0x0a:i==1?0x50:i==2?2:i==5?0x40:i==6 && enabled?1:i==9?(enabled?10:2):0;
+   const unsigned expected=i==0?(wep?0x0b:0x0a):i==1?(legacy?0x70:0x50):i==2?2:i==5?0x40:i==6 && enabled?1:i==9?(enabled?10:2):i==12 && owe && enabled?1:0;
    assert(out.caps.capabilities[i]==expected);
   }
  }
@@ -43,10 +46,12 @@ int main(){
     {AirportWCL::JoinRequest e{};e.lowerAuth=1;e.upperAuth=4;
      assert(nativeJoinAuth(e)==NativeJoinAuth::Unsupported);
      assert(nativeJoinAuth(e,false,true)==NativeJoinAuth::EAP);
+     auto sha=e;sha.upperAuth=1u<<11;assert(nativeJoinAuth(sha)==NativeJoinAuth::Unsupported);
+     assert(nativeJoinAuth(sha,false,true)==NativeJoinAuth::EAPSHA256);
      for(unsigned bad=0;bad<7;++bad){auto q=e;
       switch(bad){case 0:q.keyLength=32;break;case 1:q.keyCipher=9;break;
        case 2:q.keyFlags=1;break;case 3:q.keyIndex=1;break;
-       case 4:q.upperAuth|=8;break;case 5:q.upperAuth=1u<<11;break;
+       case 4:q.upperAuth|=8;break;case 5:q.upperAuth=1u<<15;break;
        case 6:q.transitionDisable=NativeTransitionDisable::Enterprise;break;}
       assert(nativeJoinAuth(q,false,true)==NativeJoinAuth::Unsupported);
      }

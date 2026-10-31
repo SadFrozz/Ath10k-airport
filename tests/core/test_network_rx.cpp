@@ -1,3 +1,4 @@
+#define ATH10K_NATIVE
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,10 @@ static int mbuf_copyback(mbuf_t p,size_t at,size_t bytes,const void *data,int){
 }
 class Ath10kPCIDevice {
 public:
+    unsigned micEvents=0;GroupTKIPMICFailure lastMIC{};
+    bool nativeRecordTKIPMIC(const GroupTKIPMICFailure &event,UInt64){++micEvents;lastMIC=event;return true;}
+    bool nativeEAPSystemFrame(const UInt8 *,UInt32){return false;}
+    bool nativeEAPReceive(const UInt8 *,UInt32){return false;}
     ConnectionState _connection{};RXBatch _rxBatch{};RXReorder _rxReorder{};RXDefrag _rxDefrag{};
     UInt8 _rxNormalized[kRXAssemblyBytes]{};
     bool _networkEnabled=true,_networkLinkUp=true,failAllocation=false;
@@ -103,7 +108,8 @@ static void firstOnlyMetadata(){
         // Bad key/cipher/original transmitter on FIRST remains rejected.
         first[267]=0x60;feed();assert(d.interface.frames.size()==2 && s.rxReasons[ConnectionState::Key]==1);
         first[267]=0x20;htcWriteLE32(first+12,(7u<<28)|(1u<<13));feed();
-        assert(d.interface.frames.size()==2 && s.rxReasons[ConnectionState::Key]==2);
+        assert(d.interface.frames.size()==2 && s.rxReasons[ConnectionState::Key]==1 &&
+               s.rxReasons[ConnectionState::Aggregate]==1 && s.pairPN[0]==30);
         htcWriteLE32(first+12,(6u<<28)|(1u<<13));first[246]^=4;feed();
         assert(d.interface.frames.size()==2 && s.rxSecurity.last==RXSecurityFault::Transmitter && s.pairPN[0]==30);
         first[246]^=4;
@@ -115,7 +121,129 @@ static void firstOnlyMetadata(){
         assert(d.interface.frames.size()==2 && s.rxReasons[ConnectionState::Port]==1 && s.pairPN[0]==30);
     }
 }
+static void openLinkRejectsEncryptedFrames(){
+    Ath10kPCIDevice d;auto &s=d._connection;
+    s.stage=LinkStage::Connected;s.portAuthorized=true;s.firmwareReorder=true;
+    s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;
+    s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+    UInt8 packet[2048];
+    auto feed=[&](){d._rxBatch.reset();d.deliverNetworkRX(packet,1,7,0,sizeof(packet));d.finishNetworkRX();};
+    descriptor(packet,s,1,0,false);feed();assert(d.interface.frames.size()==1);
+    // A delayed decrypted packet must not inherit open-link authorization.
+    descriptor(packet,s,2,9,true);feed();
+    assert(d.interface.frames.size()==1 && s.rxLastReason==ConnectionState::Key);
+    assert(!s.pairPN[0]);
+    // Neither encrypted EAPOL nor a group key creates an exception.
+    packet[312]=0x88;packet[313]=0x8e;feed();
+    assert(d.interface.frames.size()==1 && !s.eapolCount);
+    descriptor(packet,s,3,10,true);packet[240]=packet[300]=1;packet[267]=0x60;feed();
+    assert(d.interface.frames.size()==1 && !s.groupPN[s.groupIndex][0]);
+    descriptor(packet,s,4,0,false);feed();assert(d.interface.frames.size()==2);
+}
+static void rawTKIPDelivery(){
+    Ath10kPCIDevice d;auto &s=d._connection;
+    s.stage=LinkStage::Connected;s.secure=s.portAuthorized=true;s.securityPhase=5;
+    s.groupCipher=AthSecurity::cipherTKIP;s.groupIndex=2;s.firmwareReorder=true;
+    s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;
+    s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+    UInt8 packet[2048];descriptor(packet,s,1,0);
+    htcWriteLE32(packet+12,(4u<<28)|(1u<<13)|7);
+    htcWriteLE32(packet+32,0);htcWriteLE32(packet+24,57);
+    UInt8 *p=packet+300;memset(p,0,57);htcWriteLE16(p,0x4208);
+    const UInt8 group[6]={1,0,0x5e,0,0,1};
+    memcpy(p+4,group,6);memcpy(p+10,s.bssid,6);memcpy(p+16,s.bssid,6);
+    const UInt8 iv[8]={2,0x22,1,0xa0,3,4,5,6};memcpy(p+24,iv,8);
+    const UInt8 body[9]={0xaa,0xaa,3,0,0,0,8,0,0x45};memcpy(p+32,body,9);
+    memset(p+41,0xa5,16);memcpy(packet+236,p,32);
+    auto feed=[&](){d._rxBatch.reset();d.deliverNetworkRX(packet,1,7,0,sizeof(packet));d.finishNetworkRX();};
+    feed();assert(d.interface.frames.size()==1);
+    const auto &frame=d.interface.frames.front();
+    assert(frame.size()==15 && !memcmp(frame.data(),group,6) && frame[14]==0x45);
+    const UInt64 tsc=s.groupPN[s.groupIndex][16];assert(tsc);
+    feed();assert(d.interface.frames.size()==1 && s.rxLastReason==ConnectionState::Replay);
+    // A newer TSC cannot hide a firmware MIC failure or advance replay state.
+    ++packet[262];++p[26];htcWriteLE32(packet+4,0x90000000u);
+    feed();assert(d.interface.frames.size()==1 && s.rxLastReason==ConnectionState::Integrity && s.groupPN[s.groupIndex][16]==tsc);
+}
+static void staleBatchEpoch(){
+ for(bool duringAssembly:{false,true}){
+  Ath10kPCIDevice d;auto &s=d._connection;s.stage=LinkStage::Connected;
+  s.secure=s.portAuthorized=s.firmwareReorder=true;s.securityPhase=5;s.securityGeneration=41;
+  s.groupCipher=AthSecurity::cipherCCMP;s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+  s.peerCount=1;s.peerIDs[0]=1u<<7;UInt8 packet[2048];
+  if(duringAssembly)nativeMSDU(packet,s,true);else descriptor(packet,s,1,30);
+  d.deliverNetworkRX(packet,1,7,0,sizeof(packet));assert(d._rxBatch.count==1 && !d._rxBatch.failed);
+  ++s.securityGeneration;
+  if(duringAssembly){nativeMSDU(packet,s,false);d.deliverNetworkRX(packet,1,7,0,sizeof(packet));assert(d._rxBatch.failed);}
+  // Both direct release and reorder admission enforce the epoch fence.
+  if(!duringAssembly){d.releaseRXBatch(d._rxBatch);assert(d.interface.frames.empty() && !s.pairPN[0]);}
+  d.finishNetworkRX();assert(d.interface.frames.empty() && !s.eapolCount && s.rxLastReason==ConnectionState::Key);
+  for(auto pn:s.pairPN)assert(!pn);
+  d._rxBatch.reset();descriptor(packet,s,2,31);d.deliverNetworkRX(packet,1,7,0,sizeof(packet));d.finishNetworkRX();
+  assert(d.interface.frames.size()==1 && s.pairPN[0]==31);
+ }
+}
+static void epochSurvivesDisconnect(){
+ Ath10kPCIDevice d;auto &s=d._connection;s.stage=LinkStage::Connected;
+ s.portAuthorized=s.firmwareReorder=true;s.securityGeneration=7;
+ s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;s.peerCount=1;s.peerIDs[0]=1u<<7;
+ UInt8 packet[2048];descriptor(packet,s,1,1,false);d.deliverNetworkRX(packet,1,7,0,sizeof(packet));
+ assert(d._rxBatch.count==1);resetDisconnected(s);assert(s.securityGeneration==8);
+ // Recreate the same address/peer; the retained batch still has the old owner.
+ s.stage=LinkStage::Connected;s.portAuthorized=s.firmwareReorder=true;
+ s.bssid[0]=2;s.bssid[5]=2;s.peerCount=1;s.peerIDs[0]=1u<<7;
+ d.finishNetworkRX();assert(d.interface.frames.empty() && s.rxLastReason==ConnectionState::Key);
+}
+static void countermeasureRXGate(){
+    Ath10kPCIDevice d;auto &s=d._connection;
+    s.stage=LinkStage::Connected;s.secure=s.portAuthorized=s.firmwareReorder=true;s.securityPhase=5;
+    s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+    UInt8 packet[2048];descriptor(packet,s,1,10);
+    d.deliverNetworkRX(packet,1,7,0,sizeof(packet));assert(d._rxBatch.count==1);
+    s.tkipDataBlocked=true;d.finishNetworkRX();
+    assert(d.interface.frames.empty() && !s.pairPN[0]); // Already queued RX is blocked too.
+    d._rxBatch.reset();descriptor(packet,s,2,11);
+    d.deliverNetworkRX(packet,1,7,0,sizeof(packet));d.finishNetworkRX();
+    assert(d.interface.frames.empty() && !s.pairPN[0]);
+    // An EAPOL-leading aggregate cannot smuggle later ordinary subframes.
+    s.tkipDataBlocked=false;d._rxBatch.reset();aggregate(packet,s);
+    packet[320]=0x88;packet[321]=0x8e;
+    d.deliverNetworkRX(packet,1,7,0,sizeof(packet));assert(d._rxBatch.count==5);
+    s.tkipDataBlocked=true;d.finishNetworkRX();
+    assert(d.interface.frames.empty() && !s.pairPN[0] && !s.eapolCount);
+    assert(s.portAuthorized); // Do not disable encryption for the outbound report.
+}
+static void rawMICBeforeNormalization(){
+    Ath10kPCIDevice d;auto &s=d._connection;
+    s.stage=LinkStage::Connected;s.secure=s.portAuthorized=true;s.securityPhase=5;
+    s.groupCipher=AthSecurity::cipherTKIP;s.groupIndex=2;s.groupInstalled[2]=true;
+    s.groupKeyEpoch[2]=19;s.securityGeneration=42;
+    s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;s.bssid[0]=2;s.bssid[5]=2;
+    for(unsigned status=1;status<=9;status+=8){
+        UInt8 packet[348]{};htcWriteLE32(packet+4,0x90000000u);
+        htcWriteLE32(packet+12,(4u<<28)|(1u<<13)|7);htcWriteLE32(packet+24,48);
+        htcWriteLE32(packet+56,0xc000u);
+        UInt8 *h=packet+236;htcWriteLE16(h,0x4208);h[4]=0xff;memcpy(h+10,s.bssid,6);
+        h[25]=0x20;h[26]=10;h[27]=0xa0;
+        memcpy(packet+300,h,32);
+        d._rxBatch.reset();d.deliverNetworkRX(packet,status,7,0,sizeof(packet));
+        assert(d._rxBatch.failed && !d._rxBatch.count && !d._rxBatch.micFailure.valid);
+        assert(d.micEvents==(status==1?1u:2u) && d.lastMIC.valid);
+        assert(d.lastMIC.tsc==10 && d.lastMIC.keyEpoch==19);
+        assert(!s.groupPN[2][16]);d.finishNetworkRX();assert(d.interface.frames.empty());
+        // Other integrity faults never become a qualified MIC notification.
+        htcWriteLE32(packet+4,0xb0000000u);d._rxBatch.reset();
+        d.deliverNetworkRX(packet,status,7,0,sizeof(packet));
+        assert(d._rxBatch.failed && !d._rxBatch.micFailure.valid);
+    }
+}
 int main(){
+    rawMICBeforeNormalization();
+    countermeasureRXGate();
+    epochSurvivesDisconnect();
+    staleBatchEpoch();
+    openLinkRejectsEncryptedFrames();
+    rawTKIPDelivery();
     firstOnlyMetadata();
     {
         Ath10kPCIDevice batch;auto &s=batch._connection;s.stage=LinkStage::Connected;
@@ -152,7 +280,7 @@ int main(){
     // Group RSC and key index apply to outer receiver address.
     s.firmwareReorder=true;s.groupIndex=1;s.groupRSC[0]=20;
     descriptor(desc,s,20,20);desc[240]=desc[300]=0xff;desc[267]=0x60;feed();assert(s.rxLastReason==ConnectionState::Replay);
-    descriptor(desc,s,21,21);desc[240]=desc[300]=0xff;desc[267]=0x60;feed();assert(s.groupPN[0]==21 && d.interface.frames.size()==11);
+    descriptor(desc,s,21,21);desc[240]=desc[300]=0xff;desc[267]=0x60;feed();assert(s.groupPN[s.groupIndex][0]==21 && d.interface.frames.size()==11);
     UInt8 shortDescriptor[33]{};d._rxBatch.reset();d.deliverNetworkRX(shortDescriptor,1,7,0,sizeof(shortDescriptor));
     d.finishNetworkRX();assert(s.rxReasons[ConnectionState::Length]==1 && d.interface.frames.size()==11);
     d._rxBatch.reset();d.deliverNetworkRX(nullptr,1,7,0,0);d.finishNetworkRX();

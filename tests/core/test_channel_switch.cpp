@@ -67,7 +67,7 @@ static void widthChanges(){
     Ath10k::htcWriteLE16(s.ap.vht+4,0xfffa);Ath10k::htcWriteLE16(s.ap.vht+8,0xfffa);
     s.htRateCount=16;for(UInt8 i=0;i<16;++i)s.htRates[i]=i;
     Ath10k::rememberNegotiatedRates(s);
-    s.pairPN[0]=99;s.groupPN[3]=123;s.installedPair[0]=42;s.pairInstalled=true;
+    s.pairPN[0]=99;s.groupPN[s.groupIndex][3]=123;s.installedPair[0]=42;s.pairInstalled=true;
     const UInt8 oldRates[]={12,24,48,108};memcpy(s.ap.rates,oldRates,4);
     std::vector<UInt32> commands;
     d._regs.tx3Consume=[&](){auto *f=static_cast<const UInt8 *>(d._connectionCommand.virtualAddress());
@@ -87,7 +87,7 @@ static void widthChanges(){
     deliverBeacon(d,36,0,0,false,36);d.tick(2350);assert(s.csa.phase==P::Confirm);
     f=beacon(s,36,0,0,false);f.insert(f.end(),{61,22,36,0});f.resize(f.size()+20,0);
     Ath10k::receiveStationManagement(s,f.data(),f.size(),0,36);d.tick(2360);
-    assert(s.width==20 && s.csa.phase==P::Idle && !s.csa.blocked && s.pairPN[0]==99 && s.groupPN[3]==123 && s.installedPair[0]==42 && s.pairInstalled);
+    assert(s.width==20 && s.csa.phase==P::Idle && !s.csa.blocked && s.pairPN[0]==99 && s.groupPN[s.groupIndex][3]==123 && s.installedPair[0]==42 && s.pairInstalled);
     // A later HT/VHT beacon restores the original negotiated width without CSA.
     f=beacon(s,36,0,0,false);f.insert(f.end(),{61,22,36,5});f.resize(f.size()+20,0);f.insert(f.end(),{192,5,1,42,0,255,255});
     Ath10k::receiveStationManagement(s,f.data(),f.size(),0,36);assert(s.csa.phase==P::Announced && s.csa.width==80);
@@ -96,13 +96,13 @@ static void widthChanges(){
 int main(){
     widthChanges();
     parserTests();
-    {SwitchDriver d;auto &s=d._connection;s.secure=true;s.pairPN[3]=123;s.groupPN[5]=456;s.installedPair[0]=0x73;s.pairInstalled=true;
+    {SwitchDriver d;auto &s=d._connection;s.secure=true;s.pairPN[3]=123;s.groupPN[s.groupIndex][5]=456;s.installedPair[0]=0x73;s.pairInstalled=true;
      deliverBeacon(d,11);for(unsigned t=2000;t<2250;t+=10)d.tick(t);
      assert(d.wire==std::vector<UInt32>({0x5007,0x5004,0x5005,0x1d001}));
      assert(s.csa.phase==P::Confirm && s.csa.blocked && s.operatingChannel==11 && d.networkUp && s.portAuthorized);
      deliverBeacon(d,11,0,0,false,6);d.tick(2250);assert(s.csa.phase==P::Confirm); // Wrong RX channel cannot confirm.
      deliverBeacon(d,11,0,0,false,11);d.tick(2260);
-     assert(s.csa.phase==P::Idle && !s.csa.blocked && s.csa.completed==1 && s.pairPN[3]==123 && s.groupPN[5]==456 && s.installedPair[0]==0x73 && s.pairInstalled);
+     assert(s.csa.phase==P::Idle && !s.csa.blocked && s.csa.completed==1 && s.pairPN[3]==123 && s.groupPN[s.groupIndex][5]==456 && s.installedPair[0]==0x73 && s.pairInstalled);
      d.releaseWMIRuntime();}
     {SwitchDriver d;deliverBeacon(d,11,2,0);d.tick(2000);assert(d._connection.csa.dueMs==2204 && !d._connection.csa.blocked && !d.switches);
      deliverBeacon(d,11,3,0);d.tick(2050);assert(d._connection.csa.dueMs==2204);

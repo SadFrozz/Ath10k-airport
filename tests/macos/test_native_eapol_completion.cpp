@@ -54,6 +54,15 @@ int main(){
         d.service();assert(d.discarded==1 && d.state.cancelRequested && !d.state.authorizeRequested);
         assert(!strcmp(d.state.error,"native-eapol-tx-failed"));
     }
+    // WPA1 M4 receipt leaves the controlled port closed until GTK is installed.
+    start(d,3);d.state.initialGroupPending=true;d.state.pairInstalled=true;
+    d.state.txStatus=0;retire(d.state);d.service();
+    assert(!d.state.authorizeRequested && !d.security.authorizePending && !d.state.cancelRequested);
+    // Only a later, separately owned group ACK can authorize after GTK ACK.
+    d.state.initialGroupPending=false;d.security.authorizePending=true;
+    d.state.eapolCompletion.begin(19);d.state.eapolCompletion.retire(17,0);d.service();
+    assert(!d.state.authorizeRequested && d.security.authorizePending);
+    d.state.eapolCompletion.retire(19,0);d.service();assert(d.state.authorizeRequested);
     for(unsigned failure=0;failure<4;++failure){
         start(d,5);d.security.pairUpdateReply=true;d.security.ptkUpdateGeneration=7;
         d.state.securityGeneration=failure==1?7:8;d.state.portAuthorized=failure!=2;
@@ -64,6 +73,13 @@ int main(){
     }
     start(d,5);d.state.txStatus=0;retire(d.state);
     d.security.authorizePending=false;d.service();assert(!d.state.authorizeRequested);
+    // A MIC report receipt cannot complete M4 or authorize ordinary traffic.
+    start(d,3);d.state.lastEAPOLPurpose=Ath10k::ConnectionState::EAPOLPurpose::MICReport;
+    d.state.micReportCompletion.begin(18);d.state.txId=18;d.state.txStatus=0;
+    retire(d.state);d.service();
+    assert(d.state.micReportCompletion.complete && !d.state.eapolCompletion.complete);
+    assert(d.security.authorizePending && !d.state.authorizeRequested);
+    d.state.micReportCompletion.clear();
     // Connection retirement clears any old completion before association reuse.
     d.state={};assert(!d.state.eapolCompletion.pending && !d.state.eapolCompletion.complete);
     start(d,3);d.state.txStatus=0;retire(d.state);

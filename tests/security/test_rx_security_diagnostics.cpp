@@ -1,4 +1,5 @@
 #include <cassert>
+#include <initializer_list>
 #include <cstring>
 #include "Ath10kRX.hpp"
 using namespace Ath10k;
@@ -21,13 +22,86 @@ static void tkipGroupReplay(){
     htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);
     UInt8 *iv=d+260;iv[0]=2;iv[1]=0x22;iv[2]=1;iv[3]=0xa0;iv[4]=3;iv[5]=4;iv[6]=5;iv[7]=6;
     const UInt64 tsc=1u|(UInt64(2)<<8)|(UInt64(3)<<16)|(UInt64(4)<<24)|(UInt64(5)<<32)|(UInt64(6)<<40);
-    assert(acceptSecureRX(s,d,d+300,18,7));assert(s.groupPN[16]==tsc);
+    assert(acceptSecureRX(s,d,d+300,18,7));assert(s.groupPN[s.groupIndex][16]==tsc);
     assert(!acceptSecureRX(s,d,d+300,18,7)&&s.rxLastReason==ConnectionState::Replay);
-    s.groupPN[16]=0;htcWriteLE32(d+12,(6u<<28)|(1u<<13)|7);
-    assert(!acceptSecureRX(s,d,d+300,18,7)&&s.rxLastReason==ConnectionState::Key&&!s.groupPN[16]);
+    s.groupPN[s.groupIndex][16]=0;htcWriteLE32(d+12,(6u<<28)|(1u<<13)|7);
+    assert(!acceptSecureRX(s,d,d+300,18,7)&&s.rxLastReason==ConnectionState::Key&&!s.groupPN[s.groupIndex][16]);
+}
+static void pairwiseTKIPReplay(){
+ auto s=connected();s.pairCipher=AthSecurity::cipherTKIP;
+ UInt8 d[2048];descriptor(d,s);htcWriteLE16(d+236,0x4208);
+ htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);UInt8 *iv=d+260;
+ iv[0]=0;iv[1]=0x20;iv[2]=10;iv[3]=0x20;memset(iv+4,0,4);
+ assert(acceptSecureRX(s,d,d+300,18,7) && s.pairPN[16]==10);
+ assert(!acceptSecureRX(s,d,d+300,18,7) && s.rxLastReason==ConnectionState::Replay);
+ iv[2]=11;iv[3]=0x60;assert(!acceptSecureRX(s,d,d+300,18,7) && s.pairPN[16]==10);
+ iv[3]=0x20;htcWriteLE32(d+12,(6u<<28)|(1u<<13)|7);
+ assert(!acceptSecureRX(s,d,d+300,18,7) && s.rxLastReason==ConnectionState::Key);
+ htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);s.pairCipher=AthSecurity::cipherCCMP;
+ assert(!acceptSecureRX(s,d,d+300,18,7) && s.pairPN[16]==10);
+}
+static void retainedGroupReplay(){
+ auto s=connected();s.groupCipher=AthSecurity::cipherTKIP;s.groupIndex=2;s.groupInstalled[1]=s.groupInstalled[2]=true;
+ UInt8 d[2048];descriptor(d,s);htcWriteLE16(d+236,0x4208);d[240]=d[300]=1;
+ htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);UInt8 *iv=d+260;
+ auto receive=[&](UInt8 index,UInt8 tsc){iv[0]=0;iv[1]=0x20;iv[2]=tsc;iv[3]=UInt8(0x20|(index<<6));memset(iv+4,0,4);return acceptSecureRX(s,d,d+300,18,7);};
+ assert(receive(1,20));assert(receive(2,10));
+ assert(s.groupPN[1][16]==20 && s.groupPN[2][16]==10);
+ assert(!receive(1,20) && s.rxLastReason==ConnectionState::Replay);
+ assert(!receive(2,9) && s.rxLastReason==ConnectionState::Replay);
+ assert(receive(1,21));assert(!receive(3,30) && s.rxLastReason==ConnectionState::Key);
+}
+static void qualifiedMICFailure(){
+ auto s=connected();s.groupCipher=AthSecurity::cipherTKIP;s.groupIndex=2;s.groupInstalled[2]=true;s.groupKeyEpoch[2]=19;s.securityGeneration=42;
+ UInt8 d[2048];descriptor(d,s);htcWriteLE16(d+236,0x4208);d[240]=d[300]=1;
+ htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);htcWriteLE32(d+4,0x90000000u);
+ auto iv=d+260;iv[0]=0;iv[1]=0x20;iv[2]=10;iv[3]=0xa0;memset(iv+4,0,4);
+ for(UInt8 status:{1,9}){
+  RXBatch b;assert(!appendRXBatch(s,b,d,sizeof(d),status,7));
+  assert(b.failed && b.micFailure.valid && b.micFailure.tsc==10 && b.micFailure.keyIndex==2 && b.micFailure.generation==42 && b.micFailure.keyEpoch==19);
+  assert(!s.groupPN[2][16]);b.reset();assert(!b.micFailure.valid);
+ }
+ for(unsigned bit:{3,4,7,8,9,13,16,17,24,27,29,30}){
+  htcWriteLE32(d+4,0x90000000u|(1u<<bit));assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);
+ }
+ htcWriteLE32(d+4,0x90000000u);
+ for(unsigned status=0;status<256;++status)if(status!=1 && status!=9)assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),UInt8(status),7).valid);
+ s.groupPN[2][16]=10;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);s.groupPN[2][16]=0;
+ s.groupInstalled[2]=false;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);s.groupInstalled[2]=true;
+ d[246]^=4;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);d[246]^=4;
+ assert(!qualifyGroupTKIPMICFailure(s,d,300,1,7).valid);
+ assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7,2048).valid);
+ htcWriteLE32(d+56,0x8000);assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);
+ assert(!qualifyGroupTKIPMICFailure(s,d,299,1,7).valid);
+ htcWriteLE32(d+56,0xc000);memcpy(d+240,s.local,6);iv[3]=0x20;
+ s.pairCipher=AthSecurity::cipherTKIP;s.pairInstalled=true;s.pairKeyEpoch=31;
+ auto pair=qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7);
+ assert(pair.valid && pair.pairwise && pair.keyIndex==0 && pair.keyEpoch==31);
+ s.pairPN[16]=10;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);s.pairPN[16]=0;
+ iv[3]=0x60;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);iv[3]=0x20;
+ d[240]^=2;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);d[240]^=2;
+ s.pairKeyEpoch=0;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);s.pairKeyEpoch=31;
+ s.pairCipher=AthSecurity::cipherCCMP;assert(!qualifyGroupTKIPMICFailure(s,d,sizeof(d),1,7).valid);
+
 }
 int main(){
+    qualifiedMICFailure();
+    pairwiseTKIPReplay();
+    retainedGroupReplay();
     tkipGroupReplay();
+    // A-MSDU eligibility belongs to the MPDU, not its decapped Ethernet DA.
+    for(unsigned variant=0;variant<3;++variant){
+        auto aggregate=connected();UInt8 packet[2048];descriptor(packet,aggregate);
+        packet[260]=0x80; // Original QoS A-MSDU bit; Ethernet DA stays local.
+        if(variant==0)packet[240]|=1; // Multicast outer receiver with CCMP.
+        if(variant==1)htcWriteLE32(packet+12,(4u<<28)|(1u<<13)|7); // TKIP.
+        if(variant==2)htcWriteLE32(packet+12,(1u<<13)|7); // WEP40.
+        RXBatch batch;
+        assert(!appendRXBatch(aggregate,batch,packet,sizeof(packet),1,7));
+        assert(batch.failed && aggregate.rxLastReason==ConnectionState::Aggregate);
+        for(auto pn:aggregate.pairPN)assert(!pn);
+        for(const auto &slot:aggregate.groupPN)for(auto pn:slot)assert(!pn);
+    }
     auto s=connected();UInt8 d[2048];descriptor(d,s);
     // Exhaustive FC equivalence: instrumentation must not widen acceptance.
     for(UInt32 fc=0;fc<=0xffff;++fc){

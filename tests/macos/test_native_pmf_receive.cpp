@@ -1,3 +1,4 @@
+#include <CommonCrypto/CommonDigest.h>
 #include <array>
 #include <map>
 #include <string>
@@ -7,9 +8,11 @@
 #include "../../src/security/Ath10kPMFTransport.hpp"
 #include "../../src/security/Ath10kSHA256.hpp"
 #include "../../src/security/Ath10kSupplicant.hpp"
+#include "../../src/macos/native/Ath10kNativeKeyStart.hpp"
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
+#include "../../src/macos/native/Ath10kNativeWEPExecution.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamEvents.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamCache.hpp"
 #include "../../src/macos/native/Ath10kNativePMFInbox.hpp"
@@ -18,23 +21,29 @@
 static unsigned randomCalls=0;
 #ifdef ATH10K_NATIVE_REAL_SAE
 static unsigned nativeOwnerRandomCalls=0,nativeHMACCalls=0;
+static bool failNativeRandom=false;
 static bool (*nativePasswordRandom)(uint8_t *,size_t)=nullptr;
 #endif
 struct Ath10kKernelCrypto : PersonalTestCrypto {
+ static bool hash256(const uint8_t *p,size_t n,uint8_t *out){return CC_SHA256(p,CC_LONG(n),out)!=nullptr;}
 #ifdef ATH10K_NATIVE_REAL_SAE
  static bool hmac(const uint8_t *k,size_t kl,const uint8_t *d,size_t n,uint8_t *o){++nativeHMACCalls;return PersonalTestCrypto::hmac(k,kl,d,n,o);}
 #endif
  static bool random(uint8_t *out,size_t n){
 #ifdef ATH10K_NATIVE_REAL_SAE
+ if(failNativeRandom)return false;
  if(ownerGate)++nativeOwnerRandomCalls;
  if(nativePasswordRandom && !ownerGate && n!=2)return nativePasswordRandom(out,n);
 #endif
+ if(n==3){out[0]=1;out[1]=2;out[2]=uint8_t(3+randomCalls++);return true;}
  if(n!=2){assert(n==32);return PersonalTestCrypto::random(out,n);}out[0]=0x12;out[1]=uint8_t(0x34+randomCalls++);return true;}
  static bool encrypt(const uint8_t *key,const uint8_t *in,uint8_t *out){assert(!ownerGate && !heldLocks);return PersonalTestCrypto::encrypt(key,in,out);}
 };
 #include "pmf_session.inc"
 #include "../../src/security/Ath10kPSKPassword.hpp"
 #include "native_psk_preparation.inc"
+#include "../../src/security/Ath10kOWEP256.hpp"
+#include "native_owe_job.inc"
 #ifdef ATH10K_NATIVE_REAL_SAE
 #include "../../src/security/Ath10kSAEExchange.hpp"
 #include "../../src/security/Ath10kSAEPassword.hpp"
@@ -84,7 +93,10 @@ public:
   if(!strcmp(k,"Ath10kNativePMFStartupQueryStarted")){assert(v);++pmfProbeAnnouncements;}}
  void setProperty(const char *k,UInt64 v,unsigned){++propertyWrites;numericProperties[k]=v;}
  bool linkUp=true;void networkLink(bool up){linkUp=up;}
+ bool experimentalWEP=false;bool nativeWEPEnabled() const {return experimentalWEP;}
+ bool experimentalLegacy=false;bool nativeLegacyEnabled() const {return experimentalLegacy;}
  bool experimentalEAP=false;bool nativeEAPEnabled() const {return experimentalEAP;}
+ bool experimentalOWE=false;bool nativeOWEEnabled() const {return experimentalOWE;}
  bool nativeSAEEnabled() const {return experimentalSAE;}
  int nativeJoinRequest(void *);int nativeRoamRequest(void *);
     int nativeRoamCacheRequest(void *);
@@ -115,6 +127,8 @@ public:
  unsigned saeDiscards=0;
  void discardNativeSecurity();
  bool advanceSAEAuth(UInt64);
+ const char *serviceNativeSharedWEP(UInt64);
+ void receiveNativeSharedWEP(const UInt8 *,UInt32,UInt32,UInt32,UInt64);
  const char *serviceNativeSAE(UInt64);
  UInt32 buildNativeSAEAssociation(UInt8 *,UInt32);
  bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
@@ -124,17 +138,19 @@ public:
  bool nativeAssociationRSNXE(void *);
  bool nativePMFFirmwareReady();
  bool nativePMFTransportReady();
- const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode=AthSecurity::ManagementTX::Plain){
+ const char *submitNetworkPacket(const UInt8 *frame,UInt32 bytes,bool mgmt,UInt64,AthSecurity::ManagementTX mode=AthSecurity::ManagementTX::Plain,Ath10k::ConnectionState::EAPOLPurpose=Ath10k::ConnectionState::EAPOLPurpose::Handshake,const Ath10k::WEPAuthenticationTX *proof=nullptr){
   assert(ownerGate && mgmt);
   if(mode==AthSecurity::ManagementTX::HardwareCCMP)assert(nativePMFTransportReady());
-  else assert(mode==AthSecurity::ManagementTX::Plain && bytes>=30 && frame[24]==3);
-  assert(Ath10k::packetProtectionAllowed(frame,bytes,_connection,mgmt,mode));
+  else if(mode==AthSecurity::ManagementTX::Plain)assert(bytes>=30 && (frame[24]==3 || (_connection.sharedKeyAuth && frame[24]==1)));
+  else assert(mode==AthSecurity::ManagementTX::SoftwareWEPAuthentication && proof);
+  assert(Ath10k::packetProtectionAllowed(frame,bytes,_connection,mgmt,mode,proof));
   if(failSubmit)return "test-submit-failed";
-  if(mode==AthSecurity::ManagementTX::Plain){_connection.txOwned=true;_connection.txComplete=false;_connection.lastTxSAE=true;_connection.txStatus=0;}
+  if(mode==AthSecurity::ManagementTX::Plain || mode==AthSecurity::ManagementTX::SoftwareWEPAuthentication){_connection.txOwned=true;_connection.txComplete=false;_connection.lastTxSAE=true;_connection.txStatus=0;}
   transmitted.emplace_back(frame,frame+bytes);return nullptr;
  }
  void serviceNativePMF(UInt64);
 };
+#include "../../src/security/Ath10kTKIPMICOwner.hpp"
 #include "native_security_class.inc"
 #include "native_pmf_receive.inc"
 #include "native_pmf_key_hooks.inc"

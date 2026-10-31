@@ -3,13 +3,16 @@
 // ABI definitions and message layouts are pinned in build/generated/itlwm/SOURCE.json.
 #include "../controller/Ath10kPCIDevice.hpp"
 #include "../../security/Ath10kSupplicant.hpp"
+#include "../../security/Ath10kTKIPMICOwner.hpp"
 #include "Ath10kNativeWire.hpp"
+#include "Ath10kNativeKeyStart.hpp"
 #include "Ath10kNativeAddress.hpp"
 #include "../abi/Ath10kNativeAddressABI.hpp"
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
 #include "Ath10kNativeProfile.hpp"
 #include "Ath10kNativeEAPOwner.hpp"
+#include "Ath10kNativeWEPExecution.hpp"
 #include "Ath10kNativeRoamEvents.hpp"
 #include "Ath10kNativeRoamCache.hpp"
 #include "Ath10kNativeMAC.hpp"
@@ -20,6 +23,7 @@
 #include "Ath10kPMFSession.hpp"
 #include "Ath10kNativeSAEJoinStart.hpp"
 #include "Ath10kNativePSKPreparation.hpp"
+#include "Ath10kNativeOWEJob.hpp"
 #include "../../security/Ath10kP256DiagnosticPolicy.hpp"
 #include <libkern/version.h>
 #include <IOKit/network/IOOutputQueue.h>
@@ -94,6 +98,7 @@ public:
     Ath10kSAEWorker *saeWorker=nullptr;
     Ath10kNativeSAEPreparation saePreparation;
     Ath10kNativePSKPreparation pskPreparation;
+    Ath10kNativeOWEJob *oweJob=nullptr;UInt8 owePhase=0;bool oweSubmitted=false;UInt64 oweDeadline=0,oweLastNow=0;
     Ath10kSAESession *saeSession=nullptr;
     Ath10kSAERadio *saeRadio=nullptr;
     Ath10kPMFSession *pmfSession=nullptr;
@@ -128,11 +133,20 @@ public:
     // SAE crypto is available to a future admitted join; native request
     // policy/capabilities still reject SAE until credentials, kernel crypto and
     // firmware PMF are validated together.
-    AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true> supplicant;
+    AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true> supplicant;
     AthSecurity::IGTKCMAC128 pendingManagement{};
     AthSecurity::TransitionDisableDelivery transitionPolicy;
     AthNative::ProfileCredentials profile;
     AthNative::EAPOwner eapOwner;
+    AthNative::WEPExecution wepExecution;
+    AthSecurity::WEPSharedAuthentication sharedWEP;
+    UInt64 sharedWEPGeneration=0;UInt8 sharedWEPTXPhase=0;
+    UInt32 wepEchoSerial=0;
+    // Lifetime of this native controller, not of one credential/key session.
+    AthSecurity::TKIPMICOwner tkipMICOwner;
+    AthSecurity::TKIPMICOwner::Ticket tkipMICTicket{};
+    bool tkipMICInFlight=false,tkipDeauthPending=false,tkipDeauthInFlight=false;UInt64 tkipDeauthDeadline=0;
+    UInt8 tkipMICNoticeBSSID[6]{};UInt32 tkipMICNoticeGeneration=0;unsigned tkipMICNotices=0;UInt8 tkipMICNoticeKinds[2]{};
     bool eapTXInFlight=false;
     AthNative::PreparedRoam preparedRoam;
     AthNative::RoamEvents::Delivery roamDelivery;
@@ -149,7 +163,7 @@ public:
     UInt32 ptkUpdateGeneration=0;
     UInt64 ptkUpdateSince=0;
     unsigned keyOperation=0;
-    UInt8 reply[160]{},keys[56]{};
+    UInt8 reply[160]{},keys[AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>::keyPayloadLength]{};
     UInt32 replyLength=0;
     UInt64 pairDeadline=0;
     void cancelPairwiseAttempt(){
@@ -170,8 +184,13 @@ private:
     // Software association owners only. Firmware DELETE/STOP/ECHO and DMA
     // retirement remain the radio worker's responsibility.
     void resetAssociation(){
-        eapOwner.clear();eapTXInFlight=false;
+        sharedWEP.cancel();sharedWEPGeneration=0;sharedWEPTXPhase=0;
+        wepExecution.cancel();eapOwner.clear();eapTXInFlight=false;
+        tkipMICOwner.retire();tkipMICTicket={};tkipMICInFlight=false;
+        tkipDeauthPending=tkipDeauthInFlight=false;tkipDeauthDeadline=0;
+        tkipMICNotices=0;bzero(tkipMICNoticeKinds,sizeof(tkipMICNoticeKinds));tkipMICNoticeGeneration=0;bzero(tkipMICNoticeBSSID,sizeof(tkipMICNoticeBSSID));
         transitionPolicy.clear();pairUpdateReply=ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;
+        if(oweJob){if(saeWorker)saeWorker->cancelFor(oweJob);oweJob->release();oweJob=nullptr;}owePhase=0;oweSubmitted=false;oweDeadline=oweLastNow=0;
         pskPreparation.cancel();saePreparation.cancel();
         if(saeRadio){saeRadio->cancel();delete saeRadio;saeRadio=nullptr;}
         clearManagement();
@@ -276,6 +295,10 @@ IOReturn Ath10kPCIDevice::getDRIVER_VERSION(IO80211SkywalkInterface *,apple80211
 IOReturn Ath10kPCIDevice::getHARDWARE_VERSION(IO80211SkywalkInterface *,apple80211_version_data *data) {
     return nativeVersion(data,"Qualcomm Atheros QCA9377 Lunnen 1a3b:2b51");
 }
+bool Ath10kPCIDevice::nativeOWEEnabled() const {
+    auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeOWEExperimental"));
+    return option && option->isTrue() && nativeSAEEnabled();
+}
 bool Ath10kPCIDevice::nativeSAEEnabled() const {
     auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeSAEExperimental"));
     return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
@@ -286,9 +309,132 @@ bool Ath10kPCIDevice::nativeEAPEnabled() const {
     return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
         version_major,version_minor,version_revision,"24G90",version);
 }
+bool Ath10kPCIDevice::nativeWEPEnabled() const {
+    auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeWEPExperimental"));
+    return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
+        version_major,version_minor,version_revision,"24G90",version);
+}
+bool Ath10kPCIDevice::nativeLegacyEnabled() const {
+    auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativeLegacyExperimental"));
+    return option && option->isTrue() && AthSecurity::p256DiagnosticKernel(
+        version_major,version_minor,version_revision,"24G90",version);
+}
+// Radio gate only. Each command retains CE3 and its receipt until the ECHO/RX
+// fence; cancellation leaves those owners to ordinary disconnect/reset cleanup.
+void Ath10kPCIDevice::serviceNativeWEP(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec)return;
+    auto &execution=sec->wepExecution;auto &owner=sec->eapOwner;
+    using State=AthNative::WEPExecution::State;
+    if(s.stage==Ath10k::LinkStage::Disabled && !s.wepIOActive && !s.wmiOwned){
+        execution.firmwareRetired();return;
+    }
+    if(!owner.wep() || !Ath10k::connectionAssociated(s) || s.cancelRequested ||
+       s.disconnect!=Ath10k::DisconnectStage::None)return;
+    auto fail=[&](const char *error){execution.cancel();Ath10k::connectionFailure(s,error);
+        s.portAuthorized=false;s.cancelRequested=true;s.sinceMs=now;};
+    if(!_networkEnabled || !_wmiLive.active || powerIOBlocked())return;
+    if(owner.staticWEP() && s.securityPhase==5 && s.portAuthorized){
+        if(!owner.finishStaticWEP(owner.generation(),s.local,s.bssid,now))fail("native-static-wep-port-owner");
+        return;
+    }
+    if(execution.state()==State::Idle){
+        if(!owner.keyPending()){
+            // All slot writes and default-TX selection have retired. Reuse
+            // the existing peer-authorize/ECHO stages, never the RSN key stages.
+            if(owner.staticWEP() && !s.securityPhase){
+                const auto index=s.wepTransmitIndex;
+                if(!s.wepTransmitValid || index>3 || !s.wepInstalledLengths[0][index] ||
+                   s.wepInstalledLengths[0][index]!=s.wepInstalledLengths[1][index]){
+                    fail("native-static-wep-slots-incomplete");return;
+                }
+                s.securityPhase=3;s.authorizeRequested=true;s.sinceMs=now;
+            }
+            return;
+        }
+        s.eapolPause=true;
+        if(!_wmiScan.completed){_wmiScan.cancelRequested=true;return;}
+        if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.rekeyKind ||
+           _wmi.credits.outstanding || s.stats.step || s.maintenance.step || s.radio.step ||
+           s.radio.appliedPS || s.radio.blocked || s.radio.powerBlocked || s.csa.blocked ||
+           s.pmfTXPending || sec->eapTXInFlight)return;
+        if(now>~UInt64(0)-5000 || !execution.begin(owner,s.local,s.bssid,s.peerId,now,now+5000)){
+            fail("native-wep-program-start");return;
+        }
+        s.wepIOActive=true;s.sinceMs=now;
+    }
+    if(!execution.poll(owner,s.local,s.bssid,now)){fail("native-wep-program-expired");return;}
+    if(execution.state()==State::Complete){
+        if(!execution.commit(owner,s.local,s.bssid,now)){fail("native-wep-program-commit");return;}
+        // Publish only metadata for fully completed slots. Invalidate queued
+        // RX from the previous set before exposing this snapshot to delivery.
+        for(unsigned cast=0;cast<2;++cast)for(unsigned index=0;index<4;++index){
+            const auto *key=owner.installedWEPKey(owner.generation(),s.local,s.bssid,index,cast!=0,now);
+            s.wepInstalledLengths[cast][index]=key?key->length:0;
+        }
+        s.wepTransmitValid=owner.confirmedWEPTransmitIndex(owner.generation(),s.local,s.bssid,now,s.wepTransmitIndex);
+        ++s.securityGeneration;
+        s.wepIOActive=false;s.eapolPause=owner.pending() || sec->eapTXInFlight;
+        // Installed slots alone are not system authorization of the port.
+        return;
+    }
+    if(s.wmiOwned){
+        Ath10k::CESnapshot snapshot{};
+        if(!Ath10k::readCESnapshot(_regs,3,snapshot) || !validateBMIPipeStructure(3,snapshot) ||
+           snapshot.srcWriteIndex!=s.wmiNext){fail("native-wep-ce-state");return;}
+        if(snapshot.currentSrcRead!=s.wmiNext || _wmi.credits.outstanding)return;
+        if(!_connectionCommand.syncFromDevice() || !_ceSrcRings[3].syncFromDevice()){
+            fail("native-wep-ce-sync");return;
+        }
+        s.wmiOwned=false;AthSecurity::wipe(_connectionCommand.virtualAddress(),256);
+    }
+    if(execution.state()==State::Submitted){
+        if(s.wepKeyReceipt.active){
+            if(!s.wepKeyReceipt.received)return;
+            if(!execution.acknowledge(s.wepKeyReceipt.peer,s.wepKeyReceipt.expected)){
+                fail("native-wep-receipt-owner");return;
+            }
+        }
+        if(!execution.transportRetired(owner,s.local,s.bssid,now)){
+            fail("native-wep-transport-owner");return;
+        }
+    }
+    if(execution.state()==State::Fence){
+        if(!s.wepEchoPending){
+            if(sec->wepEchoSerial>=0xffff){fail("native-wep-echo-exhausted");return;}
+            _connectionEcho={};_connectionEcho.cookie=0xa75b0000u|++sec->wepEchoSerial;
+            auto *command=static_cast<UInt8 *>(_connectionCommand.virtualAddress());
+            if(!Ath10k::buildWMIEcho(command,256,_htcWMIControl.endpoint,_connectionEcho.cookie)){
+                fail("native-wep-echo-build");return;
+            }
+            command[5]=s.wmiSequence;_connectionEcho.submitted=true;s.wepEchoPending=true;
+            const char *error=submitNetworkCE(3,_connectionCommand,20,s.wmiNext);
+            if(error){fail(error);return;}++s.wmiSequence;return;
+        }
+        if(!_connectionEcho.replyReceived || _rxSetup.pendingMPDUs)return;
+        if(s.wepKeyReceipt.active && !Ath10k::retireWEPKeyReceiptAfterFence(s,execution.generation(),execution.ticket())){
+            fail("native-wep-receipt-retirement");return;
+        }
+        s.wepEchoPending=false;_connectionEcho={};
+        if(!execution.fenceRetired(owner,s.local,s.bssid,now))fail("native-wep-fence-owner");
+        return;
+    }
+    if(execution.state()!=State::Ready)return;
+    if(s.txOwned || s.dataPending || sec->eapTXInFlight || _wmi.credits.outstanding)return;
+    const UInt32 bytes=execution.build(owner,s.local,s.bssid,now,
+        static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,_htcWMIControl.endpoint,s.wmiSequence);
+    if(!bytes || !execution.submitted(owner,s.local,s.bssid,now)){fail("native-wep-command-build");return;}
+    if(execution.expectedReceipt()!=0xff && !Ath10k::armWEPKeyReceipt(s,execution.generation(),execution.ticket(),s.peerId,execution.expectedReceipt())){
+        AthSecurity::wipe(_connectionCommand.virtualAddress(),256);fail("native-wep-receipt-arm");return;
+    }
+    const char *error=submitNetworkCE(3,_connectionCommand,bytes,s.wmiNext);
+    if(error){fail(error);return;}++s.wmiSequence;
+}
+
 bool Ath10kPCIDevice::nativeEAPWaiting() const {
-    return _connection.securityAKM==1 && _nativeSecurity &&
-        _nativeSecurity->eapOwner.generation() && !_nativeSecurity->ready;
+    return (_connection.securityAKM==1 || _connection.securityAKM==5) && _nativeSecurity &&
+        _nativeSecurity->eapOwner.generation() && (_nativeSecurity->eapOwner.staticWEP()?
+            _connection.securityPhase<3:!_nativeSecurity->ready);
 }
 bool Ath10kPCIDevice::nativePMFStartupQueryEnabled() const {
     auto option=OSDynamicCast(OSBoolean,getProperty("Ath10kNativePMFStartupQuery"));
@@ -297,7 +443,11 @@ bool Ath10kPCIDevice::nativePMFStartupQueryEnabled() const {
 IOReturn Ath10kPCIDevice::getCARD_CAPABILITIES(IO80211SkywalkInterface *,apple80211_capability_data *data) {
     if(!data)return kIOReturnBadArgument;bzero(data,sizeof(*data));data->version=APPLE80211_VERSION;
     data->capabilities[0]=(1<<APPLE80211_CAP_AES_CCM)|(1<<APPLE80211_CAP_TKIP);
+    if(nativeWEPEnabled())data->capabilities[0]|=1<<APPLE80211_CAP_WEP;
     data->capabilities[1]=(1<<(APPLE80211_CAP_WPA2-8))|(1<<(APPLE80211_CAP_TKIPMIC-8));
+    // Match the same gate used by nativeBeginJoin. TKIP remains advertised
+    // above for the existing WPA2 CCMP-pair/TKIP-group path.
+    if(nativeLegacyEnabled())data->capabilities[1]|=1<<(APPLE80211_CAP_WPA1-8);
     data->capabilities[2]=(1<<(APPLE80211_CAP_WME-16));data->capabilities[5]=0x40;
     // Capability73 selects the modern SSID-list scan request decoded below.
     data->capabilities[9]=0x02;
@@ -309,6 +459,9 @@ IOReturn Ath10kPCIDevice::getCARD_CAPABILITIES(IO80211SkywalkInterface *,apple80
         data->capabilities[6]|=0x01;
         data->capabilities[9]|=0x08;
     }
+    // Sequoia Apple80211Associate AKM18 jump-table case reads cap-cache
+    // offset0x64 bit0 (cache starts0x58): capability96, not cipher capability76.
+    if(nativeOWEEnabled())data->capabilities[12]|=0x01;
     return kIOReturnSuccess;
 }
 IOReturn Ath10kPCIDevice::getPOWER(IO80211SkywalkInterface *,apple80211_power_data *data){return nativeRequest(AthNativeOp::PowerGet,data);}
@@ -572,6 +725,26 @@ IONetworkInterface *Ath10kPCIDevice::createInterface() {
     if(interface && interface->initWithController(this,_nativeInterface))return interface;
     OSSafeReleaseNULL(interface);return nullptr;
 }
+// Only nonsecret timing policy crosses driver instances. Old TX tickets and
+// keys never cross the stop/reset/DMA retirement barrier.
+bool Ath10kPCIDevice::saveNativeMICWindow(IOService *provider){
+    if(!_nativeSecurity)return true;
+    if(!provider)return false;
+    const auto window=_nativeSecurity->tkipMICOwner.windowState();
+    UInt64 wire[4]={1,window.last,window.until,window.present?1ull:0ull};
+    return provider->setProperty("Ath10kTKIPFailureWindow",wire,sizeof(wire));
+}
+bool Ath10kPCIDevice::restoreNativeMICWindow(){
+    if(!_pci || !_nativeSecurity)return false;
+    OSObject *property=_pci->copyProperty("Ath10kTKIPFailureWindow");
+    if(!property)return true;
+    auto data=OSDynamicCast(OSData,property);UInt64 wire[4]{};
+    bool valid=data && data->getLength()==sizeof(wire);
+    if(valid){bcopy(data->getBytesNoCopy(),wire,sizeof(wire));valid=wire[0]==1 && wire[3]<=1;}
+    if(valid)valid=_nativeSecurity->tkipMICOwner.restoreWindow({wire[1],wire[2],wire[3]!=0},Ath10k::uptimeNS()/1000000u);
+    property->release();return valid;
+}
+
 bool Ath10kPCIDevice::prepareNativeInterface() {
     _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=_nativeReadyResetSent=false;
     _nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=false;
@@ -594,6 +767,7 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
     if(!_nativeBSDGate || !getWorkQueue() ||
        getWorkQueue()->addEventSource(_nativeBSDGate)!=kIOReturnSuccess)return false;
     _nativeSecurity=new NativeSecurity;if(!_nativeSecurity)return false;
+    if(!restoreNativeMICWindow())return false;
     // Optional SAE resources must not disable existing WPA2 under allocation
     // pressure. Future SAE admission must require this worker, never downgrade.
     setProperty("Ath10kSAEWorkerReady",_nativeSecurity->prepareSAEWorker());
@@ -621,6 +795,9 @@ bool Ath10kPCIDevice::prepareNativeInterface() {
 bool Ath10kPCIDevice::nativePMFManagement(void *context,const UInt8 *frame,UInt32 bytes,UInt32 status,UInt32 channel,UInt32 snr){
     auto self=static_cast<Ath10kPCIDevice *>(context);if(!self)return false;
     auto &s=self->_connection;
+    if(frame && bytes>=24 && (frame[0]&0xfcu)==0xb0u && s.sharedKeyAuth && s.stage==Ath10k::LinkStage::Auth){
+        self->receiveNativeSharedWEP(frame,bytes,status,channel,Ath10k::uptimeNS()/1000000u);return true;
+    }
     // A selected SAE join must never fall back to the open-auth RX handler,
     // including on an algorithm-0 reply or before its owner is ready.
     if(frame && bytes>=24 && (frame[0]&0xfcu)==0xb0u && s.securityAKM==8 && s.stage==Ath10k::LinkStage::Auth){
@@ -846,6 +1023,63 @@ UInt32 Ath10kPCIDevice::buildNativeSAEAssociation(UInt8 *frame,UInt32 capacity){
 
 // Called by the common radio state machine in Auth. Admission remains disabled
 // until native credentials/backend/firmware PMF are validated together.
+void Ath10kPCIDevice::receiveNativeSharedWEP(const UInt8 *frame,UInt32 bytes,UInt32 status,UInt32 channel,UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || !s.sharedKeyAuth || s.stage!=Ath10k::LinkStage::Auth || s.cancelRequested ||
+       s.disconnect!=Ath10k::DisconnectStage::None || powerIOBlocked() || !frame || bytes<30 || bytes>287 ||
+       (status&0x39u) || (channel && channel!=s.operatingChannel))return;
+    const UInt16 fc=Ath10k::htcReadLE16(frame);
+    if((fc!=0x00b0 && fc!=0x08b0) || (Ath10k::htcReadLE16(frame+22)&15) ||
+       !AthSecurity::equal(frame+4,s.local,6) || !AthSecurity::equal(frame+10,s.bssid,6) ||
+       !AthSecurity::equal(frame+16,s.bssid,6))return;
+    sec->sharedWEP.receive(sec->sharedWEPGeneration,s.local,s.bssid,frame+24,bytes-24,now);
+}
+const char *Ath10kPCIDevice::serviceNativeSharedWEP(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    using State=AthSecurity::WEPSharedAuthentication::State;
+    if(!sec || !s.sharedKeyAuth || !s.secure || (s.pairCipher!=1 && s.pairCipher!=5) ||
+       s.pmfRequired || !_nativeJoinPending || !_nativeRadioOn || !_networkEnabled ||
+       !sec->sharedWEPGeneration)return "native-shared-wep-profile";
+    if(s.stage!=Ath10k::LinkStage::Auth || s.cancelRequested ||
+       s.disconnect!=Ath10k::DisconnectStage::None || powerIOBlocked())return "native-shared-wep-cancelled";
+    if(!sec->sharedWEP.poll(now))return "native-shared-wep-expired";
+    const auto state=sec->sharedWEP.state();
+    if(state==State::Complete){
+        if(s.txOwned || s.wmiOwned || _wmi.credits.outstanding)return nullptr;
+        if(!s.txComplete || s.txStatus)return "native-shared-wep-final-tx";
+        s.authReply=true;s.submitted=true;return nullptr;
+    }
+    if(state!=State::Request && state!=State::Challenge && state!=State::ResponseReady && state!=State::Response)
+        return "native-shared-wep-state";
+    if(s.txOwned || s.wmiOwned || s.dataPending || s.txPauseMask || s.maintenance.step || s.csa.blocked ||
+       s.radio.step || s.radio.blocked || s.radio.powerBlocked || !_wmiScan.completed || _wmiScan.txOwned ||
+       _wmi.credits.outstanding)return nullptr;
+    const UInt8 phase=(state==State::Request || state==State::Challenge)?1:3;
+    if(sec->sharedWEPTXPhase==phase){
+        if(!s.txComplete || now<s.managementRetryMs)return nullptr;
+        if(s.managementAttempts>=3)return "native-shared-wep-retry-limit";
+    }else{s.managementAttempts=0;sec->sharedWEPTXPhase=phase;}
+    if(now>~UInt64(0)-1000)return "native-shared-wep-clock";
+    UInt8 frame[320]{};UInt32 bytes=0;
+    AthSecurity::ManagementTX mode=AthSecurity::ManagementTX::Plain;
+    Ath10k::WEPAuthenticationTX proof{&sec->sharedWEP,sec->sharedWEPGeneration,now};
+    if(phase==1){
+        frame[0]=0xb0;AthSecurity::copy(frame+4,s.bssid,6);AthSecurity::copy(frame+10,s.local,6);AthSecurity::copy(frame+16,s.bssid,6);
+        Ath10k::htcWriteLE16(frame+22,UInt16((s.sequence&4095)<<4));frame[24]=1;frame[26]=1;bytes=30;
+        if(state==State::Request && !sec->sharedWEP.requestSubmitted())return "native-shared-wep-request-owner";
+    }else{
+        bytes=UInt32(sec->sharedWEP.buildResponseFrame(sec->sharedWEPGeneration,s.local,s.bssid,now,s.sequence&4095,frame,sizeof(frame)));
+        if(!bytes)return "native-shared-wep-response-build";
+        if(state==State::ResponseReady && !sec->sharedWEP.responseSubmitted())return "native-shared-wep-response-owner";
+        mode=AthSecurity::ManagementTX::SoftwareWEPAuthentication;
+    }
+    s.submitted=true;
+    const char *error=submitNetworkPacket(frame,bytes,true,now,mode,Ath10k::ConnectionState::EAPOLPurpose::Handshake,phase==3?&proof:nullptr);
+    AthSecurity::wipe(frame,sizeof(frame));
+    if(error)return error;
+    ++s.sequence;++s.managementAttempts;s.managementRetryMs=now+1000;return nullptr;
+}
+
 const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
     auto sec=_nativeSecurity;auto &s=_connection;
     if(!sec || !sec->saeWorker || !sec->pmfSession || !_nativeJoinPending ||
@@ -898,6 +1132,53 @@ const char *Ath10kPCIDevice::serviceNativeSAE(UInt64 now){
     ++s.sequence;s.submitted=true;return nullptr;
 }
 
+// OWE uses open authentication, then completes DH after the association reply.
+// All scalar/point operations execute on the retained crypto worker.
+bool Ath10kPCIDevice::serviceNativeOWE(UInt64 now,const char *&error){
+    error=nullptr;auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || !sec->saeWorker || !sec->pmfSession || !_nativeJoinPending || _nativeStopping ||
+       !_nativeRadioOn || !_networkEnabled || powerIOBlocked() || s.cancelRequested ||
+       s.disconnect!=Ath10k::DisconnectStage::None || s.securityAKM!=18 || !s.secure || !s.pmfRequired ||
+       !nativePMFFirmwareReady() || (s.stage!=Ath10k::LinkStage::Auth && s.stage!=Ath10k::LinkStage::Assoc) ||
+       memcmp(s.bssid,s.ap.bssid,6) || !AthSecurity::validOWEPersonalRSN(s.ap.rsn,s.ap.rsnLength)){
+        error="owe-owner-retired";return false;
+    }
+    const UInt64 generation=sec->pmfSession->activeGeneration();
+    if(!generation || generation>0xffffffffu || generation!=sec->nextSAEGeneration){error="owe-generation-mismatch";return false;}
+    if(sec->owePhase==4)return sec->ready;
+    if(!sec->owePhase){
+        if(s.stage!=Ath10k::LinkStage::Auth || sec->ready || now>~UInt64(0)-5000){error="owe-start-state";return false;}
+        AthSecurity::P256CoreCryptoAPI points{};AthSecurity::P256FieldAPI field{};
+        if(!Ath10kNativeSAEKernelBackend::providers(points,field)){error="owe-backend-unavailable";return false;}
+        auto job=new Ath10kNativeOWEJob;
+        if(!job || !job->initExchange(points,field,s.local,s.bssid,UInt32(generation),now)){
+            if(job)job->release();error="owe-job-initialization";return false;}
+        sec->oweJob=job;sec->owePhase=1;sec->oweDeadline=now+5000;sec->oweLastNow=now;
+    }
+    if(now<sec->oweLastNow || now>=sec->oweDeadline){error="owe-exchange-timeout";return false;}
+    sec->oweLastNow=now;
+    if(sec->owePhase==2){
+        if(s.stage==Ath10k::LinkStage::Auth || !s.assocReply)return true;
+        if(!s.oweResponseReady || !sec->oweJob->setPeer(s.oweResponse,sizeof(s.oweResponse),s.local,s.bssid,UInt32(generation),now)){
+            error="owe-response-owner";return false;}
+        sec->owePhase=3;
+    }
+    if(!sec->oweSubmitted){sec->oweSubmitted=sec->saeWorker->submit(sec->oweJob);return false;}
+    auto completed=sec->saeWorker->takeCompletedFor(sec->oweJob);
+    if(!completed){if(sec->saeWorker->available())error="owe-worker-retired";return false;}
+    completed->release();sec->oweSubmitted=false;
+    if(sec->owePhase==1){
+        if(!sec->oweJob->takeRequest(s.local,s.bssid,UInt32(generation),now,s.oweRequest,sizeof(s.oweRequest))){error="owe-request-failed";return false;}
+        s.oweRequestReady=true;sec->owePhase=2;return true;
+    }
+    struct Result {AthSecurity::OWEGroup19Keys keys{};UInt8 nonce[32]{};~Result(){AthSecurity::wipe(this,sizeof(*this));}} result;
+    if(!sec->oweJob->takeKeys(s.local,s.bssid,UInt32(generation),now,result.keys,result.nonce) ||
+       !sec->supplicant.begin(result.keys.pmk,result.nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,18) ||
+       !sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false)){
+        sec->supplicant.reset();error="owe-pmk-handoff";return false;}
+    sec->oweJob->release();sec->oweJob=nullptr;sec->owePhase=4;sec->ready=true;return true;
+}
+
 // The common Auth state waits for its retained PSK job. Never derive a PMK
 // on WCL/radio gates, and never consume a result from a cancelled profile.
 bool Ath10kPCIDevice::nativePreparePersonalAuth(UInt64 now,const char *&error){
@@ -911,8 +1192,7 @@ bool Ath10kPCIDevice::nativePreparePersonalAuth(UInt64 now,const char *&error){
         using State=Ath10kNativePSKPreparation::State;
         if(result.state==State::Pending)return false;
         if(result.state!=State::Ready){error="psk-password-preparation-rejected";return false;}
-        if(!sec->supplicant.begin(result.pmk,result.nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,s.securityAKM) ||
-           !sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false)){
+        if(!AthNative::beginMasterKey(sec->supplicant,s,result.pmk,result.nonce)){
             sec->supplicant.reset();error="psk-password-supplicant-failed";return false;
         }
         sec->ready=true;
@@ -935,10 +1215,13 @@ bool Ath10kPCIDevice::nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &k
 // Consume only authenticated supplicant exports. Replies deliberately ignore
 // stale keyChanges/managementKey from the previous successful key result.
 bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
-    using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+    using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
     auto sec=_nativeSecurity;auto &s=_connection;
     if(!sec || sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending)return false;
-    const bool data=result==S::Keys || result==S::GroupKeys || result==S::PairKeys;
+    const bool initialPair=result==S::InitialPairKeys,initialGroup=result==S::InitialGroupKeys;
+    const bool data=result==S::Keys || result==S::GroupKeys || result==S::PairKeys || initialPair || initialGroup;
+    if(initialPair && (s.securityPhase || s.pairInstalled || s.portAuthorized || s.initialGroupPending || s.pmfRequired))return false;
+    if(initialGroup && (s.securityPhase!=3 || !s.pairInstalled || s.portAuthorized || !s.initialGroupPending || s.pmfRequired))return false;
     const bool management=result==S::ManagementKeys;
     if(result!=S::Reply && !data && !management)return false;
     if(!sec->supplicant.outputLength || sec->supplicant.outputLength>sizeof(sec->reply))return false;
@@ -946,9 +1229,11 @@ bool Ath10kPCIDevice::nativeAcceptSecurityResult(UInt32 result){
         const UInt8 changes=sec->supplicant.keyChanges;
         if(changes&~UInt8(S::PTKChanged|S::GTKChanged|S::IGTKChanged))return false;
         if((result==S::Keys || result==S::PairKeys) && !(changes&S::PTKChanged))return false;
+        if(initialPair && changes!=S::PTKChanged)return false;
+        if(initialGroup && changes!=S::GTKChanged)return false;
         if(result==S::GroupKeys && (!(changes&S::GTKChanged) || (changes&S::PTKChanged)))return false;
         if(management && changes!=S::IGTKChanged)return false;
-        if(data && (sec->supplicant.keys[49]>3 || sec->supplicant.keys[48]!=s.groupCipher))return false;
+        if(data && (sec->supplicant.pairwiseCipher()!=s.pairCipher || sec->supplicant.keys[49]>3 || sec->supplicant.keys[48]!=s.groupCipher))return false;
         if(s.pmfRequired && (s.groupCipher!=AthSecurity::cipherCCMP || (result==S::Keys && !(changes&S::IGTKChanged))))return false;
         if(management && (!s.pairInstalled || !s.portAuthorized || s.securityPhase!=5))return false;
         if((changes&S::IGTKChanged) && !nativeStageManagementKey(sec->supplicant.managementKey))return false;
@@ -968,6 +1253,17 @@ bool Ath10kPCIDevice::nativePMFPairwiseAcknowledged(const UInt8 *key){
     return _nativeSecurity->pmfSession->acknowledgePairwise(key,_connection.local,_connection.bssid);
 }
 bool Ath10kPCIDevice::nativePMFPortReady(){
+    if(_connection.wepSelected){
+        auto sec=_nativeSecurity;auto &s=_connection;
+        if(!sec || s.pmfRequired || !s.secure || s.cancelRequested || s.wepIOActive ||
+           s.disconnect!=Ath10k::DisconnectStage::None || s.securityPhase<3 || s.securityPhase>5 ||
+           !sec->eapOwner.staticWEPReady(sec->eapOwner.generation(),s.local,s.bssid,Ath10k::uptimeNS()/1000000u))return false;
+        const auto index=s.wepTransmitIndex;const UInt8 length=s.pairCipher==1?5:s.pairCipher==5?13:0;
+        UInt8 confirmed=0;
+        if(!sec->eapOwner.confirmedWEPTransmitIndex(sec->eapOwner.generation(),s.local,s.bssid,Ath10k::uptimeNS()/1000000u,confirmed))return false;
+        return length && s.groupCipher==s.pairCipher && s.wepTransmitValid && index==confirmed && index<4 && s.wepInstalledLengths[0][index]==length &&
+            s.wepInstalledLengths[1][index]==length;
+    }
     if(_connection.pmfRequired && !nativePMFFirmwareReady())return false;
     if(!_nativeSecurity || !_nativeSecurity->pmfSession)return !_connection.pmfRequired;
     auto sec=_nativeSecurity;auto pmf=sec->pmfSession;
@@ -1001,14 +1297,14 @@ UInt32 Ath10kPCIDevice::nativeEAPOutput(mbuf_t packet){
 }
 bool Ath10kPCIDevice::nativeEAPSystemFrame(const UInt8 *frame,UInt32 length){
     auto sec=_nativeSecurity;auto &s=_connection;
-    return s.securityAKM==1 && sec && Ath10k::connectionAssociated(s) &&
+    return (s.securityAKM==1 || s.securityAKM==5) && sec && Ath10k::connectionAssociated(s) &&
         sec->eapOwner.validAt(Ath10k::uptimeNS()/1000000u) &&
         sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false)==
             AthNative::EAPOwner::PacketOwner::SystemEAP;
 }
 bool Ath10kPCIDevice::nativeEAPReceive(const UInt8 *frame,UInt32 length){
     auto sec=_nativeSecurity;auto &s=_connection;
-    if(s.securityAKM!=1 || !sec || !sec->eapOwner.generation())return false;
+    if((s.securityAKM!=1 && s.securityAKM!=5) || !sec || !sec->eapOwner.generation())return false;
     // An owner may still exist between cancellation and asynchronous cleanup.
     // Consume/drop here: falling through would feed retired EAP into key RX.
     if(!Ath10k::connectionAssociated(s) || !_networkInterface ||
@@ -1018,7 +1314,7 @@ bool Ath10kPCIDevice::nativeEAPReceive(const UInt8 *frame,UInt32 length){
     const auto owner=sec->eapOwner.route(sec->eapOwner.generation(),s.local,s.bssid,frame,length,false);
     if(owner==AthNative::EAPOwner::PacketOwner::InternalKey)return false;
     if(owner!=AthNative::EAPOwner::PacketOwner::SystemEAP){Ath10k::rxDrop(s,Ath10k::ConnectionState::EAPOL);return true;}
-    const auto envelope=AthSecurity::classifyEAPOL(frame,length);
+    const auto envelope=sec->eapOwner.envelope(frame,length);
     mbuf_t packet=takeRXPacket(envelope.bytes);
     if(!packet || mbuf_copyback(packet,0,envelope.bytes,frame,MBUF_DONTWAIT)){
         if(packet)freePacket(packet);Ath10k::rxDrop(s,Ath10k::ConnectionState::Allocation);return true;
@@ -1040,22 +1336,27 @@ void Ath10kPCIDevice::nativeSetEAPQueue(bool active){
 }
 void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
     auto sec=_nativeSecurity;auto &s=_connection;
-    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation() || !Ath10k::connectionAssociated(s)){
+    if(!sec || (s.securityAKM!=1 && s.securityAKM!=5) || !sec->eapOwner.generation() || !Ath10k::connectionAssociated(s)){
         // A key callback or notification can retire the owner before this
         // service tick. Release only EAP queue ownership, not authorized data.
         nativeSetEAPQueue(false);return;
     }
     auto fail=[&](const char *error){s.error=error;s.cancelRequested=true;s.portAuthorized=false;};
     if(sec->eapOwner.expire(now)){nativeSetEAPQueue(false);fail("native-eap-msk-timeout");return;}
+    // Static WEP borrows the slot owner, not the system EAP transport.
+    // Keep its authentication deadline above, but let serviceNativeWEP own
+    // key pause and authorization. Never start a preauthorization EAP queue.
+    if(sec->eapOwner.staticWEP()){nativeSetEAPQueue(false);return;}
     if(!_networkEnabled || !_wmiLive.active || powerIOBlocked()){
         nativeSetEAPQueue(false);return;
     }
     nativeSetEAPQueue(true);
+    const bool micBusy=sec->tkipMICOwner.pending() || sec->tkipMICInFlight || sec->tkipDeauthPending;
     const bool replacement=sec->ready && sec->eapOwner.replacementPending();
     const bool replacementIdle=!sec->eapOwner.pending() && !sec->eapTXInFlight && !sec->replyPending && !sec->keysPending &&
         !sec->authorizePending && !sec->ptkUpdatePending && !sec->supplicant.pairwisePending() &&
         !s.txOwned && !s.dataPending && !s.wmiOwned && !s.submitted && !s.rekeyKind;
-    if(!sec->ready || (replacement && replacementIdle)){
+    if(!micBusy && (!sec->ready || (replacement && replacementIdle))){
         // Consume the translated PMK once, only for the still-current station
         // and peer. Secrets never outlive this gated invocation.
         struct Material {UInt8 pmk[32]{},nonce[32]{};
@@ -1066,8 +1367,7 @@ void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
                     fail("native-eap-master-replacement");return;
                 }
             }else if(!Ath10kKernelCrypto::random(material.nonce,sizeof(material.nonce)) ||
-               !sec->supplicant.begin(material.pmk,material.nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,1) ||
-               !sec->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false)){
+               !AthNative::beginMasterKey(sec->supplicant,s,material.pmk,material.nonce)){
                 sec->supplicant.reset();fail("native-eap-supplicant-initialization");return;
             }
             sec->ready=true;
@@ -1084,10 +1384,10 @@ void Ath10kPCIDevice::serviceNativeEAP(UInt64 now){
         if(failed){fail("native-eap-tx-failed");return;}
     }
     size_t length=0;UInt64 since=0;const auto frame=sec->eapOwner.front(length,since);
-    if(!frame){s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending || sec->supplicant.pairwisePending();return;}
+    if(!frame){s.eapolPause=sec->eapOwner.keyPending() || micBusy || sec->replyPending || sec->keysPending || sec->authorizePending || sec->supplicant.pairwisePending();return;}
     s.eapolPause=true;
     if(now<since || now-since>=5000){fail("native-eap-queue-timeout");return;}
-    if(s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.rekeyKind ||
+    if(micBusy || s.txOwned || s.dataPending || s.wmiOwned || s.submitted || s.rekeyKind ||
        sec->replyPending || sec->keysPending || sec->authorizePending || sec->ptkUpdatePending ||
        s.maintenance.step || s.radio.blocked || s.radio.powerBlocked || s.radio.appliedPS ||
        s.csa.blocked || s.txPauseMask || !_wmiScan.completed)return;
@@ -1104,11 +1404,27 @@ IOReturn Ath10kPCIDevice::nativeSetCipherKey(void *data){
     auto sec=_nativeSecurity;auto &s=_connection;
     // No enterprise join is advertised yet. Personal supplicant ownership must
     // never be overwritten by a late or unrelated system key request.
-    if(!sec || s.securityAKM!=1 || !sec->eapOwner.generation())return kIOReturnUnsupported;
+    if(!sec || (s.securityAKM!=1 && s.securityAKM!=5) || !sec->eapOwner.generation())return kIOReturnUnsupported;
     if(!Ath10k::connectionAssociated(s))return kIOReturnNotReady;
     static_assert(sizeof(apple80211_key)==0x94,"Sequoia cipher-key callback ABI");
     struct Request {apple80211_key value{};~Request(){AthSecurity::wipe(&value,sizeof(value));}} request;
     bcopy(data,&request.value,sizeof(request.value));const auto &key=request.value;
+    if(sec->eapOwner.dynamicWEP()){
+        using R=AthNative::EAPOwner::KeyResult;
+        const auto result=sec->eapOwner.setWEPKey(sec->eapOwner.generation(),s.local,s.bssid,
+            &key,sizeof(key),Ath10k::uptimeNS()/1000000u);
+        if(result==R::Accepted){s.eapolPause=true;requestNativeService();return kIOReturnSuccess;}
+        if(result==R::Duplicate)return kIOReturnSuccess;
+        if(result==R::Conflict)return kIOReturnBusy;
+        if(result==R::Stale){
+            if(!sec->eapOwner.generation()){
+                s.error="native-eap-wep-key-timeout";s.cancelRequested=true;s.portAuthorized=false;
+                discardNativeSecurity();requestNativeService();
+            }
+            return kIOReturnNotReady;
+        }
+        return kIOReturnBadArgument;
+    }
     if(key.version!=1 || key.key_flags || key.key_index || key.key_rsc_len ||
        key.wowl_kck_len || key.wowl_kek_len)return kIOReturnBadArgument;
     // MSK selects the current association; a nonzero address is PMKSA's
@@ -1532,14 +1848,26 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
         setProperty("Ath10kNativeSAEKernelBackendReady",backendReady);
         setProperty("Ath10kNativeJoinKeyFlags",UInt64(join.keyFlags),16);
         setProperty("Ath10kNativeJoinKeyIndex",UInt64(join.keyIndex),16);
-        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady,nativeEAPEnabled());
-        const bool sae=auth==NativeJoinAuth::SAE,eap=auth==NativeJoinAuth::EAP;
-        const UInt8 selectedAKM=eap?1:sae?8:(auth==NativeJoinAuth::PSKSHA256?6:2);
-        const bool personal=auth==NativeJoinAuth::PSK || auth==NativeJoinAuth::PSKSHA256;
-        if(auth==NativeJoinAuth::Unsupported){
+        NativeWEPJoinView wepEnvelope{};
+        setProperty("Ath10kNativeWEPEnvelopeCandidate",nativeWEPJoinEnvelope(join,wepEnvelope));
+        const bool legacy=nativeLegacyEnabled(),allowWEP=nativeWEPEnabled();
+        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady,nativeEAPEnabled(),legacy,allowWEP,nativeOWEEnabled() && backendReady);
+        const bool sae=auth==NativeJoinAuth::SAE,eap=auth==NativeJoinAuth::EAP || auth==NativeJoinAuth::EAPSHA256 || auth==NativeJoinAuth::WPA1EAP;
+        const bool eapSHA256=auth==NativeJoinAuth::EAPSHA256;
+        const bool owe=auth==NativeJoinAuth::OWE;
+        const bool wep=auth==NativeJoinAuth::WEPOpen || auth==NativeJoinAuth::WEPShared;
+        const UInt8 selectedAKM=eapSHA256?5:(eap || wep)?1:owe?18:sae?8:(auth==NativeJoinAuth::PSKSHA256?6:2);
+        const bool personal=auth==NativeJoinAuth::PSK || auth==NativeJoinAuth::PSKSHA256 || auth==NativeJoinAuth::WPA1PSK;
+        if(auth==NativeJoinAuth::Unsupported || (eapSHA256 && (!nativeSAEEnabled() || !backendReady))){
             setProperty("Ath10kNativeJoinReason",join.upperAuth&((1u<<12)|(1u<<13))?
                 "native-sae-not-admitted":"unsupported-authentication");
             AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;}
+        NativeSelectedRSN selectedRSN{};
+        // Legacy requires an explicit experimental gate; handshake startup also checks HMAC-MD5.
+        if(!nativeSelectedRSN(join,auth,selectedRSN,legacy || wep,legacy)){
+            setProperty("Ath10kNativeJoinReason","unsupported-or-inconsistent-selected-rsn");
+            AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;
+        }
         if(!_nativeRadioOn || powerIOBlocked() || _wmiEvents.rfKill || !_networkEnabled){AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;}
         // Disabled alone is not evidence that old transport/peer ownership has
         // retired. A queued join must not overwrite state still used by CE/HTT,
@@ -1550,14 +1878,33 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
         // before candidate/security setup can fail. Busy requests leave it intact.
         _nativeSecurity->preparedRoam.clear();
         _nativeSecurity->profile.clear();
-        s.regulatory=_regulatory;s.hiddenSSID=true;s.securityAKM=selectedAKM;s.secure=personal || sae || eap;s.pmfRequired=sae;s.ssidLength=join.ssidLength;
+        s.regulatory=_regulatory;s.hiddenSSID=true;s.wepSelected=wep;s.sharedKeyAuth=auth==NativeJoinAuth::WEPShared;s.wpa1Selected=selectedRSN.wpa1;s.pairCipher=selectedRSN.pairwise;s.legacyRSNAllowed=selectedRSN.legacy;s.securityAKM=selectedAKM;s.secure=personal || sae || owe || eap || wep;s.pmfRequired=sae || owe || eapSHA256;s.ssidLength=join.ssidLength;
         bcopy(join.ssid,s.ssid,join.ssidLength);bcopy(join.bssid,s.bssid,6);bcopy(_nativeMACCurrent,s.local,6);
         s.firmwareHT=_wmi.htCapability;s.firmwareVHT=_wmi.vhtCapability;
         s.firmwareMFPSupport=payload().kSupportsMFP;s.pmfQoSTransported=_wmiRadio[Ath10k::kWMIPMFQoSIndex].completed;s.rfChains=1;
         _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
         const char *error=Ath10k::selectOpenBSS(s,_nativeSecurity->candidates.bss);
         if(error){setProperty("Ath10kNativeJoinReason",error);AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
+        if(selectedRSN.specified && selectedRSN.group!=s.groupCipher){
+            setProperty("Ath10kNativeJoinReason","selected-rsn-group-mismatch");
+            AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;
+        }
+        if((s.groupCipher==AthSecurity::cipherTKIP || s.pairCipher==AthSecurity::cipherTKIP) && _nativeSecurity->tkipMICOwner.blocked(Ath10k::uptimeNS()/1000000u)){
+            setProperty("Ath10kNativeJoinReason","tkip-countermeasure-exclusion");
+            AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
+        }
         s.hiddenSSID=s.ap.hidden;
+        if(owe || eapSHA256){auto sec=_nativeSecurity;
+            if(!nativePMFFirmwareReady() || !sec->saeWorker || sec->pmfSession || sec->oweJob || sec->ready || sec->nextSAEGeneration==0xffffffffu){
+                sec->reset();AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;}
+            auto pmf=new Ath10kPMFSession;
+            if(!pmf || !pmf->initConnection(s.local,s.bssid,++sec->nextSAEGeneration)){
+                if(pmf)pmf->release();sec->reset();AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;}
+            sec->pmfSession=pmf;
+            if(!sec->transitionPolicy.bind(s.local,s.bssid,pmf->activeGeneration(),join.transitionDisable)){
+                sec->reset();AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
+            }
+        }
         if(sae){
             error=nativePMFFirmwareReady()?startNativeSAEJoin(*_nativeSecurity,join,s.ap,saePoints,saeField,
                 Ath10kKernelCrypto::random,s.local,Ath10k::uptimeNS()/1000000u):"native-sae-firmware-not-ready";
@@ -1569,8 +1916,23 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
                 AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
             }
         }
+        if(wep){
+            const UInt64 now=Ath10k::uptimeNS()/1000000u;auto sec=_nativeSecurity;
+            bool ok=now<=~UInt64(0)-30000 && sec->eapOwner.beginStaticWEP(s.local,s.bssid,now,now+30000,join.key,join.keyLength,UInt8(join.keyIndex));
+            if(ok && s.sharedKeyAuth){
+                UInt8 iv[3]{};bool started=false;
+                for(unsigned attempt=0;attempt<16 && !started;++attempt){
+                    if(!Ath10kKernelCrypto::random(iv,sizeof(iv)))break;
+                    started=sec->sharedWEP.begin(sec->eapOwner.generation(),s.local,s.bssid,join.key,join.keyLength,UInt8(join.keyIndex),iv,now,now+30000);
+                }
+                AthSecurity::wipe(iv,sizeof(iv));ok=started;
+                if(ok)sec->sharedWEPGeneration=sec->eapOwner.generation();
+            }
+            if(!ok){sec->reset();setProperty("Ath10kNativeJoinReason","native-wep-owner-initialization");
+                AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;}
+        }
         if(eap){const UInt64 now=Ath10k::uptimeNS()/1000000u;
-            if(!_nativeSecurity->eapOwner.begin(s.local,s.bssid,now,now+30000)){
+            if(!_nativeSecurity->eapOwner.begin(s.local,s.bssid,now,now+30000,s.wpa1Selected)){
                 _nativeSecurity->reset();AthSecurity::wipe(&join,sizeof(join));
                 Ath10k::resetDisconnected(s);return kIOReturnNotReady;
             }
@@ -1579,16 +1941,16 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
             auto sec=_nativeSecurity;
             if(!sec->saeWorker || sec->ready || sec->pskPreparation.active() || sec->saePreparation.active() ||
                sec->saeSession || sec->saeRadio || sec->pmfSession || sec->nextSAEGeneration==0xffffffffu ||
-               !sec->pskPreparation.begin(sec->saeWorker,join,s.ap,s.local,++sec->nextSAEGeneration,Ath10k::uptimeNS()/1000000u)){
+               !sec->pskPreparation.begin(sec->saeWorker,join,s.ap,s.local,++sec->nextSAEGeneration,Ath10k::uptimeNS()/1000000u,legacy)){
                 sec->reset();setProperty("Ath10kNativeJoinReason","psk-password-preparation-failed");
                 AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
             }
-        }else if(personal){UInt8 nonce[32]{};Ath10kKernelCrypto::random(nonce,sizeof(nonce));
-            bool ok=_nativeSecurity->supplicant.begin(join.key,nonce,s.local,s.bssid,s.ap.rsn,s.ap.rsnLength,selectedAKM) &&
-                _nativeSecurity->supplicant.bindRSNXE(s.ap.rsnxe,s.ap.rsnxeLength,false);
+        }else if(personal){UInt8 nonce[32]{};
+            bool ok=Ath10kKernelCrypto::random(nonce,sizeof(nonce)) &&
+                AthNative::beginMasterKey(_nativeSecurity->supplicant,s,join.key,nonce);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){_nativeSecurity->supplicant.reset();setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
-        if(!_nativeSecurity->profile.replace(join,s.local,sae,eap)){
+        if(!_nativeSecurity->profile.replace(join,s.local,sae,eap,s.pairCipher,s.legacyRSNAllowed,legacy,allowWEP,owe)){
             _nativeSecurity->reset();setProperty("Ath10kNativeJoinReason","profile-retention-failed");
             AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
         }
@@ -1829,6 +2191,115 @@ IOReturn Ath10kPCIDevice::nativeServiceRadioAction(OSObject *owner,void *,void *
     return kIOReturnSuccess;
 }
 
+// Called with qualified descriptor evidence under the radio gate. Returning
+// true means one new failure, suitable for one native notification.
+bool Ath10kPCIDevice::nativeRecordTKIPMIC(const Ath10k::GroupTKIPMICFailure &event,UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!event.valid || !sec || !sec->ready || !sec->profile.generation() ||
+       !event.keyEpoch || event.keyIndex>3 || event.tid>16 ||
+       event.generation!=s.securityGeneration ||
+       (event.pairwise?(event.keyIndex!=0 || event.keyEpoch!=s.pairKeyEpoch):
+        (!s.groupInstalled[event.keyIndex] || event.keyEpoch!=s.groupKeyEpoch[event.keyIndex])) || !Ath10k::mappedPeer(s,event.peer) ||
+       !s.secure || !s.pairInstalled || !s.portAuthorized || s.securityPhase!=5 || s.rekeyKind ||
+       (event.pairwise?s.pairCipher:s.groupCipher)!=AthSecurity::cipherTKIP || s.cancelRequested ||
+       s.stage!=Ath10k::LinkStage::Connected || s.disconnect!=Ath10k::DisconnectStage::None)return false;
+    auto &owner=sec->tkipMICOwner;
+    if(!owner.generation() && !owner.begin(sec->profile.generation(),now))return false;
+    if(owner.generation()!=sec->profile.generation()){
+        s.error="native-mic-association-mismatch";s.cancelRequested=true;s.tkipDataBlocked=true;return false;
+    }
+    const auto result=owner.detect({sec->profile.generation(),event.keyEpoch,event.tsc,event.keyIndex,event.tid,event.pairwise},now);
+    if(result==AthSecurity::TKIPMICOwner::Detection::Invalid){
+        if(owner.needsTeardown()){s.error="native-mic-owner-failed";s.cancelRequested=true;s.tkipDataBlocked=true;}
+        return false;
+    }
+    if(result==AthSecurity::TKIPMICOwner::Detection::Duplicate)return false;
+    if(sec->tkipMICNotices<2)sec->tkipMICNoticeKinds[sec->tkipMICNotices++]=event.pairwise?5:6;
+    bcopy(s.bssid,sec->tkipMICNoticeBSSID,6);sec->tkipMICNoticeGeneration=s.securityGeneration;
+    s.eapolPause=true;
+    if(result==AthSecurity::TKIPMICOwner::Detection::Countermeasures){
+        s.tkipDataBlocked=true;sec->tkipDeauthPending=true;sec->tkipDeauthDeadline=now+6000;
+    }
+    return true;
+}
+
+// Radio-gate-owned transport. The receipt is independent of M4/GTK replies.
+void Ath10kPCIDevice::serviceNativeTKIPMIC(UInt64 now){
+    auto sec=_nativeSecurity;auto &s=_connection;
+    if(!sec || (!sec->tkipMICOwner.pending() && !sec->tkipMICInFlight && !sec->tkipDeauthPending))return;
+    auto fail=[&](const char *why){s.error=why;s.cancelRequested=true;s.tkipDataBlocked=true;};
+    if(!sec->ready || !sec->profile.generation() || !s.secure || !s.pairInstalled ||
+       (s.groupCipher!=AthSecurity::cipherTKIP && s.pairCipher!=AthSecurity::cipherTKIP) || s.cancelRequested ||
+       s.stage!=Ath10k::LinkStage::Connected || s.disconnect!=Ath10k::DisconnectStage::None){
+        fail("native-mic-owner-retired");return;
+    }
+    auto abandonReports=[&](){
+        // Retire only host report tickets. txOwned/DMA still drain before the
+        // deauthentication path can reuse the serial transport buffer.
+        sec->tkipMICOwner.retire();sec->tkipMICInFlight=false;sec->tkipMICTicket={};
+        s.micReportCompletion.clear();
+    };
+    if(!sec->tkipMICOwner.poll(now)){
+        if(!sec->tkipDeauthPending){fail("native-mic-report-timeout");return;}
+        abandonReports();
+    }
+    // Hold new ordinary TX and key work while the report owns the established
+    // KCK. This also keeps radio maintenance from entering power save.
+    s.eapolPause=true;
+    if(s.radio.appliedPS && !s.radio.txWakeRequested){s.radio.txWakeRequested=true;++s.radio.txWakeRequests;}
+    if(!_wmiScan.completed)_wmiScan.cancelRequested=true;
+    if(sec->tkipMICInFlight && s.micReportCompletion.complete){
+        if(!sec->tkipMICOwner.complete(sec->tkipMICTicket,s.micReportCompletion.status,now)){
+            if(!sec->tkipDeauthPending){fail("native-mic-report-tx-failed");return;}
+            abandonReports();
+        }
+        sec->tkipMICInFlight=false;sec->tkipMICTicket={};s.micReportCompletion.clear();
+
+    }
+    if(sec->tkipDeauthPending && !sec->tkipMICOwner.pending() && !sec->tkipMICInFlight){
+        if(sec->tkipDeauthInFlight && s.micReportCompletion.complete){
+            s.micReportCompletion.clear();fail("native-tkip-countermeasures");return;
+        }
+        if(now>=sec->tkipDeauthDeadline || now<sec->tkipDeauthDeadline-6000){fail("native-mic-deauth-timeout");return;}
+        if(sec->tkipDeauthInFlight || powerIOBlocked() || !_nativeRadioOn || !_networkEnabled ||
+           !_wmiScan.completed || s.txOwned || s.dataPending || s.wmiOwned || s.submitted ||
+           s.maintenance.step || s.radio.blocked || s.radio.powerBlocked || s.radio.appliedPS ||
+           s.csa.blocked || s.txPauseMask)return;
+        if(s.pmfRequired){fail("native-mic-deauth-pmf-conflict");return;}
+        UInt8 frame[26]{};frame[0]=0xc0;bcopy(s.bssid,frame+4,6);bcopy(s.local,frame+10,6);bcopy(s.bssid,frame+16,6);
+        Ath10k::htcWriteLE16(frame+22,static_cast<UInt16>((s.sequence&0xfff)<<4));Ath10k::htcWriteLE16(frame+24,14);
+        const char *error=submitNetworkPacket(frame,sizeof(frame),true,now,AthSecurity::ManagementTX::Plain,
+            Ath10k::ConnectionState::EAPOLPurpose::MICDeauth);
+        if(error){fail(error);return;}
+        ++s.sequence;sec->tkipDeauthInFlight=true;return;
+    }
+    if(sec->tkipMICInFlight || !sec->tkipMICOwner.pending())return;
+    // Finish existing DMA/key transactions before issuing the report; the
+    // report owner's deadline continues to run during these waits.
+    if(powerIOBlocked() || !_nativeRadioOn || !_networkEnabled || !_wmiScan.completed || s.txOwned || s.dataPending || s.wmiOwned ||
+       s.submitted || s.rekeyKind || s.securityPhase!=5 || !s.portAuthorized ||
+       sec->keysPending || sec->replyPending || sec->authorizePending || sec->ptkUpdatePending ||
+       sec->eapTXInFlight || sec->supplicant.pairwisePending() ||
+       s.maintenance.step || s.radio.blocked || s.radio.powerBlocked || s.radio.appliedPS ||
+       s.csa.blocked || s.txPauseMask)return;
+    AthSecurity::TKIPMICOwner::Evidence evidence{};AthSecurity::TKIPMICOwner::Ticket ticket{};
+    if(!sec->tkipMICOwner.next(now,evidence,ticket))return;
+    if(evidence.association!=sec->profile.generation() ||
+       (evidence.pairwise?(!s.pairInstalled || s.pairKeyEpoch!=evidence.keyEpoch):
+        (!s.groupInstalled[evidence.slot] || s.groupKeyEpoch[evidence.slot]!=evidence.keyEpoch))){fail("native-mic-key-retired");return;}
+    UInt8 frame[113]{};size_t bytes=0;
+    if(!sec->supplicant.buildMICFailureReport(frame,sizeof(frame),bytes,evidence.pairwise)){
+        AthSecurity::wipe(frame,sizeof(frame));
+        if(sec->tkipDeauthPending)abandonReports();else fail("native-mic-report-crypto");return;
+    }
+    const char *error=submitNetworkPacket(frame,static_cast<UInt32>(bytes),false,now,
+        AthSecurity::ManagementTX::Plain,Ath10k::ConnectionState::EAPOLPurpose::MICReport);
+    AthSecurity::wipe(frame,sizeof(frame));
+    if(error){if(sec->tkipDeauthPending)abandonReports();else fail(error);return;}
+    if(!sec->tkipMICOwner.submitted(ticket)){fail("native-mic-report-ticket");return;}
+    sec->tkipMICTicket=ticket;sec->tkipMICInFlight=true;
+}
+
 void Ath10kPCIDevice::serviceNative(UInt64 now) {
     _nativePostError=kIOReturnSuccess;
     if(!_nativeInterface || _nativeStopping || !_nativeStarted || _nativeMACActive || _nativeMACWaiting)return;
@@ -1847,6 +2318,8 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
        (s.cancelRequested || s.stage==Ath10k::LinkStage::Disabled || s.stage==Ath10k::LinkStage::Failed ||
         s.disconnect!=Ath10k::DisconnectStage::None) && !sec->preserveRoamRetirement(s,now))discardNativeSecurity();
     serviceNativeEAP(now);
+    serviceNativeWEP(now);
+    serviceNativeTKIPMIC(now);
     if(sec && s.cancelRequested){discardNativeSecurity();serviceNativeNotifications(now);return;}
     // Crypto/radio progress must not wait for WCL event allocation to recover.
     if(sec && sec->ready && associated && s.secure){
@@ -1876,22 +2349,29 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
                    s.securityGeneration!=UInt32(sec->ptkUpdateGeneration+1)){
                     s.error="native-ptk-completion-owner";s.cancelRequested=true;
                 }else {sec->ptkUpdateGeneration=s.securityGeneration;sec->ptkUpdatePending=true;sec->ptkUpdateSince=now;}
-            }else if(s.securityPhase==3)s.authorizeRequested=true;
+            }else if(s.securityPhase==3 && !s.initialGroupPending)s.authorizeRequested=true;
             sec->pairUpdateReply=false;
             sec->authorizePending=false;s.eapolCompletion.clear();
         }
         if(s.cancelRequested){discardNativeSecurity();return;}
         if(sec->keysPending && !s.wmiOwned && !s.submitted && !s.txOwned && !s.dataPending &&
            !s.stats.step && !s.maintenance.step && !s.radio.step && _wmiScan.completed && !_wmi.credits.outstanding){
-            const bool initial=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>::Keys;
-            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>::PairKeys;
-            if((initial && !s.securityPhase) || (!initial && s.securityPhase==5 && s.portAuthorized)){
+            using KeyResult=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
+            const bool initialPair=sec->keyOperation==KeyResult::InitialPairKeys;
+            const bool initialGroup=sec->keyOperation==KeyResult::InitialGroupKeys;
+            const bool initial=sec->keyOperation==KeyResult::Keys || initialPair;
+            const bool pair=sec->keyOperation==AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>::PairKeys;
+            if((initial && !s.securityPhase) ||
+               (initialGroup && s.securityPhase==3 && s.initialGroupPending && s.pairInstalled && !s.portAuthorized) ||
+               (!initial && !initialGroup && s.securityPhase==5 && s.portAuthorized)){
                 const unsigned keyBytes=s.groupCipher==AthSecurity::cipherTKIP?32:16;
                 bool sameGroup=s.groupInstalled[sec->keys[49]] && AthSecurity::equal(sec->keys+16,s.installedGroups[sec->keys[49]],keyBytes);
-                bcopy(sec->keys,s.temporalKey,16);bcopy(sec->keys+16,s.groupKey,32);
+                AthSecurity::wipe(s.temporalKey,sizeof(s.temporalKey));bcopy(sec->keys,s.temporalKey,16);if(s.pairCipher==AthSecurity::cipherTKIP)bcopy(sec->keys+56,s.temporalKey+16,16);bcopy(sec->keys+16,s.groupKey,32);
                 s.groupIndex=sec->keys[49];bcopy(sec->keys+50,s.groupRSC,6);
-                if(initial){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN)v=pn;}
-                s.rekeyKind=initial?0:(pair?2:1);s.rekeySkipGroup=pair && sameGroup;
+                if((initial && !initialPair) || initialGroup){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN[s.groupIndex])v=pn;}
+                if(initialPair)s.initialGroupPending=true;
+                if(initialGroup)s.initialGroupReply=true;
+                s.rekeyKind=(initial || initialGroup)?0:(pair?2:1);s.rekeySkipGroup=pair && sameGroup;
                 s.securityPhase=initial || pair?1:2;s.submitted=false;s.securityAck=false;s.authorizeRequested=false;
                 s.portAuthorized=false;s.sinceMs=now;sec->keysPending=false;AthSecurity::wipe(sec->keys,sizeof(sec->keys));
             }
@@ -1905,10 +2385,11 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
                 AthSecurity::wipe(sec->reply,sizeof(sec->reply));sec->replyLength=0;}
         }
         if(!sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending && !sec->eapTXInFlight &&
+           !sec->tkipMICOwner.pending() && !sec->tkipMICInFlight && !sec->tkipDeauthPending &&
            (!sec->eapOwner.replacementPending() || sec->eapOwner.replacementKeyReady()) && s.eapolCount && !s.rekeyKind){
             auto result=sec->supplicant.receive(s.eapolFrames[s.eapolRead],s.eapolLength[s.eapolRead]);
             AthSecurity::wipe(s.eapolFrames[s.eapolRead],512);s.eapolRead=(s.eapolRead+1)%4;--s.eapolCount;
-            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+            using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
             if(result==Supplicant::Fatal){s.error="native-wpa2-handshake-failed";s.cancelRequested=true;}
             else if(result!=Supplicant::Ignore && !nativeAcceptSecurityResult(static_cast<UInt32>(result))){
                 s.error="native-security-result-rejected";s.cancelRequested=true;s.portAuthorized=false;
@@ -1916,7 +2397,7 @@ void Ath10kPCIDevice::serviceNative(UInt64 now) {
         }
         if(sec->supplicant.pairwisePending()){
             s.eapolPause=true;if(!sec->pairDeadline)sec->pairDeadline=now+5000;
-        }else {sec->pairDeadline=0;s.eapolPause=sec->replyPending || sec->keysPending || sec->authorizePending || sec->eapTXInFlight || sec->eapOwner.pending();}
+        }else {sec->pairDeadline=0;s.eapolPause=sec->tkipMICOwner.pending() || sec->tkipMICInFlight || sec->tkipDeauthPending || sec->replyPending || sec->keysPending || sec->authorizePending || sec->eapTXInFlight || sec->eapOwner.pending();}
     }
     publishNativeSecurityState(now);
     serviceNativeNotifications(now);
@@ -1974,6 +2455,16 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
         }
         return false;
     };
+    // Stock multicast MIC notification: ID 6, exactly the AP address (6 bytes).
+    // No post from RX: retry only here, and never relabel a retired association.
+    if(sec && sec->tkipMICNotices){
+        if(sec->tkipMICNoticeGeneration!=s.securityGeneration || !Ath10k::connectionAssociated(s) ||
+           !Ath10k::sameMAC(sec->tkipMICNoticeBSSID,s.bssid))sec->tkipMICNotices=0;
+        else while(sec->tkipMICNotices){
+            if(!post(sec->tkipMICNoticeKinds[0],sec->tkipMICNoticeBSSID,6))break;
+            sec->tkipMICNoticeKinds[0]=sec->tkipMICNoticeKinds[1];sec->tkipMICNoticeKinds[1]=0;--sec->tkipMICNotices;
+        }
+    }
     if(_nativeReadyRequested && !_nativeReadyPublished && _wmiLive.active){
         if(!_nativeReadyResetSent){
             UInt32 reset=1;
@@ -2022,7 +2513,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
     // An authenticated old-AP policy update may arrive after REASSOC admission.
     // Apply it before retiring the supplicant so a prepared profile cannot
     // bypass stricter policy merely because this tick also starts teardown.
-    if(_nativeRoamPending && sec && s.securityAKM==8 && Ath10k::connectionAssociated(s) &&
+    if(_nativeRoamPending && sec && s.pmfRequired && Ath10k::connectionAssociated(s) &&
        s.portAuthorized && s.securityPhase==5 && !s.rekeyKind && sec->pmfSession && sec->pmfSession->portReady() &&
        !sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->supplicant.pairwisePending()){
         const UInt64 generation=sec->pmfSession->activeGeneration();
@@ -2126,7 +2617,7 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
         auto &policy=sec->transitionPolicy;
         const UInt64 generation=sec->pmfSession?sec->pmfSession->activeGeneration():0;
         if((!associated && !_nativeJoinPending) || s.cancelRequested || s.disconnect!=Ath10k::DisconnectStage::None ||
-           !_wmiLive.active || s.securityAKM!=8 || !policy.matches(s.local,s.bssid,generation))policy.clear();
+           !_wmiLive.active || !s.pmfRequired || !policy.matches(s.local,s.bssid,generation))policy.clear();
         else if(up && s.portAuthorized && s.securityPhase==5 && !s.rekeyKind &&
                 !sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->supplicant.pairwisePending() &&
                 !_nativeJoinPending && !_nativeJoinFailed && _nativeLinkUpSent && _nativeBeaconSent &&
@@ -2238,5 +2729,9 @@ const char *Ath10kPCIDevice::serviceNativeMAC(UInt64 now) {
 const char *Ath10kPCIDevice::nativeSelectBSS(UInt64 now) {
     if(!_nativeSecurity || !_nativeJoinPending)return "native-candidate-not-ready";
     _nativeSecurity->candidates.expire(now);
-    return Ath10k::selectOpenBSS(_connection,_nativeSecurity->candidates.bss);
+    const char *error=Ath10k::selectOpenBSS(_connection,_nativeSecurity->candidates.bss);
+    if(error)return error;
+    if((_connection.groupCipher==AthSecurity::cipherTKIP || _connection.pairCipher==AthSecurity::cipherTKIP) && _nativeSecurity->tkipMICOwner.blocked(now))
+        return "tkip-countermeasure-exclusion";
+    return nullptr;
 }

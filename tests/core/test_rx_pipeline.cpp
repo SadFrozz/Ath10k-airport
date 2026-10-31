@@ -99,6 +99,60 @@ static void fragments(){
     UInt8 body[]={0xaa,0xaa,3,0,0,0,8,0,0x45};memcpy(d+332,body,9);
     assert(normalizeRawRX(d,2048,0,out,bytes));b.reset();assert(appendRXBatch(s,b,out,bytes,1,7));
     assert(acceptSecureRX(s,b.descriptor,b.data,b.lengths[0]));
+    // Raw group TKIP: remove MIC/ICV/FCS, preserve TSC and integrity gates.
+    {
+        auto group=s;group.groupCipher=AthSecurity::cipherTKIP;group.groupIndex=2;
+        input(0,false,12,first,6);htcWriteLE32(d+32,0);htcWriteLE32(d+24,57);
+        htcWriteLE32(d+12,(4u<<28)|(1u<<13)|7);
+        const UInt8 multicast[6]={1,0,0x5e,0,0,1};
+        memcpy(d+304,multicast,6);memcpy(d+240,multicast,6);
+        const UInt8 iv[8]={2,0x22,1,0xa0,3,4,5,6};
+        memcpy(d+324,iv,8);memcpy(d+260,iv,8);memcpy(d+332,body,9);
+        memset(d+341,0xa5,16);
+        assert(normalizeRawRX(d,2048,0,out,bytes) && bytes==333);
+        b.reset();assert(appendRXBatch(group,b,out,bytes,1,7));
+        assert(b.lengths[0]==15 && b.data[14]==0x45);
+        assert(acceptSecureRX(group,b.descriptor,b.data,b.lengths[0],7));
+        assert(!acceptSecureRX(group,b.descriptor,b.data,b.lengths[0],7));
+        // Successful normalization must not launder a firmware MIC error.
+        htcWriteLE32(d+4,0x90000000u);
+        assert(normalizeRawRX(d,2048,0,out,bytes));b.reset();
+        assert(!appendRXBatch(group,b,out,bytes,1,7) && b.failed && group.rxLastReason==ConnectionState::Integrity);
+        htcWriteLE32(d+4,0x80000000u);htcWriteLE32(d+24,47);
+        assert(!normalizeRawRX(d,2048,0,out,bytes));
+        htcWriteLE32(d+24,57);htcWriteLE16(d+322,1);
+        assert(!normalizeRawRX(d,2048,0,out,bytes));
+    }
+    // WEP RX uses descriptor cipher0/1, independent from key receipts3/2.
+    // Confirmed slot metadata, integrity and controlled-port checks still apply.
+    for(unsigned cipher:{0u,1u})for(bool multicast:{false,true}){
+        auto wep=s;wep.pairCipher=wep.groupCipher=cipher?5:1;
+        wep.wepInstalledLengths[multicast?1:0][3]=cipher?13:5;
+        input(0,false,12,first,6);htcWriteLE32(d+32,0);htcWriteLE32(d+24,45);
+        htcWriteLE32(d+12,(cipher<<28)|(1u<<13)|7);
+        if(multicast){const UInt8 da[6]={1,0,0x5e,0,0,1};memcpy(d+304,da,6);memcpy(d+240,da,6);}
+        const UInt8 iv[4]={0x21,0x43,0x65,0xc0};memcpy(d+324,iv,4);memcpy(d+260,iv,4);
+        memcpy(d+328,body,9);memset(d+337,0xa5,8);
+        assert(normalizeRawRX(d,2048,0,out,bytes) && bytes==333);
+        b.reset();assert(appendRXBatch(wep,b,out,bytes,1,7) && b.lengths[0]==15);
+        assert(acceptSecureRX(wep,b.descriptor,b.data,b.lengths[0],7));
+        for(unsigned fault=0;fault<5;++fault){auto bad=wep;
+            if(fault==0)bad.wepInstalledLengths[multicast?1:0][3]=0;
+            if(fault==1)bad.wepInstalledLengths[multicast?1:0][3]=cipher?5:13;
+            if(fault==2)bad.wepIOActive=true;
+            if(fault==3)bad.portAuthorized=false;
+            if(fault==4)bad.peerIDs[0]=0;
+            assert(!acceptSecureRX(bad,b.descriptor,b.data,b.lengths[0],7));
+        }
+        b.descriptor[263]|=0x20;assert(!acceptSecureRX(wep,b.descriptor,b.data,b.lengths[0],7));
+        htcWriteLE32(d+4,0xa0000000u);assert(normalizeRawRX(d,2048,0,out,bytes));b.reset();
+        assert(!appendRXBatch(wep,b,out,bytes,1,7) && wep.rxLastReason==ConnectionState::Integrity);
+        htcWriteLE32(d+4,0x80000000u);
+        for(unsigned unsupported:{2u,3u}){htcWriteLE32(d+12,(unsupported<<28)|(1u<<13)|7);
+            assert(!normalizeRawRX(d,2048,0,out,bytes));}
+        htcWriteLE32(d+12,(cipher<<28)|(1u<<13)|7);htcWriteLE32(d+24,35);
+        assert(!normalizeRawRX(d,2048,0,out,bytes));
+    }
     // A corrupt continuation must not borrow the clean first descriptor.
     input(0,true,12,first,6);assert(f.receive(s,d,2048,7,0,20,out,bytes)==0);
     input(1,false,13,last,3);htcWriteLE32(d+4,0x80010000);
@@ -114,6 +168,60 @@ static void fragments(){
     rawControl(1,false,15,last,3);assert(f.receive(s,d,2048,7,0,23,out,bytes)==1);
     b.reset();assert(appendRXBatch(s,b,out,bytes,1,7) && b.lengths[0]==15);
     assert(acceptSecureRX(s,b.descriptor,b.data,15) && s.pairPN[0]==15);
+}
+static void wepFragments(){
+    for(unsigned cipher:{0u,1u})for(unsigned mode:{0u,1u})for(unsigned slot=0;slot<4;++slot){
+        auto s=connected();s.secure=true;s.pairCipher=s.groupCipher=cipher?5:1;
+        s.securityPhase=5;s.portAuthorized=true;s.securityGeneration=9;
+        s.wepInstalledLengths[0][slot]=cipher?13:5;
+        RXDefrag f;UInt8 d[2048]{},out[kRXAssemblyBytes]{};UInt32 bytes=0;
+        const UInt8 first[]={0xaa,0xaa,3,0,0,0},last[]={8,0,0x45};
+        auto input=[&](unsigned number,bool more,UInt32 iv,const UInt8 *body,unsigned n){
+            ethernet(d,s,8,0);htcWriteLE32(d+32,mode<<8);
+            htcWriteLE32(d+12,(cipher<<28)|(1u<<13)|7);
+            auto p=d+300;p[0]=8;p[1]=more?0x46:0x42;
+            memcpy(p+4,s.local,6);memcpy(p+10,s.bssid,6);memcpy(p+16,s.bssid,6);
+            htcWriteLE16(p+22,static_cast<UInt16>(0x90|number));memcpy(d+236,p,24);
+            const UInt8 keyIV[4]={UInt8(iv),UInt8(iv>>8),UInt8(iv>>16),UInt8(slot<<6)};
+            memcpy(d+260,keyIV,4);
+            unsigned skip=24;if(!mode){memcpy(p+24,keyIV,4);skip+=4;}
+            memcpy(p+skip,body,n);if(!mode)memset(p+skip+n,0xa5,8);
+            htcWriteLE32(d+24,skip+n+(mode?0:8));
+        };
+        input(0,true,0xfedcba,first,6);assert(f.receive(s,d,sizeof(d),7,0,10,out,bytes)==0);
+        // An exact Retry is ignored without extending the lifetime.
+        d[301]|=8;d[237]|=8;assert(f.receive(s,d,sizeof(d),7,0,11,out,bytes)==0);
+        assert(f.duplicates==1 && f.entries[16].since==10);
+        // WEP IV may decrease, including to zero; do not impose CCMP PN rules.
+        input(1,false,0,last,3);assert(f.receive(s,d,sizeof(d),7,0,12,out,bytes)==1);
+        RXBatch b;assert(appendRXBatch(s,b,out,bytes,1,7) && b.lengths[0]==15);
+        assert(b.data[14]==0x45 && acceptSecureRX(s,b.descriptor,b.data,15,7));
+        auto closed=s;closed.portAuthorized=false;
+        assert(!acceptSecureRX(closed,b.descriptor,b.data,15,7));
+        for(unsigned fault=0;fault<10;++fault){
+            auto bad=s;f.reset();input(0,true,99,first,6);
+            assert(f.receive(bad,d,sizeof(d),7,0,20,out,bytes)==0);
+            input(1,false,42,last,3);
+            if(fault==0)++bad.securityGeneration;
+            if(fault==1)bad.wepInstalledLengths[0][slot]=0;
+            if(fault==2)bad.wepIOActive=true;
+            if(fault==3)htcWriteLE32(d+12,((cipher^1u)<<28)|(1u<<13)|7);
+            if(fault==4)d[263]|=0x20;
+            if(fault==5)htcWriteLE32(d+4,0xa0000000u);
+            if(fault==6){d[310]^=2;d[246]^=2;}
+            if(fault==7){d[304]|=1;d[240]|=1;}
+            if(fault==8)htcWriteLE32(d+12,(cipher<<28)|(1u<<13)|8);
+            if(fault==9){bad.wepInstalledLengths[0][slot]=cipher?5:13;}
+            assert(f.receive(bad,d,sizeof(d),7,0,21,out,bytes)==-1);
+        }
+        f.reset();input(0,true,99,first,6);assert(f.receive(s,d,sizeof(d),7,0,30,out,bytes)==0);
+        input(0,true,98,first,6);d[301]|=8;d[237]|=8;
+        assert(f.receive(s,d,sizeof(d),7,0,31,out,bytes)==-1);
+        if(!mode){input(0,true,99,first,6);d[324]^=1;
+            assert(f.receive(s,d,sizeof(d),7,0,40,out,bytes)==-1);}
+        input(0,true,99,first,6);assert(f.receive(s,d,sizeof(d),7,0,50,out,bytes)==0);
+        input(1,false,42,last,3);assert(f.receive(s,d,sizeof(d),7,0,1050,out,bytes)==-1);
+    }
 }
 static void negotiation(){
     auto s=connected();s.operatingChannel=36;s.rfChains=2;s.firmwareHT=1|2|0x800;s.firmwareVHT=1<<5;
@@ -144,4 +252,4 @@ static void fragmentIndication(){
     f[8]=0x10;f[16]=0;f[2]=8;assert(!parseHTTSetup(f,16,1,credits,rx) && rx.pendingMPDUs==before && rx.pnIndications==1);
     f[8]=0x11;assert(parseHTTSetup(f,16,1,credits,rx));
 }
-int main(){aggregate();reorder();fragments();negotiation();fragmentIndication();}
+int main(){aggregate();reorder();fragments();wepFragments();negotiation();fragmentIndication();}

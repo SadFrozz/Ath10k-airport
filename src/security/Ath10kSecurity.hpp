@@ -55,6 +55,26 @@ inline uint16_t be16(const uint8_t *p){return static_cast<uint16_t>((uint16_t(p[
 inline void put16(uint8_t *p,uint16_t n){p[0]=static_cast<uint8_t>(n>>8);p[1]=static_cast<uint8_t>(n);}
 inline uint64_t be64(const uint8_t *p){uint64_t n=0;for(unsigned i=0;i<8;++i)n=(n<<8)|p[i];return n;}
 inline void copy(uint8_t *a,const uint8_t *b,size_t n){for(size_t i=0;i<n;++i)a[i]=b[i];}
+// SHA1 PTK expansion for CCMP (48 bytes) and TKIP (64 bytes). Context is
+// ordered MACs (12 bytes) followed by ordered nonces (64 bytes).
+// Publish only a complete result; crypto failure cannot expose a partial PTK.
+template<class Crypto> inline bool deriveSHA1PTK(const uint8_t *pmk,const uint8_t *context,
+                                               uint8_t *out,size_t bytes,size_t capacity){
+ if(!pmk || !context || !out || (bytes!=48 && bytes!=64) || capacity<bytes)return false;
+ static constexpr char label[]="Pairwise key expansion";
+ struct Temporary {
+  uint8_t input[sizeof(label)+76+1]{},digest[20]{},result[64]{};
+  ~Temporary(){wipe(this,sizeof(*this));}
+ } t;
+ copy(t.input,reinterpret_cast<const uint8_t *>(label),sizeof(label));
+ copy(t.input+sizeof(label),context,76);
+ for(size_t at=0;at<bytes;at+=20){
+  t.input[sizeof(t.input)-1]=uint8_t(at/20);
+  if(!Crypto::hmac(pmk,32,t.input,sizeof(t.input),t.digest))return false;
+  copy(t.result+at,t.digest,bytes-at<20?bytes-at:20);
+ }
+ copy(out,t.result,bytes);return true;
+}
 // RSN IEs selected by this STA: CCMP pairwise and either CCMP or TKIP group,
 // always with PSK AKM and without PMF.
 static constexpr uint8_t stationRSN[]={48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,2,0,0};
@@ -79,6 +99,27 @@ inline bool buildSAEStationRSN(const uint8_t *pmkid,size_t idBytes,uint8_t *out,
  if(idBytes)copy(out+24,pmkid,16);
  const size_t at=24+idBytes;out[at]=0;out[at+1]=15;out[at+2]=172;out[at+3]=6;
  bytes=n;return true;
+}
+// Explicit OWE group19 profile: CCMP and PMF/BIP-CMAC-128. No PMK cache.
+inline bool validOWEPersonalRSN(const uint8_t *ie,size_t bytes){
+ RSNInfo ap{};
+ return parseRSN(ie,bytes,ap) && ap.akmHas(18) && ap.pairwiseHas(4) && ap.group==4 &&
+  ap.mfpc() && ap.groupManagement==6 && !(ap.capabilities&((1u<<9)|(1u<<13)));
+}
+inline bool buildOWEStationRSN(uint8_t *out,size_t capacity,size_t &bytes){
+ if(!buildSAEStationRSN(nullptr,0,out,capacity,bytes))return false;
+ out[19]=18;return true;
+}
+// Explicit 802.1X-SHA256/CCMP profile with required negotiated PMF.
+// System EAP still owns the MSK; this is not SAE or a password profile.
+inline bool validEAPSHA256RSN(const uint8_t *ie,size_t bytes){
+ RSNInfo ap{};
+ return parseRSN(ie,bytes,ap) && ap.akmHas(5) && ap.pairwiseHas(4) && ap.group==4 &&
+  ap.mfpc() && ap.groupManagement==6 && !(ap.capabilities&((1u<<9)|(1u<<13)));
+}
+inline bool buildEAPSHA256StationRSN(uint8_t *out,size_t capacity,size_t &bytes){
+ if(!buildSAEStationRSN(nullptr,0,out,capacity,bytes))return false;
+ out[19]=5;return true;
 }
 // Standard RSN Extension element: 1..16 capability octets, with the encoded
 // (length - 1) in bits 0..3 of the first octet. Preserve unknown capability bits.
@@ -109,6 +150,19 @@ inline const uint8_t *stationRSNForGroup(uint8_t group,size_t &n,uint8_t akm=2){
  if(group==cipherTKIP){n=sizeof(stationRSNTKIP);return stationRSNTKIP;}
  n=0;return nullptr;
 }
+// Encode one explicitly selected non-SAE RSN profile. Admission against the
+// AP and macOS request belongs to the caller; this never chooses a fallback.
+// Shared by the association frame and EAPOL M2 to prevent cipher divergence.
+inline bool buildSelectedStationRSN(uint8_t group,uint8_t pair,uint8_t akm,
+    uint8_t *out,size_t capacity,size_t &bytes){
+ bytes=0;
+ if(!out || capacity<sizeof(stationRSN) || (group!=cipherTKIP && group!=cipherCCMP) ||
+    (pair!=cipherTKIP && pair!=cipherCCMP) ||
+    (akm!=1 && akm!=2 && akm!=6) || (akm==6 && (group!=cipherCCMP || pair!=cipherCCMP)))return false;
+ const uint8_t *base=akm==6?stationRSNSHA256:stationRSN;
+ copy(out,base,sizeof(stationRSN));out[7]=group;out[13]=pair;out[19]=akm;
+ bytes=sizeof(stationRSN);return true;
+}
 // Strict bounds on optional fields; require AES/CCMP pairwise and PSK.
 // TKIP is allowed only for the group cipher; TKIP pairwise remains unsupported.
 inline bool supportsWPA2(const uint8_t *ie,size_t n){
@@ -135,5 +189,19 @@ inline bool supportsEAPAKM(const uint8_t *ie,size_t n,uint8_t akm){
  RSNInfo ap{};
  return akm==1 && parseRSN(ie,n,ap) && !ap.mfpr() && ap.akmHas(1) &&
   ap.pairwiseHas(4) && ap.group==4 && !(ap.capabilities&((1u<<9)|(1u<<13)));
+}
+}
+
+namespace AthSecurity {
+// Exact selected non-SAE profile, with a separate legacy admission gate. Never
+// infer a downgrade from a missing CCMP suite or from the AP's group cipher.
+inline bool supportsSelectedRSN(const uint8_t *ie,size_t n,uint8_t akm,uint8_t pair,bool allowLegacy=false){
+ if(pair==cipherCCMP && !allowLegacy)return akm==1?supportsEAPAKM(ie,n,akm):supportsPSKAKM(ie,n,akm);
+ if(akm==6)return pair==cipherCCMP && supportsPSKAKM(ie,n,akm);
+ if(!allowLegacy || (akm!=1 && akm!=2) || (pair!=cipherTKIP && pair!=cipherCCMP))return false;
+ RSNInfo ap{};
+ return parseRSN(ie,n,ap) && ap.pairwiseHas(pair) && ap.akmHas(akm) &&
+  (ap.group==cipherTKIP || ap.group==cipherCCMP) && !ap.mfpr() &&
+  !(ap.capabilities&((1u<<9)|(1u<<13)));
 }
 }

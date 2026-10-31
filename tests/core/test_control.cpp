@@ -95,7 +95,7 @@ int main(){
  assert(call(ReceiveEAPOL)==0 && o.length==20 && o.data[0]==42 && s.eapolFrames[0][0]==0);
  r.length=55;assert(call(InstallKeys)==kIOReturnBadArgument);
  r.length=56;r.data[48]=AthSecurity::cipherCCMP;r.data[49]=4;assert(call(InstallKeys)==kIOReturnBadArgument);
- r.data[49]=1;r.data[50]=9;assert(call(InstallKeys)==0 && s.securityPhase==1 && s.groupPN[0]==9);
+ r.data[49]=1;r.data[50]=9;assert(call(InstallKeys)==0 && s.securityPhase==1 && s.groupPN[s.groupIndex][0]==9);
  assert(call(InstallKeys)==kIOReturnBadArgument);
  assert(call(Authorize)==kIOReturnNotReady);
  s.securityPhase=3;s.lastTxEAPOL=true;s.txComplete=true;s.txOwned=true;

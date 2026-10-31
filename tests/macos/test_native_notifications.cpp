@@ -28,6 +28,7 @@ public:
     AirportWCL::JoinRequest _nativeJoin{};
     AirportWCL::ScanRequest _nativeScan{};
     struct Security {
+ UInt8 tkipMICNoticeBSSID[6]{};UInt32 tkipMICNoticeGeneration=0;unsigned tkipMICNotices=0;UInt8 tkipMICNoticeKinds[2]{6,6};
         struct PMF {UInt64 generation=91;bool ready=true;
             UInt64 activeGeneration() const{return generation;}bool portReady() const{return ready;}} pmf;
         PMF *pmfSession=&pmf;
@@ -47,7 +48,7 @@ public:
         bool preserve=false;
         template<class State> bool preserveRoamRetirement(const State &,UInt64){return preserve;}
         unsigned resets=0;
-        void reset(){++resets;eapOwner.clear();ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
+        void reset(){tkipMICNotices=0;++resets;eapOwner.clear();ptkUpdatePending=false;ptkUpdateGeneration=0;ptkUpdateSince=0;profile.clear();preparedRoam.clear();roamRetirement=0;preserve=false;transitionPolicy.clear();supplicant.pending={};pmfSession=nullptr;}
     } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
@@ -151,8 +152,9 @@ static void policyNotifications(){
     }
 
     const std::vector<UInt32> expected={49,55,201,201,237,211,201,216,212,213,76,39};
-    for(unsigned fail=0;fail<=expected.size();++fail){
+    for(unsigned akm:{8u,5u,18u})for(unsigned fail=0;fail<=expected.size();++fail){
         auto d=std::make_unique<Ath10kPCIDevice>();policyJoin(*d);d->failAt=fail;
+        d->_connection.securityAKM=akm;
         d->serviceNativeNotifications(100);d->serviceNativeNotifications(110);
         assert(ids(*d)==expected && !d->_nativeJoinPending);
         const auto &bytes=d->events[10].data;
@@ -252,7 +254,7 @@ static void roamDispatcher(){
         d->serviceNativeNotifications(120);assert(ids(*d)==expected);
     }
     {auto d=std::make_unique<Ath10kPCIDevice>();prepareRoam(*d);auto &s=d->_connection;
-     s.securityAKM=8;s.secure=true;s.securityPhase=5;
+     s.securityAKM=8;s.secure=s.pmfRequired=true;s.securityPhase=5;
      assert(d->security.transitionPolicy.bind(s.local,s.bssid,91,0));
      auto &update=d->security.supplicant.pending;update.length=1;update.bitmap[0]=2;update.replay=1;
      memcpy(update.station,s.local,6);memcpy(update.bssid,s.bssid,6);
@@ -335,6 +337,17 @@ static void pairwiseNotifications(){
     }
 }
 int main(){
+ {auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &sec=d->security;
+  sec.tkipMICNotices=2;sec.tkipMICNoticeKinds[0]=5;sec.tkipMICNoticeKinds[1]=6;sec.tkipMICNoticeGeneration=d->_connection.securityGeneration;
+  memcpy(sec.tkipMICNoticeBSSID,d->_connection.bssid,6);d->failAt=1;
+  d->serviceNativeNotifications(100);assert(sec.tkipMICNotices==2);
+  d->serviceNativeNotifications(101);assert(!sec.tkipMICNotices);
+  unsigned delivered=0;for(const auto &e:d->events)if(e.id==5 || e.id==6){assert(e.id==(delivered?6u:5u));++delivered;assert(e.data.size()==6 && !memcmp(e.data.data(),d->_connection.bssid,6));}
+  assert(delivered==2);const auto count=d->events.size();d->serviceNativeNotifications(102);assert(d->events.size()==count);
+  sec.tkipMICNotices=1;++d->_connection.securityGeneration;d->serviceNativeNotifications(103);
+  assert(!sec.tkipMICNotices && d->events.size()==count);
+ }
+
     pairwiseNotifications();
     roamDispatcher();
     policyNotifications();

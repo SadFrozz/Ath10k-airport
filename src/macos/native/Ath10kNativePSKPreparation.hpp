@@ -22,7 +22,7 @@ class Ath10kNativePSKPreparation {
  Ath10kSAEWorker *worker=nullptr;Ath10kNativePSKJob *job=nullptr;bool submitted=false;
  struct Profile {
   uint8_t ssid[32]{},station[6]{},bssid[6]{},rsn[257]{},rsnxe[18]{};
-  size_t ssidBytes=0,rsnBytes=0,rsnxeBytes=0;uint8_t akm=0;
+  size_t ssidBytes=0,rsnBytes=0,rsnxeBytes=0;uint8_t akm=0,pairwise=0,group=0;bool wpa1=false;
   uint32_t generation=0;uint64_t lastNow=0,deadline=0;
  } profile;
 public:
@@ -33,7 +33,7 @@ public:
  Ath10kNativePSKPreparation &operator=(const Ath10kNativePSKPreparation &)=delete;
  ~Ath10kNativePSKPreparation(){cancel();}
  bool active() const {return job!=nullptr;}
- bool begin(Ath10kSAEWorker *,const AirportWCL::JoinRequest &,const Ath10k::WMIBSS &,const uint8_t *,uint32_t,uint64_t);
+ bool begin(Ath10kSAEWorker *,const AirportWCL::JoinRequest &,const Ath10k::WMIBSS &,const uint8_t *,uint32_t,uint64_t,bool allowLegacy=false);
  Result collect(const Ath10k::ConnectionState &,uint32_t,uint64_t);
  void cancel();
 };

@@ -6,6 +6,14 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.111 — 2026-10-30
+
+- Preserve macOS packet traffic class through admission and radio TX descriptor
+  creation while retaining the access restrictions announced by the AP.
+- Apply native Fastlane host marking outside the radio gate, using the WCL
+  termination fence; clear marking on link-down and reject unsupported ACM
+  override before changing host state.
+
 ## 1.0.110 — 2026-10-30
 
 - Accept native IPv4/IPv6 and legacy ARP/NDP address notifications into the

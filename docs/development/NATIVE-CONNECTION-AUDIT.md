@@ -2748,3 +2748,1663 @@ Isolated signature and exact-UUID offline kernel collection inclusion passed for
 ### Full traffic-policy regression complete
 
 Session 68932 exited zero. All 71 C++ tests plus runner checks passed with ASan/UBSan and assertions enabled. Native build, isolated signature and exact-UUID offline inclusion had already passed for unchanged runtime code. Summary and full log copied and byte-verified on SD. Source remains unpublished/uninstalled; no full regression repeat needed unless code changes or a new failure warrants it.
+
+### Traffic event identity; hardware test deferred
+
+User deferred 1.0.111 installation/reboot; 1.0.110 remains installed. No approval pending. IO80211Family gAppleMIndexToString entry 189 identifies APPLE80211_M_TE_CRITICAL_TRAFFIC_IND, at string VA 0xffffff80023aa464. Adjacent table entries validated the cache-relative pointer decoding. This is identity evidence only; recipient and feature requirement remain open. Evidence: NATIVE-traffic-policy-contract-20261030/traffic-event-name.json, SD verified.
+
+### User-space traffic-event decoding and feature query
+
+Apple80211 decoder 0x7ffc1212f4ad requires exactly two bytes and emits CRITICAL_TRAFFIC_STATE / NON_CRITICAL_TRAFFIC_STATE dictionary entries to callback event 0xbd. Airportd WiFiDeviceIsTrafficEngineeringSupported at 0x1000aa6f5 explicitly checks interface capabilities via containsObject:, but object 0x10017e490 identity is not yet decoded. Receiver methods located at 0x1000aa88a and 0x1000aaa2d; caller route still pending. Evidence and bounded disassembly saved and SD-verified in NATIVE-traffic-policy-contract-20261030/traffic-user-consumer.json. No runtime change or retest of the closed 1.0.111 package.
+
+### Traffic-engineering capability object and reverse command
+
+Airportd capability object 0x10017e490 is bound to NSConstantIntegerNumber in __objc_intobj and holds value 90 at +16. Critical-app handler 0x1000a9f67 tests this support query before its main body. Traffic-info handler stores decoded dictionary values at context +0x33/+0x34. Congestion setter uses separate Apple80211 operation 0x1fb and submits nothing when interface lookup fails. Capability-number-to-driver-bit mapping remains to verify; do not advertise this group or equate it to txPauseMask. Bounded code, binding evidence and numeric object are recorded in traffic-capability-90.json and companion asm, SD verified.
+
+### Runtime traffic-engineering support query
+
+Read-only CoreWLAN capabilities query on en1 returned [1,3,12,14,17,46,48,73,75]. NSNumber90 is absent, so the recovered airportd support check evaluates false on this current interface. This directly validates disabled support without assuming the number-to-bit conversion; it does not prove all callers optional or implement the monitor. Evidence: live-traffic-capability.json, SD verified. No network configuration, scan, association, sleep or installed image changed.
+
+### Low-latency traffic statistics contract — 2026-10-30, unpublished investigation
+
+Part of the combined traffic policy/statistics/notification batch, not a standalone release.
+Stock WCLTrafficPatternAgent::handleTrafficPatternCheck (0xffffff80022e14b6) requests
+op 0x1cf with a zero-initialized 124-byte output. An error exits before the one-second
+timer is rearmed: the current Unsupported callback therefore leaves this classification
+path incomplete. This is not evidence of a connection failure.
+
+Stock producer AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO_STATS (0xffffff8001643086)
+writes four 32-bit values at offsets 0..12 and another four at 16..28, followed by
+additional measurements through offset 123. Counter meanings still require tracing
+their producers; do not fill the structure with synthetic success/zero statistics.
+The consumer updateAndGetPktCnt (0xffffff80022e1a96) compares the first four unsigned
+32-bit values against saved 64-bit baselines. A counter decrease produces a zero
+delta, updates the baseline, and returns an error; its caller does not rearm the timer.
+Consequently reset/wrap/association lifetime belongs in this contract alongside the
+measurement ABI, classification inputs and event delivery. Existing per-AC TX counters
+cannot simply be copied into this record without proving their semantics and lifetime.
+
+Evidence: outputs/NATIVE-traffic-policy-contract-20261030/low-latency-producer-consumer.asm.
+No runtime implementation change, version bump, publication, installation or reboot.
+
+### Security-first compatibility batch — 2026-10-30
+
+User moved security ahead of statistics and requested old-router compatibility.
+Current source inspection: buildSecurityWMI fixes pairwise cipher to CCMP/16 bytes,
+while group cipher accepts CCMP or TKIP/32 bytes with 8-byte MIC key lengths.
+acceptSecureRX selects TKIP only for group MPDUs; Supplicant accepts RSN descriptor
+2, pairwise CCMP and RSN IEs. classifyEAPOL explicitly rejects WPA descriptor types.
+Native capability bytes advertise TKIP/TKIPMIC/WPA2, not WEP/WPA1. Therefore WPA1,
+WEP and pairwise TKIP are not implemented merely because group TKIP exists.
+A targeted source search found no Michael MIC countermeasure implementation;
+trace firmware failure delivery and OS notification before deciding whether any
+required part is delegated to firmware. This is an open audit item, not proof
+that firmware provides no protection.
+
+Reviewed key parsing bounds, authenticated KDE publication and management epoch
+commit paths without changing runtime code. Existing tests already cover same-key
+IGTK redelivery and pairwise rekey retaining keys; do not reimplement those paths.
+Statistics research remains local/deferred. No install, reboot or publication.
+
+### TKIP failure path and native countermeasure boundary — 2026-10-30
+
+The installed IO80211Family get/set COUNTERMEASURES functions at
+0xffffff80021f6ee8/0xffffff80021fbbc5 both return 0xe082280e directly, without
+dispatching to the driver. A legacy ioctl override therefore cannot supply the
+missing native behavior on this adapter. Current deliverNetworkRX/appendRXBatch
+drop non-success status and integrity errors but do not publish a MIC-error event
+or maintain a countermeasure owner in this path. The local ath10k RX reference
+explicitly distinguishes Michael errors from decrypt/FCS failures using the last
+MSDU attention. Generic packet dropping alone must not be called a complete TKIP
+countermeasure implementation. Next: recover native event consumers, then add
+integrity-qualified error reporting, timer/association ownership and reconnect
+admission together with legacy compatibility, preserving existing fail-closed RX.
+Evidence: outputs/NATIVE-security-compatibility-20261030/tkip-countermeasure-boundary.json
+and stock-countermeasures.asm. No runtime or installation change.
+
+Native MIC producer/consumer recovered for the same batch: CoreMac handleMICErrorEvent
+0xffffff80015cd88a posts event 5/6 with exactly six address bytes, conditional on
+feature bit 0/interface presence. WCLJoinManager::micErrorHandler at
+0xffffff800220a492 checks six-byte payload/current request/BSSID and marks the
+bulletin (+0x28) for a matching request. The inspected body does not implement
+the countermeasure timer; do not equate accepted notification with enforced
+protection. The mac80211 reference also excludes non-TKIP/not-decrypted frames
+from MIC failure qualification. These constraints must be enforced before any
+notification or connection penalty to avoid a false-error disconnect path.
+Bounded disassembly and updated machine-readable facts are saved with the batch.
+
+### Security advertisement preservation — local package work
+
+Found WPA vendor IE loss between beacon ingestion and native beacon publication:
+WMIBSS retained only wpaPresent, while nativeBSSMessage emitted RSN/RSNXE only.
+Local changes now retain the original bounded WPA IE, reject duplicate WPA IEs
+and emit WPA alongside RSN. Message construction preflights the actual combined
+size before any write; short buffers fail without partial output. This changes
+advertisement fidelity, not WPA/WEP join admission or cipher capabilities.
+Focused production-path tests added for cache retention/duplicate rejection and
+exact-capacity/no-write-on-failure/native WPA publication. Full package validation
+and runtime installation remain pending; no version increment or publication.
+
+WPA1 advertisement parser added locally, separate from RSN. It bounds suite
+counts, distinguishes 00-50-f2 from 00-0f-ac, preserves omitted-field legacy
+TKIP/802.1X defaults, and publishes no partial result on malformed input. Unknown
+selectors do not become known suites. Trailing unsupported fields are rejected.
+Reference: local hostap-wpa-common.c wpa_parse_wpa_ie_wpa; this parser is not yet
+connected to join admission. Focused rsn_policy passed, including truncation,
+malformed count/version/OUI, omitted fields and optional capabilities.
+Previous native_wire/wmi_scan and newly registered wmi_bss fixtures also passed.
+Full batch regression/build remains pending. No support capability enabled.
+
+Combined maximum-size RSN+WPA+RSNXE/HT/VHT/country native advertisement
+fixture now verifies exact capacity, one-byte-short rejection with untouched
+output, preservation of both security IEs and valid final IE boundaries.
+Focused native_wire passed. This extends the changed path's boundary coverage;
+no previously accepted manual scan/boot benchmark was repeated.
+
+Legacy key admission review: nativeJoinAuth currently requires lowerAuth=1,
+admits only the implemented explicit upper-auth values, and distinguishes password
+cipher10 from PMK6/7. The included itlwm Skywalk source handles WEP Open System
+through upperAuth=0/lowerAuth=Open and nonempty key/index, but explicitly declines
+Shared authentication. This reference is insufficient to claim installed stock
+WEP/shared or dynamic-WEP delivery; recover those paths before broadening admission.
+
+Legacy key mapping recovered from stock mapAppleKeyToBcomKey at
+0xffffff8001652189: Apple record length+4, cipher+8, flags+12, 16-bit index+14,
+key bytes+16, peer+92. Cipher3/TKIP requires >=32 bytes and swaps the two
+8-byte MIC portions after the first16 when mapping to Broadcom. This is not
+permission to use Broadcom ordering for QCA: compare firmware TX/RX MIC semantics.
+clearWepKeysSync iterates indices0..3 with zeroed key records, stopping on first
+error; performJoin checks its return. Legacy retirement must track all installed
+slots and partial cleanup failure, not just the selected default key.
+Evidence saved in stock-legacy-key-mapping.{asm,json} and stock-wep-retirement.asm.
+
+QCA legacy key contract: ath10k static-WEP station keys are installed twice
+(group then pairwise); failure of the second operation attempts removal of the
+first. A failed cleanup cannot be forgotten. Dynamic WEP without a static default
+index uses TX_USAGE on key install. WMI TLV key bytes require four-byte padding
+(5->8, 13->16) while key_len retains actual size. Current CCMP/TKIP builder only
+uses naturally aligned sizes; extending its cipher enum alone would produce an
+incorrect WEP transaction. Track per-slot/per-role completion and retirement.
+Deletion in the reference uses cipher NONE, null data and zero-filled retained
+length; do not infer deletion acknowledgement from command submission.
+QCA TKIP input is copied unchanged from mac80211 key storage, so the recovered
+Broadcom MIC swap must not be applied blindly. See qca-legacy-key-contract.json.
+
+Shared key-command serializer implemented locally in buildKeyWMI. Existing
+CCMP/TKIP installation now calls it; WEP5/13-byte and cipher-NONE removal record
+construction are available for the pending legacy lifecycle. The serializer
+checks cipher/length/data/index/flags, preflights capacity, pads the key TLV
+while retaining logical length, and zeroes deletion bytes/padding. It does not
+claim key acknowledgement or enable legacy join admission. Current native vdev0
+contract remains unchanged. Added production-builder tests for exact/short
+buffers, padding, delete construction and invalid key metadata; focused
+connection test execution is recorded separately. Full batch/build still pending.
+
+Focused connection compile/runtime passed (exit0); key-command-tests.log saved.
+
+Legacy key completion boundary: local ath10k WMI INSTALL_KEY_COMPLETE handler
+is diagnostic only. Actual install wait is completed from HTT SEC_IND. Current
+driver also matches that indication by peer, cipher/cast and submitted phase.
+Before allowing multiple WEP slots, preserve one serial operation and establish
+retirement of outstanding replies; a new slot index cannot be invented in an
+indication that does not carry it. Timeout/cancellation must not allow the next
+operation to consume an ambiguous old response. Existing cancellation waits for
+security response or fails the runtime; retain that safety while extending roles.
+No change to completion handling made in this inspection.
+
+Local KeyTransaction coordinator added for pending legacy integration: one
+reserved/submitted owner, monotonic host tickets, peer/cipher/cast matching and
+a fixed deadline. Submitted timeout/cancellation enters Uncertain and prevents
+reuse until explicit proven firmware retirement; late acknowledgements cannot
+clear it. Pre-submission rejection releases only an unsubmitted reservation.
+This helper is not yet wired into native runtime. It does not manufacture a wire
+transaction ID or prove duplicate-free firmware delivery; transport ordering and
+reset/fence integration remain required. Focused tests cover stale tickets,
+wrong peer/cast, boundary expiry, cancel, reuse blocking and pre-submit failure.
+
+Confirmed and corrected current TKIP retirement metadata mismatch: the old
+buildDisconnectWMI always emitted a 16-byte CCMP-shaped removal, even for a
+32-byte TKIP group key. Local ath10k_send_key retains original key_len and
+TX/RX MIC lengths when switching to cipher NONE/null data. Both install and
+retirement now use buildKeyWMI; TKIP group removal keeps32/8/8 metadata, while
+CCMP removal retains16/0/0. All removal key bytes remain zero. The serializer's
+32-byte supported profile is TKIP (not CCMP256). Focused security_disconnect
+passed including actual teardown service tests and new wire-record assertions
+for pair/group CCMP/TKIP. No hardware claim; full batch/build remains pending.
+
+Confirmed WPA2 GTK-index inconsistency during pairwise rekey: same-key/index
+rejection in M3 was conditional on SAE, unlike group rekey. An authenticated
+WPA2 M3 with retained GTK and changed index returned PairKeys while GTKChanged
+was clear. Added cryptographically valid rekey fixtures using independent
+existing AP vectors; changed-index rejection assertion failed before the fix.
+Removed the SAE-only condition so all admitted profiles reject same GTK under
+a new index before output/key publication. Same-key/same-index still updates
+PTK only. Focused security, sha256_supplicant and sae_eapol passed after fix.
+Evidence: gtk-index-before.log and gtk-index-after.log. This fixes a confirmed
+source inconsistency; it is not a claim of a demonstrated over-the-air exploit.
+
+
+### 2026-10-30 — installed legacy EAP method registration
+
+Recovered the installed eapolclient builtin-registration table and loop, rather
+than inferring method support from string names alone. Ten EAP8021X imports
+include MD5, LEAP, TLS, TTLS, PEAP, MSCHAPv2, GTC, FAST, SIM and AKA. The loop
+stops on registration failure; static evidence does not prove execution success.
+Next boundary is per-method key export and exact dynamic-WEP/WPA key ownership,
+not adding EAP implementations to the kext. Evidence: stock-eap-method-registration
+JSON and assembly in the security-compatibility output directory. No network,
+installation, version, commit or reboot changes were made for this inspection.
+
+
+### 2026-10-30 — dynamic WEP is a system-owned key exchange
+
+Recovered descriptor-1 signature/decryption and WEP installation in installed
+eapolclient. This changes implementation direction: route admitted dynamic-WEP
+key frames to the system, then process authenticated WEP key callbacks; do not
+extend the internal RSN supplicant with a second owner for this exchange.
+User-mode key record and install operation are recorded, but kernel translation,
+replay/session retirement and firmware completion remain open. No legacy mode
+was enabled from static evidence. Assembly and structured findings saved on SD.
+
+
+### 2026-10-30 — WEP outer kernel key ABI
+
+Traced both installed IO80211Family key ioctl entries: 148-byte record,
+bounded key/RSC/WoW lengths, WEP cipher1/2 forwarded without PMK trimming.
+WCL forwarding and Infra fallback preserved in stock-wep-kernel-dispatch
+assembly/JSON. Remaining boundary narrowed to WCL inner driver dispatch and
+completion/retirement; no WEP admission or key installation was enabled.
+
+
+### 2026-10-30 — WCL key observer versus driver installation
+
+WCLNetManager::setKey is a timer observer, not the firmware installer. Traced
+the stock Infra forwarding wrapper, Core handler and async firmware callback;
+none justifies treating observer return0 as installed/authorized. Preserved
+addresses and bodies in stock-key-observer-versus-install evidence on SD.
+This constrains legacy integration to retain independent receipt/port barriers.
+
+
+### 2026-10-30 — key command transport boundary
+
+The shared buildKeyWMI now rejects endpoint255 (unassigned), matching adjacent
+WMI builders, before touching the output. Focused connection/security_disconnect
+checks passed after adding nonzero key-byte preservation, peer address, HTC
+length/sequence, six-byte RSC with zero high bytes and failed-admission buffer
+invariants. These are serializer/teardown checks, not legacy join support or
+firmware evidence. No full regression rerun or publication at this intermediate
+checkpoint; key-wire-validation.log saved with the security evidence on SD.
+
+
+### 2026-10-30 — raw TKIP RX and MIC classification
+
+normalizeRawRX now handles decrypted TKIP-WPA cipher4 with IV8 and tail16
+(Michael8 + ICV4 + FCS4), following ath10k_htt_rx_h_undecap_raw. Descriptor
+integrity flags remain intact for appendRXBatch. Corrected attention bit28
+from Length to Integrity (Linux v6.12 rx_desc.h identifies TKIP_MIC_ERR).
+Added raw multicast TKIP through normalization, batching and replay validation,
+plus MIC error, short-frame and fragmentation rejection tests. Existing
+rx_pipeline was missing from the consolidated runner; registered it. Both
+rx_pipeline and rx_security_diagnostics passed. This does not enable pairwise
+TKIP or implement MIC countermeasures. No hardware compatibility claim.
+Evidence: tkip-raw-rx.json and tkip-raw-rx-tests.log, mirrored to SD.
+
+
+### 2026-10-30 — A-MSDU legacy cipher boundary
+
+Added first-MSDU admission guard using original MPDU receiver/QoS and cipher
+metadata: group-addressed A-MSDU and encrypted non-CCMP A-MSDU rejected before
+payload delivery or replay publication. Reference: Linux v6.12 net/mac80211/rx.c,
+ieee80211_rx_h_amsdu rejects group receiver and WEP/TKIP. Tests retain local
+Ethernet DA while changing outer receiver/cipher, assert Aggregate drop and
+unchanged pair/group PN. rx_pipeline and rx_security_diagnostics passed with
+ASan/UBSan. Full suite reserved for final package. Saved regression inventory:
+several historical test files lack standalone registration; include reuse alone
+does not establish that their main assertions execute. This remains a coverage
+review obligation, not a reason to rerun every closed manual stage.
+Evidence: rx-aggregate-security-tests.log and regression-inventory.json on SD.
+
+
+### 2026-10-30 — production RX delivery for raw group TKIP
+
+Verified controller deliverNetworkRX selects normalizeRawRX for nonfragmented
+raw frames; defragmentation remains a separate path. Extended the existing
+network_rx production-method fixture to feed raw group TKIP through delivery,
+batching, security checks and a mocked system interface. Valid payload arrives
+without IV/MIC/ICV/FCS; duplicate TSC and newer-TSC MIC-error packets do not
+arrive, and failed integrity does not advance replay state. Registered this
+previously omitted standalone test in the consolidated runner. Its original
+invalid-cipher A-MSDU assertion now expects the earlier Aggregate rejection,
+retaining no-delivery/no-PN-change assertions. ASan/UBSan network_rx passed.
+Evidence: network-rx-security-tests.log; source snapshots mirrored to SD.
+No hardware test, publication, build-number increment or installation.
+
+
+### 2026-10-30 — open-association decrypted-frame rejection
+
+Reproduced actual delivery through the production network RX fixture: !secure
+returned success before considering the descriptor's encrypted bit, so an open
+association accepted a frame decoded by a key it does not own. Changed
+acceptSecureRX to reject encrypted descriptors for open associations, including
+EAPOL and multicast, while retaining ordinary plaintext delivery. Length check
+now precedes either profile. Regression first failed on unintended delivery;
+after correction network_rx, rx_pipeline and rx_security_diagnostics passed
+ASan/UBSan. Tests assert no replay mutation, no EAP queue insertion and continued
+plaintext delivery. Evidence open-rx-before-assert.log/open-rx-after.log saved on
+SD. This is a local reproduced admission flaw, not an observed radio attack.
+
+
+### 2026-10-30 — intermediate native compilation of security edits
+
+Native SAE-enabled non-diagnostic kext compiled and passed symbol validation;
+UUID 237F0280-C43C-3E8B-B59E-BA44265F9D93. Integer-conversion warnings remain.
+This is an unsigned compile-only artifact with unchanged local version1.0.111,
+not the previously prepared candidate and not an installation proposal. Source
+hash manifest, output and build log byte-verified on SD under security evidence
+native-compile-check. No full regression/offline inclusion/installation claim.
+Continue missing security implementation before the package acceptance gate.
+
+
+### 2026-10-30 — WPA1 descriptor-1 key-data primitive
+
+Added bounded decryptWPA1KeyData for RC4(IV16||KEK16), skipping256 stream bytes,
+as used in the inspected hostap WPA key-data path. It accepts at most512 bytes,
+rejects short capacity and partial overlap before output mutation, permits exact
+in-place use and wipes permutation/key state. RFC6229 section2 key01..20,
+offset256 independently verifies output; boundary/in-place tests passed ASan/UBSan.
+No runtime caller yet: EAPOL MIC/replay/profile validation must precede use;
+this primitive does not authenticate, install keys or enable WPA1 admission.
+Stock corecrypto symbol inventory also contains ccmd5_di/ccrc4, but this narrow
+portable RC4 implementation adds no new kernel imports. Evidence and source
+saved on SD: wpa1-key-data-tests.log. Overall legacy handshake remains open.
+
+
+### 2026-10-30 — authenticated WPA1 key-data decoding
+
+Added authenticateWPA1KeyData: bounded EAPOL envelope, descriptor254/version1,
+MIC flag, exact declared lengths, then HMAC-MD5 with zeroed MIC field and
+constant-time comparison before RC4 key-data release. Temporary packet/digest
+are wiped. Kernel crypto provider gains bounded hmacMD5 using ccmd5_di/cchmac;
+no runtime handshake caller yet, so live kernel crypto is not certified here.
+User-mode CommonCrypto fixture checks RFC2202 case1, valid decryption, every
+single-byte mutation, truncation, short output, provider failure and exact
+in-place use. wpa1_key_data and wpa1_key_auth passed ASan/UBSan; outputs unchanged
+on rejected input. Caller must still enforce association identity, replay and
+message-role ordering. No WPA1 admission or capability enabled. Evidence:
+wpa1-key-auth-tests.log and source snapshots, byte-verified on SD.
+
+### 2026-10-30 — shared SHA1 PTK expansion, local security batch
+
+CCMP now uses a bounded common SHA1 expansion supporting 48-byte CCMP and
+64-byte TKIP output. Output is committed only after every HMAC succeeds;
+temporary key material is wiped on all exits. SHA256/SAE derivation remains
+separate. Python hashlib reference covers all 64 bytes, existing handshake
+vectors cover the integrated CCMP path, and injected failures cover every
+HMAC block without partial output. Focused security, sha256_supplicant and
+sae_eapol tests passed with explicit ASan/UBSan. This is a key-derivation
+primitive, not enabled WPA1/TKIP association or complete Enterprise support.
+No publication, version change, installation or reboot.
+
+### 2026-10-30 — TKIP station Michael key ordering
+
+The stored GTK is copied unchanged from authenticated KDE into ConnectionState.
+Previously buildSecurityWMI also copied its MIC halves unchanged. Hostap
+rsn_supp/wpa.c swaps GTK offsets 16/24 for the supplicant before set_key; Linux
+ath10k_send_key forwards that driver-order buffer unchanged with MIC lengths
+8/8. The new serialization converts AP/wire order into station TX/RX order
+without modifying stored GTK, preserving reinstall comparisons and retries.
+A distinct-byte production builder fixture reproduced the old wrong-offset
+assertion; it now checks both halves and idempotent retry. Low-level buildKeyWMI
+continues to accept driver-order keys, avoiding a second swap for future native
+key callbacks. Pairwise TKIP admission remains unfinished.
+References: local ath10k-pmf-reference/hostap-rsn-supp-wpa.c lines 1290–1295
+and mac.c ath10k_send_key; public driver ABI documentation:
+https://w1.fi/wpa_supplicant/wpa_supplicant-devel.pdf .
+
+Focused connection and security_disconnect tests passed ASan/UBSan after
+the correction. Before/after logs and source snapshots are hash-verified on
+SD under NATIVE-security-compatibility-20261030/tkip-station-order.
+Unpublished and uninstalled; no legacy radio interoperability claim.
+
+### 2026-10-30 — WPA1 explicit association IE and intermediate native build
+
+buildWPA1StationIE encodes exactly the requested TKIP/CCMP and 802.1X/PSK
+suite after checking the AP advertisement, preserving its group cipher. It
+rejects absent suites, RSN input, unsupported profiles and short output before
+mutation. One encoder is intended for association and M2; neither call site
+is connected yet, so this is not a new advertised capability. Sanitized
+rsn_policy tests cover Personal/Enterprise combinations and rejection boundaries.
+
+Native compilation before this encoder addition passed with UUID
+87933431-64A5-3855-BC5B-DC7C34439AF4; warnings remain. The image is unsigned,
+not offline-KC checked and not installed. HMAC-MD5 has no runtime caller and
+ccmd5_di was not emitted: compilation does not establish MD5 kernel linkage.
+Logs/source snapshots and BUILD.json are verified on SD under
+NATIVE-security-compatibility-20261030/wpa-selection-build.
+
+### 2026-10-30 — airportd MIC consumer is UI, not enforcement
+
+Installed airportd updateMicErrorTimestamp (0x1000c49bf), dispatched for
+events 5 and 6 via table 0x10007c914, synchronously runs block 0x1000c4b0e.
+The block reads last timestamp at object+0x1030, compares NSDate reference
+time against a decoded 60.0-second constant at 0x10011dc80, and flags a
+second event within that window. It updates the timestamp; the caller then
+invokes internal_showMICErrorWithNetworkName when flagged and SSID exists.
+No key retirement, EAPOL error request, data blocking or reconnect timer
+occurs in these inspected bodies. This is positive evidence for notification
+semantics, not proof of enforcement elsewhere. Do not treat successful
+postMessage(5/6) as completing TKIP countermeasures.
+Evidence with exact image hash, disassembly and decoded dispatch/constants:
+outputs/NATIVE-security-compatibility-20261030/stock-airportd-mic-consumer.*
+
+### 2026-10-30 — authenticated group TKIP MIC report generation
+
+Supplicant::buildGroupMICFailureReport produces a bounded RSN EAPOL-Key
+REQUEST|ERROR|SECURE|MIC report for current group TKIP with CCMP pairwise.
+It signs with established KCK, including during a candidate pairwise exchange,
+and uses a separate request replay counter. Invalid state/capacity/version and
+counter exhaustion reject without publishing output; a successful generation
+advances its counter. It does not modify cached M2/M4 or AP replay floors.
+The local hostap wpa_sm_key_request reference establishes flags, zero key/data
+length and independent request counter. Focused security ASan/UBSan passed;
+fixtures verify MIC with the known established PTK, counter separation, cached
+M3 retry and pending pairwise replacement.
+
+This is generation only: no RX MIC event currently calls it. Firmware-ready
+qualification, dedicated report TX ownership, notification and 60-second
+countermeasure/disconnect lifecycle remain required before enabling the path.
+No complete TKIP countermeasure claim, publication or installation.
+
+### 2026-10-30 — consistent EAPOL protocol version admission
+
+The existing envelope classifier accepts versions 1..3, but Supplicant::receive
+accepted only 1/2. A production handshake fixture reproduced version-3 M1
+being silently ignored. The supplicant now uses the same 1..3 bounds; descriptor
+version validation remains independent and unchanged. Fixtures re-sign M3 for
+each protocol version, verify returned M4 MIC/version, and reject all remaining
+byte values. security, sha256_supplicant and sae_eapol passed ASan/UBSan.
+Before/after evidence and snapshots are verified on SD under
+NATIVE-security-compatibility-20261030/eapol-version.
+
+MIC integration remains pending: MPDU key/header metadata is valid on FIRST,
+while integrity attention can be reported on LAST. Qualification must bind the
+saved first descriptor to the current batch, peer and key generation before
+reporting a MIC error; an arbitrary failing descriptor must not trigger a
+countermeasure. Existing appendRXBatch rejects errors before delivery, but
+does not yet provide this qualified notification.
+
+### 2026-10-30 — RX batch key-epoch fence
+
+Existing key completion flushes reorder/defrag/current batches. Added an
+independent securityGeneration snapshot at first MSDU and checks on continuation,
+reorder admission and final production release. A retained old batch therefore
+cannot advance a new epoch's replay state, enter EAP routing or reach ifnet.
+This is a defensive invariant beyond the existing flush, not evidence that
+a real stale packet previously escaped on hardware. Production-fragment tests
+exercise epoch change during assembly and before release, direct release and
+reorder admission, unchanged replay/EAP state and successful fresh traffic.
+network_rx, rx_pipeline and rx_security_diagnostics passed ASan/UBSan; after
+adding the reorder admission check, affected network_rx/rx_pipeline passed again.
+No full batch regression, publication or installation yet.
+Evidence/snapshots verified on SD: NATIVE-security-compatibility-20261030/rx-epoch.
+
+### 2026-10-30 — retained GTK slot lifecycle requires joint repair
+
+Source review before MIC TX integration found a broader ownership mismatch:
+Supplicant stores one currentGTK/currentGTKIndex, while ConnectionState retains
+installedGroups[4]. nativeAcceptSecurityResult accepts any authenticated
+GroupKeys change, and serviceNativeSecurity uses sameGroup only to skip a GTK
+install during pairwise rekey. A group-only return to previously installed
+material therefore still enters phase 2. RX groupPN is shared across key slots
+and acceptSecureRX admits only current groupIndex. Do not fix this solely by
+skipping the WMI command: valid retained-slot selection and its replay floor
+would still be wrong. Implement per-slot key/replay ownership, activation,
+no-reinstall and retirement as one group, then attach MIC evidence/report TX.
+This is a source-level missing invariant, not an observed exploit or radio
+regression. The next_security_batch plan records the exact required transitions.
+
+### 2026-10-30 — retained GTK slots and per-slot replay integration
+
+Supplicant now remembers the four retained GTK slots. Authenticated A→B→A
+rotation in existing slots produces an ACK without a new firmware-install
+request; moving retained material to another index remains rejected. Pairwise
+M3 uses the same slot lookup. ConnectionState group replay floors are now
+indexed by key slot and TID. RX admits a noncurrent slot only if installed,
+and uses its own floor. Initialization/rekey completion changes only the
+target slot, preserving other slots; unchanged GTK during PTK rekey retains
+its counters. Existing lifecycle teardown still clears installed ownership.
+
+Focused network_rx/rx_pipeline passed. connection initially failed because
+its old assertion assumed one shared group counter; updated it to assert the
+old slot remains 41 while the new slot stays zero until completion then becomes
+5. connection, rx_security_diagnostics, channel_switch, security,
+sha256_supplicant and sae_eapol subsequently passed ASan/UBSan. New tests cover
+TKIP A→B→A and B reuse, forbidden index movement, independent RX counters and
+unknown-slot rejection. Native compile/symbol check passed, UUID
+F71DFE99-B1BD-32CB-B2D1-F86AB7710C3F. Unsigned intermediate build; no offline KC
+check, installation, publication, version bump or final full regression.
+The diagnostic control test is not registered in the consolidated runner;
+its array indexing was updated but it was not claimed executed.
+MIC report delivery/enforcement and radio AP rotation remain unverified.
+
+### 2026-10-30 — GTK slot retirement and reconnect epoch
+
+resetDisconnected previously reset securityGeneration to zero with the rest
+of ConnectionState. It now carries an incremented generation across cleanup,
+preventing immediate epoch reuse by a new association. The existing UInt32
+wrap behavior is unchanged; this is not an unbounded unique token. A retained
+old batch is rejected even after recreating the same peer/address mapping.
+
+Expanded production disconnect fixtures seed all four installed GTK slots and
+all replay floors. Delayed CE credit, STOP and ECHO preserve ownership/material
+until completion, then all slots/keys/counters are zero and generation advances.
+Remaining firmware slots retire with peer deletion/unmap; no extra ambiguous
+per-index SEC_IND protocol was invented. security_disconnect, network_rx,
+reconnect_090 and native_notifications passed ASan/UBSan. Full batch acceptance
+and firmware/radio evidence remain pending. Logs and complete unpublished
+tracked diff/untracked source checkpoint are verified on SD.
+
+### 2026-10-30 — MIC report signing failure isolation
+
+Added injected provider failure coverage for buildGroupMICFailureReport: a
+provider that writes a partial digest then fails leaves caller output unchanged,
+returns zero length, does not consume the independent request counter and
+does not corrupt cached M4 handling. The next successful report has counter
+zero; reset retires report generation. Focused security ASan/UBSan passed.
+Join failure call sites use resetDisconnected, so the preceding epoch-preserving
+change applies to candidate-selection and crypto-initialization failures too.
+This does not complete runtime MIC report queuing/countermeasures.
+
+### 2026-10-30 — qualify group TKIP MIC evidence at RX rejection
+
+RXBatch now retains bounded MIC evidence for a complete nonfragmented
+non-A-MSDU group TKIP MPDU. Qualification requires active authorized phase5,
+installed slot, mapped matching peer, AP transmitter, protected FromDS header,
+valid IV/TSC above that slot's replay floor, valid DMA bounds, DONE and no
+other attention error. Both ordinary status plus MIC attention and HTT status9
+(TKIP_MIC_ERR in local Linux htt.h) are recognized. Error packets still fail
+normal delivery; evidence never commits PN/TSC. reset clears evidence.
+Current group TKIP does not support A-MSDU/fragmentation, so a continuation
+never borrows incomplete FIRST metadata to generate this evidence.
+
+network_rx, rx_pipeline and rx_security_diagnostics passed ASan/UBSan, covering
+positive status paths, competing errors, invalid status/peer ownership, replay,
+unknown slot, wrong AP, continuation and length rejection. No native TX/report
+consumer exists yet: this is qualified evidence capture, not operational
+countermeasures. Logs/source snapshots are verified on SD under
+NATIVE-security-compatibility-20261030/mic-qualification.
+
+### 2026-10-30 — MIC completion cannot reuse handshake authorization
+
+serviceNativeSecurity consumes eapolCompletion under authorizePending; success
+can request initial port authorization or publish pairwise key completion.
+Therefore the prepared MIC report must not be injected as an ordinary reply.
+Reviewed hostap events.c blob 815b9947ee2f17ed2b12f666c737ebe980542379: second
+failure triggers report, countermeasures and deauthentication, followed by a
+60-second timer. Its 10 ms delay explicitly lacks TX completion and is not
+a usable kernel synchronization mechanism. Added the exact detection timestamp,
+deduplication, separate receipt, drained teardown and persistent exclusion
+requirements to the security contract. Runtime consumer remains unfinished.
+
+### 2026-10-30 — bounded independent TKIP MIC report owner
+
+Added TKIPMICOwner with two bounded report slots, per-key-epoch/TID TSC
+deduplication, separate serial/association tickets, five-second report deadline,
+and a 60-second exclusion after a second distinct failure in the window.
+Retiring association report state preserves serial/exclusion. Wrong/duplicate
+completions cannot consume another report; failure/timeout/clock rollback
+requires teardown. No sleep or port-authorization action exists in this owner.
+The caller must drain actual transport before retirement; host tickets are not
+firmware identity. Detection time is supplied by the caller at RX detection.
+
+Registered tkip_mic_owner in the consolidated suite. Focused ASan/UBSan passed
+for duplicates, sequential reports, stale completions, failed status, timeout,
+clock rollback, key-epoch change, bounds and exclusion expiry after retirement.
+This is not runtime integration: RX evidence still needs an actual per-slot
+key epoch and association binding, and NativeSecurity must wire packet build,
+submission/receipt, blocking/teardown and join admission around it. No complete
+TKIP countermeasure claim. Logs/source snapshots verified on SD under
+NATIVE-security-compatibility-20261030/mic-owner.
+
+### 2026-10-30 — firmware-acknowledged GTK slot epochs
+
+ConnectionState now has a monotonic UInt64 groupKeySerial and four slot epochs.
+Phase2 assigns a fresh epoch only after existing firmware acknowledgement
+checks, alongside installed key publication. Skipping unchanged GTK during
+PTK replacement leaves its epoch untouched. Exhaustion refuses a new group
+install before submitting WMI. Terminal secret retirement clears active slot
+epochs; resetDisconnected preserves the serial. Qualified MIC evidence now
+requires and carries the acknowledged slot epoch as well as association state.
+
+connection, security_disconnect, rx_security_diagnostics and network_rx passed
+ASan/UBSan. Fixtures check initial assignment, different slot replacement,
+unchanged GTK under PTK rekey, preservation across disconnect and cleared slot
+ownership, plus MIC evidence's exact slot epoch. This supplies identity for
+the prepared MIC owner; native report submission/enforcement is still pending.
+No build/publication/installation claimed for this latest change. Evidence and
+snapshots verified on SD under NATIVE-security-compatibility-20261030/key-slot-epochs.
+
+## 2026-10-30 — MIC report transport receipt isolation (local batch)
+
+The production serial TX path now accepts an explicit EAPOL purpose. MIC reports
+use their own persistent receipt, and cannot retire the handshake receipt or set
+its failure flag. A non-EAPOL MIC-purpose submission and replacement of an
+unconsumed MIC receipt are rejected before DMA mutation. Existing callers retain
+the handshake default. This is transport groundwork, not enabled countermeasures.
+
+The production submission/retirement fixture and extracted native M4 completion
+fixture pass with ASan/UBSan. They verify that MIC completion does not authorize
+the port or consume an outstanding handshake result. Evidence:
+outputs/NATIVE-security-compatibility-20261030/mic-receipt-isolation.
+The native MIC consumer, report ticket binding, key-liveness checks, exclusion
+and bounded teardown integration remain pending. No build/version publication,
+installation or reboot was performed for this checkpoint.
+
+## 2026-10-30 — Original errored RX descriptor and native build
+
+Production RX now bypasses normalization/fragment assembly for bad attention or
+non-success status, preserving the original descriptor for MIC qualification
+and rejection. A minimal raw TKIP MPDU previously lost its qualified error when
+normalization reduced its native length below the qualification minimum.
+The production RX fixture checks status 1/9, combined integrity faults, unchanged
+replay counters and no delivered data. Two affected sanitized tests passed.
+Native compile/link and symbol check passed, UUID E50F43F6-D18D-3CA9-98CC-D00709AAD941; warnings remain.
+This is an unsigned intermediate build, not final batch acceptance or installation.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-ingress-order.
+
+## 2026-10-30 — TKIP countermeasure owner retirement
+
+The local report owner now preserves its first-failure window across association
+retirement, in addition to the exclusion deadline and monotonic serial. Otherwise
+leaving/reconnecting between two MIC failures would erase the first detection.
+A failed owner also rejects later successful completions without consuming the
+pending report. Sanitized fixtures cover reconnect within the window, failed TX
+and timeout followed by contradictory success. This owner is still not wired into
+the native runtime; this is not evidence of enabled hardware countermeasures.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-owner-retirement.
+
+## 2026-10-30 — Separate TKIP traffic block from encryption state
+
+`buildHTTPacket` selects encrypted Ethernet TX from secure port/key state.
+Closing portAuthorized before the final MIC report would select plaintext HTT
+TX. Added a separate tkipDataBlocked state to ordinary TX admission, direct
+packet admission and RX assembly/release. EAPOL can retain the existing encrypted
+TX path while ordinary traffic is blocked. Already queued aggregate release checks
+every subframe before PN commitment, including EAPOL-leading aggregates.
+
+Production connection/RX tests passed with ASan/UBSan, including actual encrypted
+HTT report submission, blocked ordinary TX, queued RX and mixed aggregate rejection.
+An initial test failure was the fixture's open-only HTT flag expectation; it now
+checks 0x42 specifically in the blocked encrypted case and retains 0x46 elsewhere.
+The automatic MIC owner-to-gate transition remains pending; no enabled-countermeasure
+or final-build claim. Evidence: outputs/NATIVE-security-compatibility-20261030/tkip-data-gate.
+
+## 2026-10-30 — Native MIC owner lifetime
+
+NativeSecurity now owns TKIPMICOwner; resetAssociation retires its host report
+tickets while preserving its detection window and exclusion. The production-class
+lifecycle fixture passed ASan/UBSan for late completion after reset, a second
+failure after reconnect and repeated reset during exclusion. No RX producer or
+report-service consumer is enabled yet. Controller destruction/recreation remains
+a separate boundary; this test establishes association reset only.
+Native compile/link and symbol checks passed, UUID 5E24344C-FCE4-382C-802E-BD0D955798D9, with compiler warnings.
+No signature/offline KC/final acceptance or installation is claimed.
+Evidence: outputs/NATIVE-security-compatibility-20261030/native-mic-lifetime.
+
+## 2026-10-30 — Native MIC report service
+
+serviceNative now services the dedicated MIC report owner after EAP service.
+It validates active profile, installed pair/group key and slot epoch, waits for
+existing DMA/key work under the owner's bounded deadline, submits a wiped
+113-byte report with a separate receipt, and requests teardown on failure or
+after final countermeasure report completion. It never authorizes the port.
+The production method is extracted into a sanitized fixture covering two reports,
+slot replacement, crypto/submission failure, busy transport and timeout. Crypto
+and transport providers in this fixture are mocks; the underlying primitive and
+production transport have separate tests. Native compile/link/symbol checks passed.
+RX producer, OS MIC notification, rejoin exclusion and controller recreation remain
+pending; no real MIC events are queued yet. This is not complete/enabled MIC support.
+Evidence: outputs/NATIVE-security-compatibility-20261030/native-mic-service.
+
+## 2026-10-30 — MIC report radio wake and protocol ordering
+
+Pending MIC service holds eapolPause, requests the existing radio wake path once,
+cancels an unfinished scan and waits for its retirement before report submission.
+Internal supplicant/key processing waits for the report owner to retire. Notifications
+remain after protocol processing; the existing lock-order regression caught an
+initial early-notification return, which was removed rather than weakening the test.
+The production service fixture passes ASan/UBSan for PS/scan wait and eventual
+submission; static ordering/privacy checks also passed. Native EAP-owner interaction,
+RX producer, notification and rejoin gate are still pending before enablement.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-service-order.
+
+## 2026-10-30 — EAP and MIC report ownership ordering
+
+Native EAP service now defers initial/replacement PMK consumption and new EAP TX
+while a MIC report is pending/in flight. Existing EAP TX receipts still retire,
+and EAP queue/authentication deadlines continue to run; an early return before
+receipt processing would deadlock MIC waiting for eapTXInFlight. Empty EAP queues
+preserve the MIC traffic hold. OS MSK callbacks still stage material under the
+existing EAP owner; they do not replace the established KCK directly.
+Sanitized production-method tests passed for deferred queue transmission, receipt
+drain and delayed replacement PMK, plus the native SAE radio fixture. RX MIC
+producer/OS notification/rejoin admission remain pending. No Enterprise support
+or full countermeasure completion is claimed.
+Evidence: outputs/NATIVE-security-compatibility-20261030/eap-mic-order.
+
+## 2026-10-30 — Drain established key operations before MIC report
+
+Review found a circular wait in the new local integration: the MIC service waits
+for replyPending/keysPending/authorizePending, while the outer service guard was
+holding all those owners until the MIC report completed. Removed that broad guard.
+Existing key installation/reply receipts drain; only consumption of the next
+EAPOL-Key frame is deferred. eapolPause retains the MIC hold at the end of service.
+The extracted real EAP key receive fixture confirms queued replacement M1 is not
+consumed while MIC is in flight, then produces the expected M2 after release.
+Native SAE/EAP integration and EAPOL completion tests pass ASan/UBSan.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-key-drain.
+No RX producer has been enabled yet, and full countermeasures remain incomplete.
+
+## 2026-10-30 — Native qualified MIC evidence intake
+
+nativeRecordTKIPMIC validates association generation, installed GTK slot epoch,
+peer mapping and live authorization before admitting qualified RX evidence. It
+binds the report owner to the native profile, ignores duplicates and enables the
+separate traffic block on the second failure. Association mismatch/failed owner
+requests teardown. The method returns true only for a new notification-worthy
+failure. An extracted-production fixture covers stale association/key evidence,
+deduplication, second-failure blocking and subsequent report submission.
+Sanitized fixture and native compile/link/symbol checks passed. The hardware RX
+hook is not enabled yet: OS notification and rejoin exclusion still need integration.
+Evidence: outputs/NATIVE-security-compatibility-20261030/native-mic-record.
+
+## 2026-10-30 — TKIP rejoin exclusion
+
+Native join checks the selected group cipher against the retained MIC exclusion
+before creating credentials/authentication work. nativeSelectBSS repeats the gate
+for subsequent selection. A sanitized production nativeBeginJoin fixture passes
+for rejected TKIP during exclusion, admitted CCMP during exclusion, and admitted
+TKIP at expiry. This applies to the currently implemented CCMP-pairwise/TKIP-group
+profile; pairwise TKIP admission remains unfinished and must join this gate.
+The initial fixture used Enterprise TKIP, correctly rejected by existing unsupported
+profile policy before this gate; validation now uses the supported personal profile.
+Controller recreation persistence and OS notification/RX hook remain pending.
+Evidence: outputs/NATIVE-security-compatibility-20261030/tkip-rejoin.
+
+## 2026-10-30 — Queued native multicast MIC notification
+
+New qualified failures retain up to two native notices with BSSID and security
+generation. serviceNativeNotifications posts stock ID 6 with exactly six address
+bytes, retries failed enqueue without consuming the notice, and drops notices
+whose association/key generation is retired. Association cleanup clears notices;
+no notification is posted from RX. This uses the previously recovered stock MIC
+contract, not a new capability claim. The extracted notification method passes
+ASan/UBSan for two messages, enqueue failure/retry, no duplicate and stale generation.
+Native report and security-lifecycle fixtures also passed. Hardware RX hook,
+controller recreation/exclusion persistence and final integrated validation remain.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-native-notice.
+
+## 2026-10-30 — Native RX MIC hook connected
+
+The production RX rejection branch now consumes qualified MIC evidence once and
+calls nativeRecordTKIPMIC under the radio gate using detection-time uptime. No
+failed packet is delivered. The RX fixture compiles ATH10K_NATIVE and checks the
+hook receives raw status-1/9 failures; the native handler/service, notifications
+and lifecycle are separately extracted production fixtures. All four focused
+tests passed ASan/UBSan. This is composed host evidence, not a physical MIC test.
+Native compile/link/symbol checks passed, UUID 21A5CC5C-1FD4-3A9E-BA3B-F646463CE95F; not installed.
+Lifecycle audit confirms NativeSecurity persists across association/radio cleanup
+but stop/free delete it; stop can re-register PCI for a fresh driver instance.
+That automatic-rematch exclusion/window persistence remains open before package
+acceptance. Evidence: outputs/NATIVE-security-compatibility-20261030/mic-rx-hook.
+
+## 2026-10-30 — MIC policy across automatic rematch
+
+After workers drain, stop persists a versioned 32-byte nonsecret timing record on
+the PCI provider before NativeSecurity destruction. Failed persistence suppresses
+automatic provider re-registration. Native preparation restores only the first
+failure timestamp, exclusion deadline and validity flag; no association/TX/key
+owner crosses instances. Restore rejects wrong type/size/version, invalid flags,
+future detection timestamps and inconsistent intervals. Expired historical exclusion
+is omitted when a later first failure has started a fresh window.
+Sanitized owner tests cover window retention and expiry; extracted save/restore
+methods cover provider copy, malformed records and write failure. Native build
+and symbol check passed. The provider is mocked in host tests; no live rematch
+or hardware MIC fault was induced. Full security batch acceptance remains open.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-rematch-policy.
+
+## 2026-10-30 — Countermeasure deauthentication transport
+
+The normal post-report countermeasure path now sends an explicit deauthentication
+frame (reason 14) before requesting existing DOWN/key-delete/STOP/ECHO cleanup.
+A distinct MICDeauth transport purpose owns the durable receipt; it cannot complete
+M4, and submission requires a blocked TKIP data path, exact frame shape/reason and
+no PMF conflict. The total countermeasure drain/deauth deadline is six seconds
+from the second failure. Timeout/submission failure/negative completion still
+requests teardown rather than waiting indefinitely. Report failures currently
+use the existing fail-closed cancellation path; deauth-on-report-failure needs review.
+Native service, EAP/EAPOL receipt tests and production packet transport pass
+ASan/UBSan. Native compile/link/symbol check passed. No physical fault test or
+package acceptance is claimed. Evidence:
+outputs/NATIVE-security-compatibility-20261030/mic-deauthentication.
+
+## 2026-10-30 — Failed report still attempts countermeasure deauthentication
+
+When countermeasures are active, report timeout, negative completion, crypto or
+submission failure retire only report tickets and continue toward reason-14
+transmission within the original six-second bound. The serial txOwned/DMA state
+is not cleared: a timed-out report must drain before buffer reuse. First-failure
+report failures keep the existing cancellation behavior. Tests of the extracted
+native service pass ASan/UBSan for all four failure paths, busy-DMA deferral and
+subsequent deauthentication completion. No new native build or hardware claim.
+Evidence: outputs/NATIVE-security-compatibility-20261030/mic-failed-report.
+
+## 2026-10-30 — Grouped MIC/security integration check
+
+All 16 selected affected tests passed ASan/UBSan: native_mic_persistence, native_tkip_mic_service, tkip_mic_owner, network_rx, native_eap_service, native_eap_callback, native_eapol_completion, connection, security_disconnect, rx_security_diagnostics, native_security_lifecycle, native_notifications, rsn_policy, security, native_pmf_receive, native_sae_radio.
+This checks the accumulated MIC lifecycle alongside existing personal/Enterprise
+key fixtures, RX, PMF and teardown; it is not the full final development suite.
+Native compile/link and symbol checks passed, UUID BEBE9667-17A1-3B6E-8555-86972C44BAFC, with warnings.
+Current source remains unpublished/uninstalled. Legacy protocol admission and
+handshakes remain open; no build number change or reboot is justified here.
+Evidence: outputs/NATIVE-security-compatibility-20261030/integrated-mic-review.
+
+## 2026-10-30 — Pairwise TKIP key and RX substrate
+
+Connection state now retains 32-byte pairwise key material with explicit cipher
+(default CCMP). WMI install/delete carries TKIP length/Michael metadata, the
+station MIC direction swap occurs exactly once at serialization, and HTT expects
+0x84 for a TKIP unicast key. Firmware-acknowledged cache and secret retirement cover
+the full key. Native current 16-byte exports clear the expanded staging buffer.
+RX selects pairwise versus group cipher independently and checks TKIP TSC/index;
+hardware CCMP management TX explicitly rejects a TKIP pairwise key.
+Reference: hostap wpas_swap_tkip_mic_keys in the saved primary source swaps tk[16]
+and tk[24] for the supplicant before driver installation. This agrees with the
+existing group-key station serialization convention.
+Focused connection/security_disconnect and RX production tests pass ASan/UBSan;
+final connection test covers the new PMF/cipher conflict guard. Native build and
+symbol checks passed. Pairwise TKIP is NOT admitted by native join or supplicant:
+64-byte PTK ownership/export, descriptor-1 MIC/key handling, unicast MIC reporting,
+rate restrictions and complete legacy association remain unfinished.
+Evidence: outputs/NATIVE-security-compatibility-20261030/pairwise-tkip-substrate.
+
+
+## 2026-10-30 — Local WPA1 raw GTK decoding
+
+WPA1 raw GTK decoder (local unpublished security package)
+
+Added a transactional descriptor-version-1 raw group-key decoder. Requires
+ACK/MIC, legal role flags, exact configured TKIP/CCMP key length, strictly newer
+replay and representable 48-bit RSC; authenticates before publishing plaintext.
+Caller still owns peer/profile binding, completed PTK prerequisite, replay
+commit, exact retransmission ACK, firmware install and cancellation. This helper
+is not yet called by the native supplicant; legacy admission remains disabled.
+Reference: saved hostap-rsn-supp-wpa.c process_1_of_2_wpa, lines 2847 onward.
+Affected wpa1_key_data and wpa1_key_auth passed ASan/UBSan. Includes CCMP/TKIP
+lengths, all index/optional flag combinations, required/forbidden flags,
+truncation, bad MIC/provider, stale replay and unchanged outputs on failure.
+No full suite, native build, install, publication, version change or reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/wpa1-group-decode; identical snapshot and hashes verified on SD.
+
+
+## 2026-10-30 — RSN pairwise TKIP integration
+
+Local opt-in RSN pairwise-TKIP handshake integration
+
+Supplicant now owns a complete 64-byte PTK and retains/restores it across
+pairwise rekey cancellation. Explicit compile-time AND selected-cipher opt-in
+admits RSN AKM1/2 TKIP without required PMF, unsupported nonce modes or implicit
+downgrade. Descriptor-version1 HMAC-MD5/RC4 uses RSN KDEs; it is distinct from
+WPA1 descriptor254/raw GTK. Association and M2 carry the same selected suites.
+Key export expands 56->72 bytes, preserving old offsets and appending Michael
+subkeys in authenticator order. Native staged buffers use the shared size;
+admission checks selected pair cipher and firmware handoff preserves all32
+bytes. Firmware adapter remains sole MIC-subkey swap owner.
+
+Tests: sanitized security, wpa1_key_auth, native_security_lifecycle,
+native_eapol_completion, native_eap_service, native_pmf_receive, native_sae_radio
+passed. Pairwise fixture covers M1/M2/M3/M4, bad MIC, exact/incremented retry,
+rekey cancellation, completed pairwise rekey with unchanged GTK, group rekey,
+Enterprise admission and required-PMF rejection. Existing CCMP vectors pass.
+Native build and symbol check passed; unsigned development image only.
+
+Native AllowTKIP remains false. Pairwise MIC error/report/countermeasures,
+HT/VHT restrictions, full WPA1 association and dynamic WEP/Enterprise owner
+integration remain incomplete. No physical legacy interoperability claim.
+No full suite, final signature/offline KC verification, install, version bump,
+commit, push or reboot. All edits belong to the same unpublished security batch.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/rsn-pairwise-tkip; identical SD copy verified.
+
+
+## 2026-10-30 — Pairwise/group MIC integration
+
+Local pairwise/group TKIP MIC integration
+
+RX now qualifies unicast TKIP failures against local address, peer, key index0,
+installed PTK epoch and TID replay floor. PTK epochs are published only at the
+firmware key receipt; counters survive association reset, installed epochs clear.
+Pairwise and GTK histories are separate in the MIC owner; shared exclusion and
+transport/deauthentication policy is preserved. Reports select pairwise bit and
+established-profile descriptor/HMAC (MD5 for TKIP pairwise, SHA1 for CCMP).
+Native events queue exact type5/6 per failure, retaining order through delivery
+failure, with six-byte BSSID. Rejoin exclusion covers either TKIP cipher.
+
+ASan/UBSan affected tests passed: tkip_mic_owner, native_tkip_mic_service,
+native_notifications, rx_security_diagnostics, security, wpa1_key_auth,
+network_rx, connection, security_disconnect, native_security_lifecycle,
+native_mic_persistence. Explicit new fixtures cover pair/group same-number
+independence, shared exclusion, stale epoch, index/local address/PN rejection,
+MD5-signed pair/group reports, native pair report selection and event5/6 ordering.
+Firmware epoch commit and reset retention assertions passed. Native build and
+symbol check passed; development image is not a signed/installable candidate.
+
+Native TKIP admission remains off. Remaining: HT/VHT policy, legacy profile
+selection/WPA1 association and handshake, dynamic WEP/Enterprise ownership,
+full grouped regression and hardware candidate. No new physical MIC evidence.
+No commit, push, version change, install or reboot.
+Next radio policy reference:
+https://wireless.docs.kernel.org/en/latest/en/developers/documentation/mac80211.html
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/pairwise-mic-integration; identical SD copy verified.
+
+
+## 2026-10-30 — Legacy pairwise PHY policy
+
+Local legacy pairwise radio policy
+
+Selected WEP40/TKIP/WEP104 pairwise cipher disables HT/VHT at common PHY
+negotiation: 20 MHz, one stream, no SGI/MCS. Candidate preparation carries the
+selected pair cipher into that same negotiation. Group TKIP with pairwise CCMP
+retains HT/VHT. Association/firmware serialization rejects stale incompatible
+HT/VHT/width state without modifying the output. peerRateSet clamps maintenance
+NSS/width overrides for legacy pairwise mode, preventing fast PHY flag revival.
+
+ASan/UBSan connection, channel_switch and ap_maintenance passed. New production
+serialization fixtures inspect absent HT/VHT/operating-mode IEs and firmware
+flags even under a requested 2-stream/80-MHz override; all three legacy ciphers
+and CCMP+TKIP-group contrast covered. Native build and symbol checks passed.
+Unsigned development image only; no final offline KC/signature acceptance.
+Reference: https://wireless.docs.kernel.org/en/latest/en/developers/documentation/mac80211.html
+
+Still incomplete: native legacy profile admission and matching association IE,
+WPA1 complete handshake/native selection, dynamic WEP/Enterprise lifecycle and
+full grouped regression/hardware validation. No native TKIP capability enabled.
+No publication, version change, install or reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/legacy-radio-policy; identical SD copy verified.
+
+
+## 2026-10-30 — Shared selected-profile RSN encoding
+
+Shared selected-profile RSN encoding
+
+Association frame and supplicant EAPOL M2 now use buildSelectedStationRSN.
+Explicit pair/group TKIP/CCMP and ordinary AKM1/2 are encoded without fallback;
+AKM6 remains CCMP-only. SAE/PMKID encoder is unchanged. Native profile admission
+remains separate and legacy-disabled; encoding support is not radio support.
+This fixes the previously divergent association encoder that always advertised
+CCMP even when the opt-in supplicant selected pairwise TKIP.
+
+ASan/UBSan connection wire tests inspect each pair/group/AKM1/2 combination.
+RSN policy tests cover legal combinations, unknown selectors, short/null outputs
+and transactional rejection. security, wpa1_key_auth, sha256_supplicant and
+sae_eapol passed. SAE first exposed an old fixture initializing only56 of the
+now72-byte key export. Fixture now checks the whole payload, plus zero TKIP
+extension for CCMP; final SAE regression passed. Native build/symbol check pass.
+Full suite not run; no signature/offline KC/install acceptance claimed.
+
+Remaining: native explicit legacy profile selection and AP compatibility,
+WPA1 descriptor254 handshake/association integration, dynamic WEP/Enterprise
+ownership, final grouped validation and hardware candidate.
+No commit/push/version increment/install/reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/selected-rsn-encoding; identical SD copy verified.
+
+
+## 2026-10-30 — Exact selected RSN admission
+
+Shared exact RSN profile admission
+
+Core candidate/association-response checks and the supplicant now share
+supportsSelectedRSN. A requested pairwise cipher must be present in the AP
+advertisement, with the exact AKM, supported group cipher and capabilities.
+Legacy core gate defaults false; opt-in enables ordinary AKM1/2 TKIP pair/group
+profiles, while SHA256 remains CCMP-only and SAE retains its CCMP/PMF path.
+This removes core's prior CCMP-only lookup that ignored selected pairCipher.
+No native request sets the new legacy gate yet; native supplicant AllowTKIP
+also remains false. Native selection/reconnect-profile binding remains needed.
+
+Six affected ASan/UBSan tests passed: connection, rsn_policy, security,
+wpa1_key_auth, sha256_supplicant, sae_eapol. Production-path fixtures cover exact
+suite/AKM matches, wrong selected suite/AKM rejection, legacy gate, PMF-required
+and unsupported capabilities. Native build and symbol check pass.
+Local corecrypto symbol inventory contains external _ccmd5_di; this is static
+evidence only, not a kernel MD5 execution test or all-OS ABI certification.
+
+Remaining: explicit macOS legacy request decoding and stored-profile binding,
+WPA1 complete descriptor254 handshake/native selection, dynamic WEP/Enterprise
+lifecycle, final grouped regression/signature/offline dependencies/hardware.
+No commit, push, version increment, install or reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/selected-rsn-admission; identical SD copy verified.
+
+
+## 2026-10-30 — Stock join security ownership
+
+Recovered installed join security path (static evidence)
+
+WCLJoinRequest::fillAssocCandidatesList at ffffff8002231cbe copies the key
+structure from request+0x64 into candidate+0x40 (0x94 bytes), separately from
+RSN/WPA IE at request+0xfa -> candidate+0xd6 (257-byte slot). Length at
+candidate+0xd4 is produced by trimRsnIeLen, ffffff8002231c12: bounded to257 and
+retained only for recognized authentication values. Thus keyCipher is key
+material metadata, not an independent proof of the selected radio cipher.
+
+AppleBCMWLANJoinAdapter::performJoin calls getBcomPropertiesFromWPARSN at
+ffffff8001584f5b with length from candidate+0xd4. Nonzero return branches to
+failure handling. Parser entry ffffff800165190c dispatches RSN element48 and
+WPA vendor element221. RSN branch maps group selector at+4, reads pairwise count
+at+8, maps first pairwise selector at+10 and then proceeds from+14. This is
+consistent with a selected association IE, not a general AP list negotiation;
+this local excerpt alone does not establish every upstream normalization rule.
+setAssocRSNIE at ffffff8001586ca0 also passes the IE as a separate commander
+payload. No password/key material or live credential dumps were collected.
+
+Implementation consequence: recover/validate explicit request RSN/WPA profile
+separately from PMK/password envelope; bind selected pair/group/AKM to stored
+profile and carry it through prepareRoamJoin. Current prepareRoamJoin overwrites
+request.rsn with the target AP advertisement, while ProfileCredentials stores
+only auth plus raw request; this needs explicit selection preservation before
+native legacy enablement. Do not infer TKIP from PMK/password keyCipher, and do
+not copy a multi-suite AP advertisement as proof of a single selected cipher.
+
+No production edits/build/tests/publication/installation/reboot in this pass.
+Native legacy admission remains disabled. Next work is selected request profile
+ownership and native binding, then full WPA1/dynamic-WEP lifecycle.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/stock-join-security-contract; SD copy verified.
+
+
+## 2026-10-30 — Stored selected cipher and roam IE
+
+Stored profile cipher ownership and selected roam IE
+
+ProfileCredentials now retains the selected pairwise cipher and legacy gate
+alongside credential/auth generation; replacement validates combinations and
+clear retires them. prepareRoamJoin requires an exact live/profile binding before
+candidate selection. It emits one station RSNE from the stored cipher/current
+AKM and validated target group cipher, not the target AP multi-suite IE. SAE
+emits its selected PMF RSNE without copying an old AP PMKID. Open emits no RSNE.
+Profile policy restriction preserves selected cipher while changing generation.
+Native join explicitly establishes the currently admitted CCMP/nonlegacy mode,
+and retains those actual selected values instead of inheriting retired state.
+
+ASan/UBSan native_profile, native_leave and native_sae_radio passed. Added owner
+retirement/policy-generation/mismatch rejection and multi-suite target tests;
+failed preparation preserves outputs, target AP capability list stays intact,
+selected request carries only CCMP/PSK in that fixture. Existing cache freshness
+and secret lifecycle tests passed. Native build and symbol check passed.
+
+Remaining: native incoming selected RSN/WPA decoding and legacy admission,
+carry that explicit choice through the final join/crypto path, WPA1 complete
+handshake, dynamic WEP/Enterprise lifecycle and final batch/hardware acceptance.
+Core legacy profile ownership is not a claim of native TKIP roam support.
+No full suite, signature/offline KC check, publication/version bump/install/reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/profile-cipher-binding; identical SD copy verified.
+
+
+## 2026-10-30 — Native selected RSNE validation
+
+Native selected RSNE decoding and join binding
+
+nativeSelectedRSN decodes one explicitly selected pairwise suite/AKM independently
+of PMK/password keyCipher. Empty override keeps supported CCMP default; nonempty
+RSNE must be well formed, contain one pairwise and one AKM, match native upperAuth
+and pass existing profile policy. NativeBeginJoin binds the result to connection
+and retained profile, then checks selected group against target AP before starting
+crypto/radio. Malformed/multi-suite/contradictory or unsupported legacy selection
+is rejected without publishing a profile; input key is wiped.
+
+ASan/UBSan native_wire, native_profile, native_sae_radio pass. Added real native
+join fixtures for exact/empty selection success, group mismatch, pairwise TKIP
+while disabled, AKM conflict and malformed length; failures leave no radio work
+or retained profile. Helper tests cover explicit legacy opt-in separately;
+production passes false. Native build and symbol check pass.
+
+Runtime compatibility of nonempty macOS override remains unverified; static
+stock evidence and fixtures are not hardware proof. WPA1 vendor IE remains
+unsupported pending descriptor254 handshake integration; dynamic WEP/Enterprise
+and final native legacy crypto/admission enablement remain incomplete.
+No full suite, final signature/offline KC, publication/version bump/install/reboot.
+
+Evidence: outputs/NATIVE-security-compatibility-20261030/native-selected-request; identical SD copy verified.
+
+## Local WPA1 handshake checkpoint — 2026-10-30
+
+WPA1 software exchange now distinguishes initial PTK and initial GTK completion; authenticated retries and pair/group rekey are covered for TKIP/CCMP. RSNXE binding is rejected for WPA1. Affected wpa1_key_auth, sha256_supplicant and sae_eapol tests passed with ASan/UBSan; native compilation and symbol check passed. This does not establish native WPA1 admission or kernel MD5 execution: InitialPairKeys/InitialGroupKeys still require native install/receipt barriers before enablement. No installation, publication or version change. Evidence and hashed source snapshot: outputs/NATIVE-security-compatibility-20261030/wpa1-handshake, verified on SD.
+
+## Local WPA1 native key barriers — 2026-10-30
+
+InitialPairKeys and InitialGroupKeys now enter distinct native installation
+stages. PTK ACK skips the absent GTK, M4 receipt leaves the port closed, and
+first GTK ACK clears the pending-install marker. Its EAPOL reply is protected
+under PTK before port authorization; only its matching successful TX receipt
+requests authorization. Firmware/RX barriers remain; terminal secret cleanup
+clears both initial-group markers. The existing 15-second handshake timeout
+bounds first-GTK waiting. No native WPA1 profile has been enabled yet.
+
+Affected sanitized tests: native_eapol_completion, connection,
+security_disconnect, native_key_stage passed. Earlier affected lifecycle and
+SAE-radio tests passed before the final group-ACK protection edit. Tests cover
+actual extracted staging/completion and firmware service code, but inject
+WPA1 key exports: they do not prove stock WPA1 association or radio operation.
+Native compilation and symbol check passed; this is not final signing/KC
+acceptance. Evidence: outputs/NATIVE-security-compatibility-20261030/wpa1-native-install.
+No commit, push, version change, installation or reboot.
+
+## Local WPA1 profile and association — 2026-10-30
+
+Added explicit opt-in WPA1PSK/WPA1EAP decoding and selected WPA vendor-IE
+validation. Mixed upper-auth requests, disabled-transition profiles, contradictory
+AKMs and incomplete selected IEs are rejected. Empty WPA1 selection uses TKIP;
+nonempty requests explicitly select TKIP/CCMP and matching group/AKM.
+Core candidate selection now follows wpa1Selected instead of accepting RSNE as
+a substitute; association emits selected WPA IE, and any WPA IE in the response
+is validated against the chosen cipher/group/AKM. PMF is not admitted for WPA1.
+Existing WMI NEED_GTK_2_WAY handling remains consistent with inspected Linux
+ath10k_peer_assoc_h_crypto; it was not reinterpreted as host port authorization.
+
+ASan/UBSan native_wire, connection, native_profile and native_sae_radio passed;
+connection was rerun after adding mixed-AP candidate tests and passed. Native
+build/symbol check passed. No WPA1 native join is enabled: nativeBeginJoin still
+uses the default-disabled decoder gate; stored credentials, EAP/PSK handoff and
+kernel crypto execution remain integration gates. No installed or radio claim.
+Evidence: outputs/NATIVE-security-compatibility-20261030/wpa1-profile-association,
+with hashed source/log copies on SD. No publication, version change or reboot.
+
+## Local WPA1 saved-profile ownership — 2026-10-30
+
+ProfileCredentials now admits explicitly opted-in WPA1 Personal/Enterprise,
+binds protocol as well as pair cipher/legacy gate, and rejects contradictory
+selected WPA IE. Authenticated transition-disable invalidates a now-forbidden
+WPA1 profile and retires its credential generation. Personal handoff rebuilds
+the selected WPA IE from the validated target observation and preserves the
+credential owner; a WPA1/WPA2 state mismatch rejects without changing output.
+Enterprise host roaming remains rejected pending native EAP session handoff.
+
+Sanitized native_profile, native_security_lifecycle and native_sae_radio tests
+passed; native compilation and symbol check passed. Native join startup still
+does not opt into WPA1, so this is local ownership integration, not radio
+support. Evidence: outputs/NATIVE-security-compatibility-20261030/wpa1-profile-owner.
+Source/log hashes verified on SD; no commit, push, installation or version bump.
+
+## Local legacy password-job ownership — 2026-10-30
+
+The asynchronous PSK preparation owner can explicitly opt into legacy profiles;
+it binds WPA1/WPA2, selected pair/group ciphers and the matching AP security IE.
+AP suites and explicit selected-group agreement are validated before scheduling.
+Collection rejects changed protocol, pair/group cipher, AP WPA IE, generation,
+cancelled association and expired work. PBKDF2 remains outside the radio gate.
+The initial cancellation fixture incorrectly invoked a cancelled queued callback;
+it was corrected to cancel a dispatched callback and prove its retired PMK is
+not returned. The final sanitized native_sae_radio suite passed, including existing
+SAE/EAP/PSK paths and nine legacy-owner scenarios. Native build and symbols passed.
+
+The native caller still uses the default-disabled legacy gate. Remaining work:
+common native PMK-to-supplicant startup, WPA1 EAP master handoff, and kernel legacy
+crypto/admission validation. During inspection the direct PMK branch was found to
+ignore random(nonce) failure; fix and inject that failure with the startup work.
+No publication, version bump, installation or reboot. Evidence:
+outputs/NATIVE-security-compatibility-20261030/legacy-password-owner, verified on SD.
+
+## Local common master-key startup — 2026-10-30
+
+Direct PMK, completed PSK password job and initial system EAP PMK now use the
+same beginMasterKey adapter. It preserves selected pair cipher, binds the AP
+group cipher and routes WPA1 to its own handshake without RSNXE; RSN keeps its
+RSNXE binding. SAE remains on its separate session/PMKID owner. Native compile
+gates still leave legacy handshake disabled until the remaining runtime gates.
+The direct PMK branch now requires successful nonce randomness before any
+supplicant startup; a real nativeBeginJoin failure-injection fixture verifies no
+ready state, retained profile or radio submission. EAP failure tests still pass.
+
+Full WPA1 software handshakes now run for AKM1 (Enterprise) and AKM2 (Personal),
+all supported TKIP/CCMP pair/group combinations and CCMP/TKIP descriptor-version
+compatibility. This proves key exchange after a supplied PMK, not stock EAP
+method availability or RADIUS interoperability. ASan/UBSan native_eap_service,
+native_sae_radio, wpa1_key_auth and native_key_stage passed. Native build/symbol
+check passed. Evidence: outputs/NATIVE-security-compatibility-20261030/native-master-key-handoff.
+No commit/push, version bump, installation or reboot; evidence verified on SD.
+
+## Local legacy crypto admission check — 2026-10-30
+
+Explicitly compiled WPA1 and RSN pairwise-TKIP startup now requires the RFC2202
+HMAC-MD5 known answer. A failed primitive or successful return with a corrupt
+result refuses initialization. No readiness is cached across provider changes.
+The kernel provider wrapper validates digest output/state/block sizes and
+required callbacks before cchmac, bounding its fixed output and scratch layout.
+
+ASan/UBSan wpa1_key_auth and native_sae_radio passed; native compilation and
+symbol check passed. An additional production-wrapper extraction test passed
+12 missing/malformed descriptor and invalid-input cases, with no primitive call
+or output mutation on rejection. This test simulates the descriptor and uses
+CommonCrypto for the primitive; it does not prove kernel MD5 execution. WPA1
+native join remains disabled pending integrated runtime admission/routing.
+Evidence: outputs/NATIVE-security-compatibility-20261030/legacy-crypto-gate.
+No commit/push, version change, installation or reboot. Verified SD copy.
+
+## Local integrated native legacy startup — 2026-10-30
+
+EAPOL routing binds exactly descriptor 2 (RSN) or 254 (WPA1) to the active EAP
+association, preserves it during reauthentication and retires it on reset.
+Descriptor 1 remains rejected pending the separate dynamic-WEP system owner.
+Neither internal key descriptor is accepted on the system EAP TX path.
+Native join now wires explicit legacy selection into AP admission, retained
+profile, password worker, EAP owner and common master-key startup. The production
+supplicant compiles TKIP/WPA1; nativeLegacyEnabled requires the explicit property
+Ath10kNativeLegacyExperimental and the existing 24G90 identity gate. Enterprise
+additionally requires Ath10kNativeEAPExperimental. Neither option was enabled in
+EFI or the installed driver. MD5 known-answer checks gate actual legacy startup.
+
+Sanitized EAP routing/owner/service and existing native lifecycle/key-stage/SAE
+fixtures passed. A new production-method fixture passed 12 combinations of raw
+PMK/password/EAP and TKIP/CCMP pair/group suites through nativeBeginJoin to ready
+WPA1 supplicant; disabled admission rejects before retaining credentials. This is
+simulated transport/system key delivery, not radio/EAP server interoperability.
+The first routing fixture called before replacement start; its clock was fixed
+and the complete affected routing selection passed. Native build and symbols
+passed; actual MD5 kernel execution, KC admission and stock capability discovery
+remain unverified. Evidence: outputs/NATIVE-security-compatibility-20261030/legacy-native-startup.
+No commit/push, version change, installation or reboot; SD hashes verified.
+
+## Local legacy capability/library alignment — 2026-10-30
+
+getCARD_CAPABILITIES now advertises WPA1 bit13 only under the same
+nativeLegacyEnabled gate used by join admission. It does not set the aggregate
+WPA bit15 or WEP. Existing TKIP/TKIPMIC advertisement remains for the already
+supported WPA2 CCMP-pair/TKIP-group path. Extracted production capability tests
+cover all four legacy/SAE switch combinations, unchanged bits and buffer guards;
+sanitized native_join and native_sae_radio passed. Native build/symbol check passed.
+
+Read-only kmutil libraries against current BootKernelExtensions.kc resolved all
+958 nm undefined imports, including _ccmd5_di in com.apple.kec.corecrypto. Every
+resolved provider is present in candidate OSBundleLibraries. This is export and
+dependency declaration evidence only, not candidate KC inclusion, signature
+acceptance, runtime execution or all-OS compatibility. No system collection was
+rebuilt or changed. Evidence: outputs/NATIVE-security-compatibility-20261030/legacy-capabilities-libraries.
+No commit/push, version change, installation or reboot; SD hashes verified.
+
+
+2026-10-30: resolved stock IO80211Glue send slot and operation3 internal SET table from BootKernelExtensions; see stock-wep-inner-routing evidence and EAP contract. No driver/install/version change; next trace is bulletin-board manager dispatch and WEP completion.
+
+
+2026-10-30: decoded NET_MANAGER callback table entry0x30001 to setKey; recovered bulletin-board result/handled aggregation and outer key fallback. This narrows remaining WEP work to actual subscriber ownership and key-slot/port lifecycle. Evidence copied and byte-verified on SD. No code/version/install/publication change.
+
+
+2026-10-30: recovered BCM key mapping and Linux QCA WEP dual installation/rollback requirement. Added bounded borrowed-view dynamic WEP decoder, malformed-input/length/cipher/index/flag/address matrix passed ASan/UBSan. Package remains local; no native build or installed-image change. Snapshot and hashes verified on SD under wep-envelope. Next: native admission, system EAP descriptor1 routing, firmware lifecycle and authorization as one integrated path.
+
+
+2026-10-30: added explicit dynamic-WEP EAP owner/routing; test exposed native receive reclassification as RSN (zero-byte copy), fixed to owner envelope. Three affected ASan/UBSan tests and native build/symbol check passed. UUID: BD0CA029-F036-39FC-99D6-65921810C16C (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac; source/logs saved and SD byte-verified. No native WEP admission, key installation or port authorization yet; no install/push/version change.
+
+
+2026-10-30: distinguished selected/WMI/HTT WEP cipher identities, centralized mapping used by current TKIP/CCMP paths. Connection ASan/UBSan passed; native build/symbol check passed. UUID: D2307173-98CA-3EF1-99BA-91FEFA8770A0 (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac. Intermediate compile found an overbroad teardown edit; reverted that edit before passing checks. WEP slot transactions remain unimplemented, no installed/version/publication change. Snapshot SD byte-verified.
+
+
+2026-10-30: host key transaction audit found premature reuse after HTT acknowledgment and unchecked late submission. Added Acknowledged/fence state, submission clock/deadline validation, timeout/cancel uncertainty; affected ASan/UBSan tests passed. No native integration or rebuild needed for the currently unused helper. Source/logs and SD snapshot byte-verified under key-transaction-fence.
+
+
+2026-10-30: integrated WEP decoder with native cipher callback and existing EAP owner cleanup. Added bounded key queue, source-copy preservation, zeroization, current-generation/head-ticket retirement, duplicate ordering A-B-A and callback expiry cancellation. Three affected ASan/UBSan tests and native build/symbol check passed. UUID: 4489130C-0BD4-3299-9CCE-2BDE4019C3A6 (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac. Snapshot verified on SD. No admission/firmware consumer/port completion yet; no install/push/version change.
+
+
+2026-10-30: added confirmed WEP slot ownership and duplicate suppression across queue retirement; tested installed-A/queued-B/requested-A, stale lookup and key zeroization on clear/expiry. Callback/owner ASan/UBSan and native build/symbol check passed. UUID: 171FF8F4-9B08-38BC-8AB7-6B1BCCCB43A7 (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac. Evidence SD verified. Native firmware consumer and flag-only updates remain pending; no install/push/version change.
+
+
+2026-10-30: corrected WEP duplicate handling across TX slot changes; added action classification and DEF_KEYID command serializer after Linux enum/call-site inspection. Callback and connection ASan/UBSan, native build/symbol check and diff whitespace check passed. UUID: 94328060-BDD1-3829-A9DB-7557722CDB15 (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac. Evidence SD verified; no installation/publication/version change.
+
+
+2026-10-30: corrected WEP physical slot bookkeeping and action selection for QCA group/pair mirroring. Added group-only and mirror-repair actions, queued cross-cast invalidation tests; callback/owner ASan/UBSan, native build/symbol and whitespace checks passed. UUID: 15BCEC6D-EFF2-3C90-BBEB-EC536368E044 (x86_64) /Users/frozz/Documents/Codex/2026-10-27/dj/work.noindex/Ath10k-airport-repo/build/native/out/Ath10kMac.kext/Contents/MacOS/Ath10kMac. Source/log evidence SD verified. Partial hardware failure/rollback consumer still pending; no install/push/version change.
+
+## 2026-10-30 — passwordless AP hardware triage
+
+Installed 1.0.110: user confirms A10_Open visible in Windows, but macOS Settings and a directed CoreWLAN scan did not find it (scan returned zero results without error). A10_OWE and A10_OWE_Transition were visible; both UI join attempts failed immediately. Existing SAE join properties remained unchanged; these attempts do not prove radio association or OWE negotiation. No case accepted yet. Native OWE admission remains unimplemented. Evidence: outputs/NATIVE-passwordless-tests-20261030/results.json. Private AP credentials remain outside the repository and ATH10K_AIRPORT_TEST_SSIDS.private*.md is ignored.
+
+Follow-up: user identified A10_Open at 60:45:2E:D2:5F:91 / channel1. Another directed scan returned one redacted network on channel1, and Settings then explicitly displayed A10_Open. Its UI join failed too; discovery absence is intermittent, not proven permanent open-security filtering. Transition airportd error is 0xe0822402: stock getJoinCandidatesList returns this after an empty populated queue (0xffffff8002133bf7 → 0xffffff8002133d61), or after removeFullyLoadedAPs empties it (0xffffff800213427e). These alternatives do not identify the exact failed predicate. Pure OWE is recognized as AKM18 by airportd and fails with -3900; do not conflate the errors. nativeBSSMessage currently reconstructs only selected IEs, omitting the OWE transition vendor IE; preservation and complete OWE admission/key lifecycle remain pending, not validated by these UI attempts.
+
+A10_Open airportd failure also confirmed as 0xe0822402, with nativeJoin properties still reflecting existing SAE. Live BootKC WCLBSSBeacon vtable +0x2f8 (slot0xffffff80023c0940, chained raw0x40000002031fae) resolves to IO80211BSSBeacon::isOnRSNNetwork at0xffffff8002131fae. Open (auth0) checks final argument==1 and allowed-auth/cipher/SSID predicates; exact failing input still unknown. Saved relevant disassembly for the next investigation, rather than relaxing matching on speculation.
+
+### Plaintext selector branch clarification
+
+Further recovery shows plaintext upperAuth=0/upperAuthExt=0 is NOT routed through isOnRSNNetwork. isRSNNetwork(request) at0xffffff80021350bc sends plaintext to block0xffffff8002135325 and vslot0x2e8/isOnNetwork. The previously examined upperAuth=0 plus extendedAuth=1 branch is OWE, not plaintext. Keep native rejection of unsupported extended authentication; do not change this to make Open pass. Plaintext candidate checks: excluded-beacon predicate, encryption-mode intersection, AP-mode equality unless wildcard3, exact SSID, optional BSSID and band mask. mapAssocToEncryptionMode selects plaintext mask1 when no key cipher/WPA/extended auth is selected; beacon mode1 comes from privacy-clear/no WPA/RSN. Live vtable slots and disassembly are saved in outputs/NATIVE-passwordless-tests-20261030. Actual differing runtime field or cache-retirement point remains unidentified; no speculative relaxation applied.
+
+## 2026-10-30 — preserve OWE transition advertisements (local)
+
+The management decoder and native BSS serializer now retain the WFA vendor IE
+50:6f:9a:1c byte-for-byte, including opaque payload extensions. Duplicate
+transition IEs and truncated TLVs reject the beacon; an update without the IE
+clears the previous value. Serializer validates the vendor envelope and total
+capacity before modifying output. This transports AP metadata only: no OWE
+capability is enabled, no transition target is trusted for association, and no
+plaintext downgrade is added. Native OWE crypto/admission/key lifecycle remains
+unimplemented. This omission is confirmed in source, but is NOT established as
+the cause of A10_Open's candidate-selection failure.
+
+Vendor ID primary reference: hostap ieee802_11_defs.h at commit
+c4ca476ad224fd376ee52a70dbb5b0f9f7f82408 (OWE_IE_VENDOR_TYPE=0x506f9a1c).
+
+## 2026-10-31 — all-AP inventory before fixes
+
+User explicitly requires collecting ALL AP failures before further code fixes. Two diagnostic command passes completed across 22 inventory rows; seven EAP rows and the secure OWE-transition target were not hardware association attempts. Open transition reached connected-open once via networksetup; no traffic acceptance. CLI misses networks visible in Settings; CoreWLAN redacts identifiers and join calls on returned objects fail -3900, with some directed scans timing out -3905. These are not evidence of radio authentication failures. All seven Enterprise SSIDs visible in Settings. Client key matches certificate; chain/purpose pass, P384/SHA384 credentials are current. EAP gate remains off and system identity absent. Full UI association/data pass remains pending; no new driver fixes after the user override. Sanitized matrix and evidence byte-verified on SD: outputs/NATIVE-all-AP-matrix-20261030.
+
+## 2026-10-31 — whole-AP UI inventory, installed 1.0.110 unchanged
+
+The native Settings pass supersedes broad conclusions from CLI candidate lookup failures.
+Open now has verified DHCP, 3/3 gateway replies and HTTPS HTTP/2 200 bound to en1
+following the user's router correction. Open Transition associates as plaintext;
+its traffic still fails. Pure OWE UI rejects (-3900); no secure transition implemented.
+All five WEP profiles, WPA1 PSK TKIP/CCMP and WPA2 TKIP were attempted with supplied
+credentials through native UI and rejected. Captured airportd records confirm
+0xe00002c7 for WEP40 Open, both WPA1 modes and WPA2 TKIP. WPA1 UI incorrectly calls
+the credential WEP. Remaining WEP failures are UI-observed, not assigned an inferred code.
+Mixed WPA2 TKIP/CCMP associates (AKM2/phase5); this is not proof of TKIP cipher use.
+After repeated joins, SAE and mixed WPA2 reached link-local without a DHCP gateway;
+router configuration changed during the pass, so ownership of the DHCP failure is
+unresolved. Early address-less snapshots are not final failures.
+Seven EAP SSIDs are visible; EAP192 UI asks account/password, cancelled without
+submission. TLS system identity/profile and the loaded EAP admission gate remain
+barriers; no RADIUS success claimed. Wrong hidden-network UI labeling reappeared.
+Evidence: outputs/NATIVE-all-AP-matrix-20261030/MATRIX.md, ui-runtime and
+airportd-ui-errors.txt. USB en0 remains primary for the ongoing test campaign.
+No driver edits, installation, version bump, commit or reboot in this pass.
+Next: finish outstanding TLS-profile/admission and packet-path inventory, correlate
+failures by stage, then implement one grouped security package.
+
+### 2026-10-31 — DHCP and installed-code correlation
+
+Controlled DHCP renewal on en1 (WPA2, same peer52, phase5) captured five requests
+and no replies over25 seconds. TX completions increased84→134, NoAck/errors and
+RX/security/drop counters stayed unchanged. Link-local address remained. This
+narrows investigation to AP delivery/response and the receive path; completion
+is not proof of DHCP delivery to server. AP-side DHCP evidence requested for the
+observed private station MAC. Earlier passive20s window had no packets and cannot
+support a traffic conclusion. Evidence: dhcp-renew-window.json in all-AP bundle.
+Verified installed source add6acf nativeBSSMessage omits WPA vendor IE, consistent
+with WPA1 networks being presented as WEP. Existing local source already preserves
+WPA IE; no new driver change made. Loaded EAP experimental property absent, while
+SAE property is true; Enterprise admission is an actual installed barrier.
+
+### Grouped inventory reconciliation
+
+NATIVE-BATCH-PLAN passwordless state now reflects actual UI/traffic evidence.
+GROUPED-FINDINGS.json groups advertisement, legacy security, OWE, Enterprise and
+data-path gaps with separate confirmed/local/unverified status. The all-AP
+inventory covers 22 entries, but seven EAP authentications and the hidden OWE
+secure target remain untested at named implementation/profile barriers.
+Do not treat inventory coverage as hardware acceptance. No driver changes.
+
+### 2026-10-31 — AP-side DHCP evidence supersedes uncertainty
+
+Via authorized LuCI terminal, br-a10lab5 captured five DHCP requests from the
+Mac station during controlled renewal, no responses. Hostapd confirms RSN
+pairwise handshake; a historical .188 lease exists. Both br-a10lab and
+br-a10lab5 have172.29.77.1/24 and equal-subnet routes; DHCP configuration has
+only a10lab section. Open is on br-a10lab, WPA2/SAE/Transition on br-a10lab5.
+This proves client DHCP reaches the AP after decryption; absence of server
+responses is an AP-side issue in this interval, not evidence of driver RX loss.
+No router changes. Evidence: openwrt-observation.json.
+
+### AP follow-up correction: separate DHCP exists; firewall rules missing
+
+Runtime-v5 dnsmasq PID21470 is bound to br-a10lab5. The earlier claim that
+DHCP was configured only for the first bridge described UCI incompletely and
+is superseded. a10lab5_input/forward are empty and unreferenced by main
+input/forward chains; saved rules allow DHCP/DNS/WAN and retain isolation.
+Selected inet fw4 rules passed nft check-only, not applied; user approval
+requested because restoring them changes network access. Duplicate-subnet
+routes remain a separate topology concern, not proved the immediate cause.
+
+### Stand lifecycle audit while firewall approval is pending
+
+Read-only router script inspection: startup constructs and directly applies
+firewall.nft (lines236–264); orphan adoption checks object ownership comments
+(lines310–346), not rule content or main-chain jumps. Thus ownership validation
+does not establish a functioning test network. Empty owned chains are consistent
+with lost rules; the event that cleared them has not been proved. Restoration
+remains unexecuted pending user authorization. No driver code changes.
+
+## 2026-10-31 — router restored, native traffic matrix advanced
+
+User approved restoration. Applied saved inet fw4 rules only; verified input/forward
+chains, parent jumps and isolation drops. Backup /tmp/a10-before-restore.nft on router.
+DHCP immediately recovered (.188 WPA2). Route lookup sent replies through wrong
+br-a10lab; added temporary per-station /32 routes via br-a10lab5 for .188,.141,.129,.122.
+After correction, en1-bound HTTPS HTTP/2 200 passed for WPA2 PSK, plaintext OWE
+Transition (AKM0), SAE (AKM8/phase5), and mixed WPA2 (AKM2/phase5). Native-source
+DNS through test router also passed on mixed WPA2. Open was verified earlier.
+These are bounded traffic results, not prolonged stability or TKIP cipher proof.
+Ping to gateway is intentionally blocked on br-a10lab5 and must not be used as
+acceptance failure. No driver edits/install/reboot. Remaining router issues:
+duplicate subnet topology, runtime rule persistence, eventual cleanup of /32 routes.
+Evidence: outputs/NATIVE-all-AP-matrix-20261030/ui-runtime/*after-router-repair.json
+and openwrt-observation.json. Legacy/OWE/Enterprise acceptance remains open.
+
+## 2026-10-31 — grouped security continuation: queued WEP mirror ordering
+
+Whole-AP inventory now separates successful native traffic on Open, plaintext
+Transition, WPA2, SAE and mixed WPA2 from legacy UI failures and Enterprise/OWE
+admission barriers. Active plan moved from historical Fast Lane to the complete
+security compatibility package; no hardware success inferred for blocked profiles.
+
+Source review found reverse WEP aliasing: installed (or queued) individual A,
+queued group B, then individual A could suppress the final request as a duplicate,
+although QCA group programming also overwrites the pair slot. Duplicate lookup
+now treats a queued same-index group write as an individual-slot replacement.
+Production nativeSetCipherKey fixtures cover installed and queued history with
+individual flags1/5, retaining group B and final individual A separately. Focused
+callback test passed with assertions enabled; this run used no sanitizers and
+is not full batch acceptance or firmware/hardware evidence. WEP firmware
+consumer, rollback, admission and controlled-port integration remain unfinished.
+No installation, reboot, commit, push or build-number change.
+Evidence: outputs/NATIVE-security-compatibility-20261030/wep-queued-mirror-order.
+
+### 2026-10-31 — complete WEP operation planning (local, not firmware execution)
+
+The queued key owner now exports an immutable, secret-free program bound to
+its generation and head ticket. New group material schedules group then pair;
+already matching halves are omitted. A new individual key may require pair
+installation followed by default-TX selection. Retained-key selection never
+rewrites key material; metadata-only updates produce a valid empty program.
+Expired/stale owners and empty queues produce no valid program.
+
+Reference inspected: local ath10k-pmf-reference/mac.c, ath10k_set_key lines
+6612–6652 and WMI_KEY_* definitions in wmi.h (pairwise0, group1, TX usage2).
+The serializer's existing flag mask already permits these values; no guessed
+Apple-to-WMI flag copy or firmware capability change was made.
+
+This is the full operation plan consumed by the future serialized firmware
+executor, not that executor itself. Confirmed slot completion must still wait
+for every operation and its fence; partial failures require teardown/rollback.
+Native admission, WEP RX/TX and controlled-port integration remain open.
+
+Validation: four affected tests passed ASan/UBSan with assertions enabled;
+full batch regression deferred until final integration. Evidence and source
+snapshots: outputs/NATIVE-security-compatibility-20261030/wep-operation-program;
+SD copy byte-verified. No install, commit, push or version change.
+
+### 2026-10-31 — WEP key ownership across service and roam
+
+EAPOwner::pending previously counted only outgoing EAP packets. A queued WEP
+key could therefore be omitted from roam-retirement guards, scan cancellation
+and ordinary-TX hold. Pending now covers both kinds, with keyPending exposing
+the key-only case. Successful key enqueue asserts the ordinary-TX hold
+immediately. EAP service preserves that hold even with no outgoing packet;
+it still drains real EAP TX completions and allows system EAP transport.
+
+Production-path fixtures cover a key-only owner, scan cancellation, EAP TX
+with a pending key, completion retirement, expiration and rejection of a roam
+without discarding the old key owner. native_eap_service, native_eap_callback
+and native_sae_radio passed with ASan/UBSan and assertions. These changes
+retain ownership; they do not install WEP keys, authorize data, or prove WEP
+hardware support. Firmware executor and admission remain pending in this
+same unpublished security package.
+
+Native build/link and symbol check passed (warnings retained in build log).
+Evidence: outputs/NATIVE-security-compatibility-20261030/wep-lifecycle-holds,
+byte-verified on SD. No installation, commit, push, version bump or reboot.
+
+### 2026-10-31 — WEP execution state machine (radio wiring pending)
+
+Ath10kNativeWEPExecution now consumes the complete queued program and emits
+actual existing WMI serializers for 5/13-byte group/pair installs and default
+TX selection. It retains the association generation, queue ticket, peer ID,
+index, size and whole-request deadline without copying key material. It
+separates submission, matching HTT receipt, CE/credit retirement, ECHO/RX
+fence and final queue commit. Default-index writes do not wait for a key HTT
+receipt; they still require transport retirement and a fence.
+
+Only final completion updates confirmed slots. Timeout, clock rollback, lost
+owner or cancellation poisons the operation; only externally proven firmware
+retirement permits reuse. The caller must provide actual transport/fence
+evidence: the state machine cannot manufacture an ECHO or identify a delayed
+wire response using its host ticket. It is not yet wired into radio service,
+HTT dispatch, teardown or native admission; do not advertise WEP support.
+
+The new native_wep_execution test runs command bytes and state transitions
+for both lengths, group mirroring and individual/default-TX writes, wrong
+receipts, early commit, timeout across operation phases, and owner retirement.
+ASan/UBSan passed. Included in the consolidated test entry point; no full-suite
+claim, install, publication or version increment.
+
+### 2026-10-31 — separate WEP HTT receipt ownership
+
+ConnectionState now contains a dedicated WEP receipt mailbox. Arming requires
+a current mapped peer, a nonzero host generation/ticket, a connected explicit
+WEP Enterprise association and no RSN/WPA install phase or prior mailbox.
+Production HTT validation matches the selected receipt cipher/cast and exact
+peer; duplicate, wrong-context and unexpected receipts are rejected. Commit
+updates only the WEP mailbox and diagnostics, never securityAck or port access.
+The mailbox remains armed after receipt until its consumer proves the firmware
+and RX fence; retirement requires its original host generation/ticket. Normal
+resetDisconnected clears it with the rest of retired association state.
+
+The test exercises real validateConnectionHTT/commitConnectionHTT for WEP40/104
+and both casts, plus early/wrong-ticket retirement and replayed indications.
+This wires receipt classification, not the radio sender: WEPExecution still
+needs the service-loop transport/ECHO adapter and teardown integration before
+native admission or WEP support can be enabled.
+
+Validation: native_wep_execution, connection and security_disconnect passed
+ASan/UBSan; native build/link and symbol check passed (warnings retained).
+Evidence: outputs/NATIVE-security-compatibility-20261030/wep-htt-owner, byte-verified
+on SD. No hardware, full-suite, publication or installation claim.
+
+### 2026-10-31 — native WEP service and cancellation integrated locally
+
+serviceNativeWEP now runs from the native service loop. It consumes queued
+programs through the shared CE3 command buffer, arms the dedicated HTT mailbox,
+drains CE/credit ownership, submits uniquely correlated ECHO commands and waits
+for pending RX work before advancing. The radio connection worker defers other
+maintenance while this owner is active, but still drains data/packet completion
+and processes cancellation. Scan cancellation and EAP packet ownership remain
+independent. Complete programs update the EAP owner's confirmed slots only;
+no controlled port is opened. Whole-program deadline is bounded to five seconds.
+
+Host security discard cancels the executor without erasing uncertain firmware
+ownership. Cancellation retains DMA ownership for ordinary disconnect; an
+in-flight WEP ECHO is tracked as rollback work. WEP disconnect retires its
+multi-slot state through peer DELETE/unmap, STOP and ECHO/RX instead of trying
+to clear the RSN single-pair/current-GTK slot cache. Proven Disabled retirement
+releases executor uncertainty. Key indications matching a cancelled/duplicate
+WEP operation are consumed as ignored diagnostics, not RSN acknowledgements;
+this supersedes the earlier statement that all duplicate WEP indications error.
+
+Production service fixtures delay CE consumption, key receipts, ECHO and RX
+retirement independently; verify group/mirror progression and no early queue
+commit or port opening; retain DMA on cancellation/timeout; and reject host
+cleanup as proof of firmware retirement. Eight affected tests passed ASan/UBSan
+across the repair runs (service/executor, connection/disconnect, EAP service,
+SAE radio, PMF receive and native security lifecycle). Two fixture include
+errors were fixed; final tests and native build/link/symbol check passed.
+
+Still missing before WEP enablement: native static/shared/dynamic admission,
+RX/TX cipher integration and system controlled-port authorization. This is
+local integration, not radio interoperability. No full-suite acceptance,
+installation, push, commit, version bump or reboot.
+
+### 2026-10-31 — WEP data-path slot admission (bounded local coverage)
+
+Verified Linux v6.12 rx_desc.h: RX cipher0/1 means WEP40/104, unlike HTT
+key receipts3/2. Source: https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/net/wireless/ath/ath10k/rx_desc.h .
+Local htt_rx.c crypto-length helpers establish four-byte WEP IV/key ID and
+four-byte ICV, with FCS stripped separately. Raw normalization now handles
+that layout and preserves integrity error flags. Cipher2/3 are not admitted
+as WEP40/104. Existing unsupported fragmentation remains rejected.
+
+The native key service publishes per-cast/per-index installed lengths only
+after the complete key program/fences succeed, then advances RX generation
+to invalidate buffered packets from the preceding key set. WEP receive checks
+that slot, RX cipher, mapped peer, BSSID, key ID/reserved bits, key-operation
+hold and controlled port. No CCMP-style monotonic PN rule is applied to WEP IVs;
+this does not invent cryptographic replay protection absent from WEP.
+
+Confirmed default-TX selection is exported separately from installed key
+bytes. BSD data admission and HTT packet construction reject WEP data without
+a selected installed pair slot, and hold it during key programming. Secret
+retirement clears both RX slot metadata and TX selection. Initial system EAP
+transport remains independent from ordinary controlled traffic.
+
+Tests cover both lengths/casts, raw normalization through the production RX
+pipeline, wrong/missing slot, cipher mismatch, in-flight replacement, closed
+port, unknown peer, ExtIV misuse, integrity error, truncation and unsupported
+cipher; service fixtures verify snapshot publication and TX admission fixtures
+verify selection/retirement. Static/shared/dynamic native join admission,
+controlled-port authorization and WEP fragmentation remain unfinished; no
+hardware compatibility or full WEP support is claimed.
+
+Five affected tests passed ASan/UBSan across RX and TX edits; native build/link
+and symbol check passed. Evidence/source checkpoint: outputs/NATIVE-security-compatibility-20261030/wep-rxtx-slots;
+SD copy byte-verified. No full-suite acceptance, installation or publication.
+
+### 2026-10-31 — Integrated compatibility package: Enterprise SHA256/PMF
+
+AKM5 now follows explicit native upper-auth 2048 admission, CCMP/PMF AP
+validation, association RSN, system EAP transport and one-shot MSK handoff.
+The four-way uses SHA256 derivation, descriptor 3 AES-CMAC, IGTK and shared
+firmware key barriers; plaintext data stays closed until key authorization.
+Fixed BSD output interception to admit both AKM1 and AKM5 EAP traffic before
+controlled-port completion. Personal key traffic retains its internal owner.
+
+Independent generated AKM5 vectors cover initial/repeated messages, pair/group
+rekey and malformed inputs. Production native join/MSK/PMF/reset and EAP RX/TX
+fixtures passed ASan/UBSan; affected key-stage, wire/profile and callback/service
+fixtures also passed. Native compile/link/symbol validation passed. Same-key
+MSK replacement is a binding test, not evidence of different-MSK radio reauth.
+No Enterprise roaming, FT/Suite-B or dynamic-WEP session authorization is claimed.
+
+This remains one unpublished WEP/WPA1/TKIP/Enterprise/OWE compatibility package.
+No commit, push, version increment, installation or reboot. Installed 1.0.110
+is unchanged. Final full-package regression and AP acceptance remain open.
+Evidence: security-batch-integration/eap-sha256; logs mirrored and byte-verified
+on SD. Goal remains active; this turn changed and validated production code.
+
+### 2026-10-31 — Security package: reauthentication and transition policy
+
+Independent AKM5 vectors now replace the MSK with different synthetic material:
+PTK changes, replay floors remain, an old-MSK M3 is ignored while established
+keys remain, and a valid new-MSK M3 completes the replacement. Initial test
+expected Fatal for the unauthenticated rekey; source review confirmed Ignore
+is intentional to preserve the established port. This is cryptographic local
+evidence, not system EAP-server/hardware reauthentication acceptance.
+
+Corrected Enterprise Transition Disable admission: explicit AKM5/CCMP with
+required PMF remains allowed; legacy AKM1/WPA1 remains excluded. Confirmed
+against wpa_supplicant wpas_glue.c at 59fa4b44b84301ac01b937a6a0e687cf5dd3593a:
+https://android.googlesource.com/platform/external/wpa_supplicant_8/+/59fa4b44b84301ac01b937a6a0e687cf5dd3593a/wpa_supplicant/wpas_glue.c
+No upstream code copied.
+
+Authenticated KDE extraction and PMF-owner delivery now include OWE and AKM5,
+with MIC/unwrap/key barriers, restrictive profile retention, delivery retry,
+prepared-roam invalidation and reset retirement. Duplicate KDEs are rejected.
+Affected eap_sha256, owe_eapol, sae_eapol, native_wire, native_profile,
+native_sae_radio and native_notifications passed ASan/UBSan. The notification
+fixture needed its SAE setup corrected to include the real PMF-required state.
+Native compile/link/symbol check passed. Full final-package regression and
+hardware acceptance remain open. Source version/installed kext unchanged;
+no commit, push, installation or reboot. Previous goal turn was progress;
+this turn adds production policy handling and independent security evidence.
+
+### 2026-10-31 — Dynamic-WEP association producer boundary
+
+Recovered a previously missing producer distinction: airportd saves is8021X at
+-0x23c, tests supportsSecurity:1, and selects built-in 13-byte placeholder
+association material at0x10000e86f..0x10000e885. Apple80211Associate2 receives
+that argument at0x10000ea97. securityType0x100/0x200 also selects WEP open-system
+parameters;0x100 selects WEP40. This is not a WCL upperAuth mapping or an
+EAP-authorized event. Never recognize dynamic WEP by comparing password bytes,
+and never claim its initial static-key transaction establishes EAP success.
+The missing system-session indicator remains a requirement; dynamic admission
+stays disabled. Evidence: enterprise-session-entry, workspace and SD verified.
+Previous paused turn was a user-requested stop; resumed turn obtains new producer
+evidence and starts the consolidated compatibility regression.
+
+### 2026-10-31 — Integrated compatibility package validation
+
+All 87 C++ regressions passed ASan/UBSan across the consolidated run and two
+continuations. Two fixture issues were repaired: native_join still expected
+SHA256 Enterprise rejection; the WPA1 provider extraction included the newly
+adjacent hash256 wrapper. No driver behavior was changed to satisfy these
+failures. Successful earlier tests were retained, not rerun. Release and Debug
+compile/link/symbol checks passed. Added OWEJob to Windows source list; Windows
+execution remains untested. Evidence final-package-regression mirrored/verified
+on SD. Current installed 1.0.110 and configuration rollback also byte-verified.
+
+Pending code changelog for the next published build: static WEP Open/Shared
+radio/keys/port lifecycle; WPA1/TKIP handshake/MIC/replay/cancellation; retained
+GTK slots; Enterprise MSK and AKM5/PMF integration; OWE group19 and native
+capability/association/key ownership; authenticated transition policy for
+SAE/OWE/AKM5. Experimental compatibility gates remain off by default.
+Dynamic-WEP session provenance, FT/Suite-B, physical Enterprise/OWE/legacy
+interoperability and protected transition selection remain open. Source version
+is 1.0.111 until the grouped publication succeeds and remote HEAD is verified.

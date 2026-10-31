@@ -22,6 +22,36 @@ static const char *parse(Ath10k::ConnectionState &s,const std::vector<UInt8> &p)
     return Ath10k::parseHTTSetup(p.data(),p.size(),1,c,htt,&s);
 }
 static void parserCases(){
+    {
+        Ath10k::ConnectionState s{};s.secure=true;s.pairCipher=AthSecurity::cipherTKIP;s.securityPhase=1;
+        for(unsigned i=0;i<32;++i)s.temporalKey[i]=UInt8(i+1);
+        UInt8 command[256]{};assert(Ath10k::buildSecurityWMI(command,sizeof(command),2,s)==144);
+        assert(Ath10k::connLE32(command+36)==2 && Ath10k::connLE32(command+96)==32);
+        assert(!memcmp(command+112,s.temporalKey,16));
+        assert(!memcmp(command+128,s.temporalKey+24,8) && !memcmp(command+136,s.temporalKey+16,8));
+        for(unsigned i=0;i<32;++i)assert(s.temporalKey[i]==i+1);
+        assert(Ath10k::expectedSecurityIndication(s)==0x84);
+        s.disconnect=D::ClearPair;assert(Ath10k::buildDisconnectWMI(command,sizeof(command),2,s)==144);
+        assert(!Ath10k::connLE32(command+36) && Ath10k::connLE32(command+100)==8 && Ath10k::connLE32(command+104)==8);
+        for(unsigned i=112;i<144;++i)assert(!command[i]);
+        s.pmfRequired=true;assert(!Ath10k::buildSecurityWMI(command,sizeof(command),2,s));
+        memset(s.installedPair,0xa5,sizeof(s.installedPair));Ath10k::wipeConnectionSecrets(s);
+        for(auto v:s.temporalKey)assert(!v);for(auto v:s.installedPair)assert(!v);
+    }
+
+    for(UInt8 cipher:{UInt8(2),UInt8(4)})for(D stage:{D::ClearPair,D::ClearGroup}){
+        Ath10k::ConnectionState s{};s.secure=true;s.groupCipher=cipher;s.groupIndex=2;s.disconnect=stage;
+        UInt8 command[256];memset(command,0x5a,sizeof(command));
+        const UInt32 length=stage==D::ClearGroup && cipher==2?32:16;
+        assert(Ath10k::buildDisconnectWMI(command,256,2,s)==112+length);
+        assert(Ath10k::connLE32(command+36)==0 && Ath10k::connLE32(command+96)==length);
+        assert(Ath10k::connLE32(command+28)==(stage==D::ClearGroup?2u:0u));
+        assert(Ath10k::connLE32(command+32)==(stage==D::ClearGroup?1u:0u));
+        assert(Ath10k::connLE32(command+100)==(length==32?8u:0u));
+        assert(Ath10k::connLE32(command+104)==(length==32?8u:0u));
+        for(UInt32 at=112;at<256;++at)assert(!command[at]);
+    }
+
     for(D stage:{D::ClearPair,D::ClearGroup}){
         Ath10k::ConnectionState s{};s.stage=LinkStage::Connected;s.secure=true;s.securityPhase=5;
         s.disconnect=stage;s.submitted=true;s.peerCount=2;s.peerIDs[2]=(1u<<7)|(1u<<8);
@@ -85,6 +115,11 @@ static void runtimeCases(){
         auto association=d._regs.tx3Consume;auto &s=d._connection;
         s.secure=true;s.securityPhase=5;s.pairInstalled=true;s.groupIndex=2;s.groupInstalled[2]=true;
         s.temporalKey[0]=0x55;s.groupKey[0]=0x66;s.pairPN[0]=42;
+        s.securityGeneration=41;s.groupKeySerial=100;s.pairKeySerial=51;s.pairKeyEpoch=51;
+        for(unsigned slot=0;slot<4;++slot){s.groupInstalled[slot]=true;s.groupKeyEpoch[slot]=97+slot;
+            memset(s.installedGroups[slot],int(0x80+slot),32);
+            for(unsigned tid=0;tid<17;++tid)s.groupPN[slot][tid]=100+slot*17+tid;}
+
         receive(d,map(s,55));receive(d,map(s,71));assert(s.peerCount==3);
         assert(Ath10k::requestDisconnect(s,2000));d.networkLink(false);
         bool injected=false;unsigned clearCommands=0,deleteCommands=0;D pending=D::None;
@@ -119,6 +154,11 @@ static void runtimeCases(){
             for(unsigned i=0;i<10;++i)d.tick(2700+i*10);
             assert(s.disconnect==pending && s.stage!=LinkStage::Disabled && d._wmiLive.active);
             assert(s.temporalKey[0]==0x55 && s.pairPN[0]==42); // no premature cleanup
+            assert(s.securityGeneration==41);
+            for(unsigned slot=0;slot<4;++slot){assert(s.groupInstalled[slot]);
+                for(auto keyByte:s.installedGroups[slot])assert(keyByte==0x80+slot);
+                for(unsigned tid=0;tid<17;++tid)assert(s.groupPN[slot][tid]==100+slot*17+tid);}
+
             if(hold==1){assert(s.wmiOwned && d._wmi.credits.outstanding);credit();}
             else if(hold==2){assert(!s.stopReply);d.deliver(2,stopped(false));}
             else {assert(!d._connectionEcho.replyReceived);d.deliver(2,echoPacket(0xa7590001,false));}
@@ -127,6 +167,12 @@ static void runtimeCases(){
         assert(s.stage==LinkStage::Disabled && s.disconnect==D::None && s.disconnectCount==1);
         assert(d._wmiLive.active && d._rxSetup.ringOwned && !s.temporalKey[0] && !s.groupKey[0] && !s.pairPN[0]);
         assert(!s.wmiOwned && !s.txOwned && !s.peerCount && deleteCommands==1);
+        assert(s.securityGeneration==42 && s.groupKeySerial==100);
+        assert(s.pairKeySerial==51 && !s.pairKeyEpoch);
+        for(unsigned slot=0;slot<4;++slot){assert(!s.groupInstalled[slot] && !s.groupKeyEpoch[slot]);
+            for(auto keyByte:s.installedGroups[slot])assert(!keyByte);
+            for(auto pn:s.groupPN[slot])assert(!pn);}
+
         assert(clearCommands==(target==D::ClearPair?1u:2u));
         assert(!Ath10k::retiredPeer(s,71) && s.securityInd.received);
         // The same live driver re-associates after cleanup, without rematching.

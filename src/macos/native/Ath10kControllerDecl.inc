@@ -36,7 +36,11 @@ public:
     IOReturn nativeDisconnectForRoam(UInt64);
     bool nativePreparePersonalAuth(UInt64,const char *&);
     bool nativeSAEEnabled() const;
+    bool nativeOWEEnabled() const;
+    bool serviceNativeOWE(UInt64,const char *&);
     bool nativeEAPEnabled() const;
+    bool nativeLegacyEnabled() const;
+    bool nativeWEPEnabled() const;
     bool nativeEAPWaiting() const;
     bool nativePMFStartupQueryEnabled() const;
     bool _nativePMFStartupQueryAttempted=false;
@@ -57,6 +61,12 @@ public:
     void prepareNativeInterfaceTermination(Ath10kNativeInterface *);
     static IOReturn nativeInterfaceStopAction(OSObject *,void *,void *,void *,void *);
     void discardNativeSecurity();
+    bool saveNativeMICWindow(IOService *);
+    bool restoreNativeMICWindow();
+    void serviceNativeTKIPMIC(UInt64);
+    bool nativeRecordTKIPMIC(const Ath10k::GroupTKIPMICFailure &,UInt64);
+    const char *serviceNativeSharedWEP(UInt64);
+    void receiveNativeSharedWEP(const UInt8 *,UInt32,UInt32,UInt32,UInt64);
     const char *serviceNativeSAE(UInt64);
     UInt32 buildNativeSAEAssociation(UInt8 *,UInt32);
     bool nativeStageManagementKey(const AthSecurity::IGTKCMAC128 &);
@@ -66,6 +76,7 @@ public:
     bool nativeEAPSystemFrame(const UInt8 *frame,UInt32 length);
     bool nativeEAPReceive(const UInt8 *,UInt32);
     void serviceNativeEAP(UInt64);
+    void serviceNativeWEP(UInt64);
     void nativeSetEAPQueue(bool);
     bool _nativeEAPQueueRunning=false;
     bool nativePMFPairwiseAcknowledged(const UInt8 *);

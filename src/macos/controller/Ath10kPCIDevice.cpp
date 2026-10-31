@@ -398,7 +398,14 @@ void Ath10kPCIDevice::stop(IOService *provider)
     drainControlWorkers();
     // Rematching is queued only after every old DMA mapping/IRQ has been
     // stopped and detached. Retain provider until registerService returns.
-    IOService *rematch=_reprobeRequested?provider:nullptr;
+#ifdef ATH10K_NATIVE
+    // Workers are drained; persist exclusion before destroying NativeSecurity.
+    // Failed persistence must not silently reset policy through auto-rematch.
+    const bool recoveryPolicySaved=saveNativeMICWindow(provider);
+#else
+    const bool recoveryPolicySaved=true;
+#endif
+    IOService *rematch=_reprobeRequested && recoveryPolicySaved?provider:nullptr;
     if(rematch)rematch->retain();
     if (_reprobeRequested)
         ath10kSetRecoveryStatus(provider, "stop-started", "Driver stop began for a requested recovery rematch");

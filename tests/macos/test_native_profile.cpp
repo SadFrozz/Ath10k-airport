@@ -16,6 +16,86 @@ static AirportWCL::JoinRequest profile(unsigned auth){
  memset(p.key,0xa5,sizeof(p.key));memcpy(p.key,"testpassword",12);
  return p;
 }
+static void selectedProfileBinding(){
+ {const UInt8 station[6]={2,0,0,0,0,2};AthNative::ProfileCredentials p;auto j=profile(2048);
+  j.keyLength=j.keyCipher=0;memset(j.key,0,sizeof(j.key));
+  assert(p.replace(j,station,false,true));const auto old=p.generation();
+  assert(p.restrictPolicy(old,NativeTransitionDisable::Enterprise));
+  assert(p.generation()!=old);AirportWCL::JoinRequest snapshot{};
+  assert(p.snapshot(p.generation(),station,j.ssid,j.ssidLength,NativeJoinAuth::EAPSHA256,snapshot));
+  assert(snapshot.transitionDisable==NativeTransitionDisable::Enterprise && !snapshot.keyLength);
+ }
+
+ const UInt8 local[6]={2,0,0,0,0,1};AthNative::ProfileCredentials owner;auto p=profile(8);
+ assert(!owner.replace(p,local,false,false,2,false));assert(!owner.generation());
+ assert(owner.replace(p,local,false,false,2,true));auto generation=owner.generation();
+ assert(owner.matchesSecurity(generation,2,true));assert(!owner.matchesSecurity(generation,4,true));
+ assert(!owner.matchesSecurity(generation,2,false));
+ assert(owner.restrictPolicy(generation,NativeTransitionDisable::Enterprise));
+ assert(owner.matchesSecurity(owner.generation(),2,true));assert(!owner.matchesSecurity(generation,2,true));
+ owner.clear();assert(!owner.matchesSecurity(owner.generation(),2,true));
+ p=profile(4096);assert(!owner.replace(p,local,true,false,2,true));
+ p=profile(1024);assert(!owner.replace(p,local,false,false,2,true));
+}
+static void wepProfiles(){
+ const UInt8 local[6]={2,0,0,0,0,7};
+ for(bool shared:{false,true})for(unsigned length:{5u,13u})for(unsigned index=0;index<4;++index){
+  AthNative::ProfileCredentials owner;auto p=profile(0);p.lowerAuth=shared?2:1;
+  p.keyLength=length;p.keyCipher=length==5?1:2;p.keyFlags=15;p.keyIndex=index;
+  const UInt8 cipher=length==5?1:5;
+  assert(!owner.replace(p,local,false,false,cipher,true));
+  assert(owner.replace(p,local,false,false,cipher,true,false,true));const auto token=owner.generation();
+  Ath10k::ConnectionState live{};memcpy(live.local,local,6);memcpy(live.ssid,p.ssid,4);live.ssidLength=4;
+  memcpy(live.bssid,p.bssid,6);live.secure=live.wepSelected=live.legacyRSNAllowed=true;
+  live.sharedKeyAuth=shared;live.pairCipher=cipher;live.securityAKM=1;
+  NativeReassocRequest request{};request.ssidLength=4;memcpy(request.ssid,p.ssid,4);memset(request.bssid,255,6);
+  auto cache=new AthNative::CandidateCache;Ath10k::WMIBSS ap{};ap.ssidLength=4;memcpy(ap.ssid,p.ssid,4);
+  ap.bssid[0]=2;ap.bssid[5]=9;ap.capabilities=0x11;ap.privacy=true;
+  ap.beaconInterval=100;ap.rateCount=1;ap.rates[0]=0x82;ap.rxChannel=ap.advertisedChannel=6;cache->add(ap,1000);
+  AirportWCL::JoinRequest next{};Ath10k::CandidateConfiguration candidate{};
+  assert(AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
+  assert(next.lowerAuth==p.lowerAuth && !next.upperAuth && !next.rsnLength && next.keyIndex==index);
+  assert(next.keyLength==length && next.keyCipher==p.keyCipher && !memcmp(next.key,p.key,length));
+  assert(next.bssid[5]==9 && candidate.pairCipher==cipher && candidate.groupCipher==cipher);
+  const auto saved=next;live.sharedKeyAuth=!shared;
+  assert(!AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
+  assert(!memcmp(&saved,&next,sizeof(next)));live.sharedKeyAuth=shared;
+  ap.privacy=false;cache->add(ap,1101);assert(!AthNative::prepareRoamJoin(owner,token,live,request,*cache,1102,next,candidate));
+  owner.clear();assert(!AthNative::prepareRoamJoin(owner,token,live,request,*cache,1102,next,candidate));delete cache;
+ }
+}
+static void wpa1Profiles(){
+ const UInt8 local[6]={2,0,0,0,0,1};
+ for(bool eap:{false,true})for(UInt8 pair:{UInt8(2),UInt8(4)}){
+  AthNative::ProfileCredentials owner;auto p=profile(eap?1:2);
+  if(eap){p.keyLength=p.keyCipher=0;memset(p.key,0,sizeof(p.key));}
+  assert(!owner.replace(p,local,false,true,pair,true));
+  UInt8 ie[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,pair,1,0,0,0x50,0xf2,UInt8(eap?1:2)};
+  memcpy(p.rsn,ie,sizeof(ie));p.rsnLength=sizeof(ie);
+  assert(owner.replace(p,local,false,true,pair,true,true));const auto token=owner.generation();
+  assert(owner.matchesSecurity(token,pair,true,true));assert(!owner.matchesSecurity(token,pair,true,false));
+  Ath10k::ConnectionState live{};memcpy(live.local,local,6);memcpy(live.ssid,p.ssid,4);live.ssidLength=4;
+  memcpy(live.bssid,p.bssid,6);live.secure=live.wpa1Selected=live.legacyRSNAllowed=true;live.pairCipher=pair;live.securityAKM=eap?1:2;
+  NativeReassocRequest request{};request.ssidLength=4;memcpy(request.ssid,p.ssid,4);memset(request.bssid,255,6);
+  auto cache=new AthNative::CandidateCache;Ath10k::WMIBSS ap{};ap.ssidLength=4;memcpy(ap.ssid,p.ssid,4);
+  ap.bssid[0]=2;ap.bssid[5]=9;ap.capabilities=0x11;ap.privacy=ap.wpaPresent=true;
+  ap.beaconInterval=100;ap.rateCount=1;ap.rates[0]=0x82;ap.rxChannel=ap.advertisedChannel=6;
+  memcpy(ap.wpa,ie,sizeof(ie));ap.wpaLength=sizeof(ie);cache->add(ap,1000);
+  AirportWCL::JoinRequest next{};Ath10k::CandidateConfiguration candidate{};
+  assert(AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate)==!eap);
+  if(!eap){
+   assert(next.upperAuth==2 && next.rsnLength==24 && !memcmp(next.rsn,ie,24));
+   assert(next.keyLength==p.keyLength && !memcmp(next.key,p.key,p.keyLength));
+   const auto saved=next;live.wpa1Selected=false;
+   assert(!AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
+   assert(!memcmp(&next,&saved,sizeof(next)));live.wpa1Selected=true;
+  }
+  assert(!owner.restrictPolicy(token,eap?NativeTransitionDisable::Enterprise:NativeTransitionDisable::Personal));
+  assert(!owner.generation());
+  assert(!owner.replace(p,local,false,true,pair==2?4:2,true,true));assert(!owner.generation());
+  delete cache;
+ }
+}
 static void candidateTransaction(){
  const UInt8 local[6]={2,0,0,0,0,1};
  for(unsigned upper:{0u,8u,1024u,4096u}){
@@ -39,10 +119,32 @@ static void candidateTransaction(){
   assert(AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
   assert(!memcmp(next.key,p.key,p.keyLength) && next.keyLength==p.keyLength);
   assert(next.bssid[5]==9 && next.channelSpec==0x1006);
-  assert(next.rsnLength==ap.rsnLength && !memcmp(next.rsn,ap.rsn,ap.rsnLength));
+  if(upper){AthSecurity::RSNInfo selected{};assert(AthSecurity::parseRSN(next.rsn,next.rsnLength,selected));
+   assert(selected.pairwise==(1u<<4) && selected.akms==(1u<<live.securityAKM) && selected.group==4);
+   assert(!selected.pmkidCount);if(upper==4096)assert(selected.mfpc() && selected.mfpr());
+  }else assert(!next.rsnLength);
   for(unsigned i=next.rsnLength;i<sizeof(next.rsn);++i)assert(!next.rsn[i]);
   assert(!memcmp(&savedLive,&live,sizeof(live)));
+  if(upper==8){
+   // Target AP offers two pairwise ciphers and two AKMs; neither its full
+   // advertisement nor its weaker alternative may become the station choice.
+   auto broad=ap;const UInt8 suites[]={48,28,1,0,0,15,172,4,2,0,0,15,172,4,0,15,172,2,
+      2,0,0,15,172,2,0,15,172,1,0x80,0};
+   memcpy(broad.rsn,suites,sizeof(suites));broad.rsnLength=sizeof(suites);cache->add(broad,1001);
+   assert(AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
+   AthSecurity::RSNInfo selected{};assert(AthSecurity::parseRSN(next.rsn,next.rsnLength,selected));
+   assert(next.rsnLength==22 && selected.pairwise==(1u<<4) && selected.akms==(1u<<2));
+   assert(candidate.ap.rsnLength==sizeof(suites));cache->add(ap,1000);
+   assert(AthNative::prepareRoamJoin(owner,token,live,request,*cache,1100,next,candidate));
+  }
   const auto savedNext=next;const auto savedCandidate=candidate;
+  {auto changed=live;changed.pairCipher=AthSecurity::cipherTKIP;
+   assert(!AthNative::prepareRoamJoin(owner,token,changed,request,*cache,1100,next,candidate));
+   changed=live;changed.legacyRSNAllowed=true;
+   assert(!AthNative::prepareRoamJoin(owner,token,changed,request,*cache,1100,next,candidate));
+   assert(!memcmp(&next,&savedNext,sizeof(next)) && !memcmp(&candidate,&savedCandidate,sizeof(candidate)));
+  }
+
   // Preserve the original observation age across a slow teardown; preparation
   // must not make a 29-second-old candidate fresh for another 30 seconds.
   for(unsigned failure=0;failure<8;++failure){
@@ -101,6 +203,19 @@ static void candidateTransaction(){
  }
 }
 int main(){
+ {const UInt8 local[6]={2,0,0,0,0,2};auto p=profile(0);p.upperAuthExt=1;
+  AthNative::ProfileCredentials owner;assert(!owner.replace(p,local,false));
+  assert(owner.replace(p,local,false,false,4,false,false,false,true));auto generation=owner.generation();
+  AirportWCL::JoinRequest copy{};assert(owner.snapshot(generation,local,p.ssid,p.ssidLength,NativeJoinAuth::OWE,copy));
+  assert(copy.upperAuthExt==1 && !copy.upperAuth && !copy.keyLength);for(auto value:copy.key)assert(!value);
+  assert(owner.restrictPolicy(generation,NativeTransitionDisable::EnhancedOpen));
+  assert(!owner.snapshot(generation,local,p.ssid,p.ssidLength,NativeJoinAuth::OWE,copy));
+  assert(owner.snapshot(owner.generation(),local,p.ssid,p.ssidLength,NativeJoinAuth::OWE,copy));
+ }
+
+ wepProfiles();
+ wpa1Profiles();
+ selectedProfileBinding();
  candidateTransaction();
  static_assert(!std::is_copy_constructible<AthNative::PreparedRoam>::value,"prepared secrets cannot be copied");
  static_assert(!std::is_copy_constructible<AthNative::ProfileCredentials>::value,"secret owner cannot be copied");

@@ -13,21 +13,34 @@ class ProfileCredentials {
     UInt8 local_[6]{};
     UInt64 sequence_=0,active_=0;
     NativeJoinAuth auth_=NativeJoinAuth::Unsupported;
+    UInt8 pairwise_=0;bool legacy_=false;
 public:
     ProfileCredentials()=default;
     ProfileCredentials(const ProfileCredentials &)=delete;
     ProfileCredentials &operator=(const ProfileCredentials &)=delete;
     ~ProfileCredentials(){clear();}
     void clear(){
-        active_=0;auth_=NativeJoinAuth::Unsupported;
+        active_=0;auth_=NativeJoinAuth::Unsupported;pairwise_=0;legacy_=false;
         AthSecurity::wipe(&request_,sizeof(request_));
         AthSecurity::wipe(local_,sizeof(local_));
         // Never recycle a retired token after forget/radio-off/profile change.
     }
     UInt64 generation() const {return active_;}
-    bool replace(const AirportWCL::JoinRequest &request,const UInt8 *local,bool allowSAE,bool allowEAP=false){
+    bool replace(const AirportWCL::JoinRequest &request,const UInt8 *local,bool allowSAE,bool allowEAP=false,UInt8 pairwise=AthSecurity::cipherCCMP,bool legacy=false,bool allowWPA1=false,bool allowWEP=false,bool allowOWE=false){
         clear(); // Even a rejected replacement must not expose the old secret.
-        const auto auth=nativeJoinAuth(request,allowSAE,allowEAP);
+        const auto auth=nativeJoinAuth(request,allowSAE,allowEAP,allowWPA1,allowWEP,allowOWE);
+        const bool wpa1=auth==NativeJoinAuth::WPA1PSK || auth==NativeJoinAuth::WPA1EAP;
+        const bool wep=auth==NativeJoinAuth::WEPOpen || auth==NativeJoinAuth::WEPShared;
+        if(wep){NativeSelectedRSN selected{};
+            if(!legacy || !nativeSelectedRSN(request,auth,selected,true) || selected.pairwise!=pairwise)return false;
+        }
+        if(wpa1){NativeSelectedRSN selected{};
+            if(!legacy || !nativeSelectedRSN(request,auth,selected,true,true) ||
+               (selected.specified && selected.pairwise!=pairwise))return false;
+        }
+        if((!wep && pairwise!=AthSecurity::cipherCCMP && pairwise!=AthSecurity::cipherTKIP) ||
+           (pairwise==AthSecurity::cipherTKIP && (!legacy || (auth!=NativeJoinAuth::PSK && auth!=NativeJoinAuth::EAP && !wpa1))) ||
+           (legacy && auth!=NativeJoinAuth::PSK && auth!=NativeJoinAuth::EAP && !wpa1 && !wep))return false;
         if(sequence_==~UInt64(0) || !validMAC(local) || !validMAC(request.bssid) ||
            !request.ssidLength || request.ssidLength>sizeof(request.ssid) ||
            request.keyLength>sizeof(request.key) || request.rsnLength>sizeof(request.rsn) ||
@@ -44,7 +57,11 @@ public:
         AthSecurity::copy(request_.bssid,request.bssid,6);
         request_.channelSpec=request.channelSpec;request_.rsnLength=request.rsnLength;
         AthSecurity::copy(request_.rsn,request.rsn,request.rsnLength);
-        AthSecurity::copy(local_,local,6);auth_=auth;active_=++sequence_;return true;
+        AthSecurity::copy(local_,local,6);auth_=auth;pairwise_=pairwise;legacy_=legacy;active_=++sequence_;return true;
+    }
+    bool matchesSecurity(UInt64 generation,UInt8 pairwise,bool legacy,bool wpa1=false) const {
+        return generation && generation==active_ && pairwise==pairwise_ && legacy==legacy_ &&
+            wpa1==(auth_==NativeJoinAuth::WPA1PSK || auth_==NativeJoinAuth::WPA1EAP);
     }
     // Call only for authenticated transition-disable delivery. More restrictive
     // policy invalidates prepared work through a new generation; never clear bits.
@@ -54,7 +71,7 @@ public:
         const UInt8 combined=request_.transitionDisable|flags;
         if(combined==request_.transitionDisable)return true;
         request_.transitionDisable=combined;
-        if(sequence_==~UInt64(0) || nativeJoinAuth(request_,auth_==NativeJoinAuth::SAE,auth_==NativeJoinAuth::EAP)!=auth_){
+        if(sequence_==~UInt64(0) || nativeJoinAuth(request_,auth_==NativeJoinAuth::SAE,auth_==NativeJoinAuth::EAP || auth_==NativeJoinAuth::EAPSHA256 || auth_==NativeJoinAuth::WPA1EAP,auth_==NativeJoinAuth::WPA1PSK || auth_==NativeJoinAuth::WPA1EAP,auth_==NativeJoinAuth::WEPOpen || auth_==NativeJoinAuth::WEPShared,auth_==NativeJoinAuth::OWE)!=auth_){
             clear();return false;
         }
         active_=++sequence_;return true;
@@ -79,10 +96,13 @@ inline bool prepareRoamJoin(const ProfileCredentials &profile,UInt64 generation,
     const CandidateCache &cache,UInt64 now,AirportWCL::JoinRequest &joinOut,
     Ath10k::CandidateConfiguration &candidateOut,UInt64 *observedOut=nullptr){
     const auto auth=!live.secure?NativeJoinAuth::Open:
+        live.wepSelected?(live.sharedKeyAuth?NativeJoinAuth::WEPShared:NativeJoinAuth::WEPOpen):
+        live.wpa1Selected?(live.securityAKM==2?NativeJoinAuth::WPA1PSK:NativeJoinAuth::Unsupported):
+        live.securityAKM==18?NativeJoinAuth::OWE:
         live.securityAKM==8?NativeJoinAuth::SAE:
         live.securityAKM==6?NativeJoinAuth::PSKSHA256:
         live.securityAKM==2?NativeJoinAuth::PSK:NativeJoinAuth::Unsupported;
-    if(auth==NativeJoinAuth::Unsupported)return false;
+    if(auth==NativeJoinAuth::Unsupported || !profile.matchesSecurity(generation,live.pairCipher,live.legacyRSNAllowed,live.wpa1Selected))return false;
     Ath10k::CandidateConfiguration candidate{};UInt64 observed=0;
     if(!chooseRoamCandidate(live,request,cache,now,candidate,&observed) ||
        !validMAC(candidate.ap.bssid) || candidate.ap.rsnLength>sizeof(joinOut.rsn))return false;
@@ -92,9 +112,16 @@ inline bool prepareRoamJoin(const ProfileCredentials &profile,UInt64 generation,
     // the selected authentication and transition-disable policy without downgrade.
     AthSecurity::copy(next.bssid,candidate.ap.bssid,6);
     next.channelSpec=UInt16(candidate.operatingChannel|(candidate.operatingChannel>14?0xd000:0x1000));
-    AthSecurity::wipe(next.rsn,sizeof(next.rsn));next.rsnLength=candidate.ap.rsnLength;
-    AthSecurity::copy(next.rsn,candidate.ap.rsn,candidate.ap.rsnLength);
-    if(nativeJoinAuth(next,auth==NativeJoinAuth::SAE)!=auth){
+    // Rebuild a selected station IE, never an AP suite list or stale PMKID.
+    AthSecurity::wipe(next.rsn,sizeof(next.rsn));next.rsnLength=0;size_t selectedBytes=0;
+    bool encoded=true;
+    if(auth==NativeJoinAuth::SAE)encoded=AthSecurity::buildSAEStationRSN(nullptr,0,next.rsn,sizeof(next.rsn),selectedBytes);
+    else if(auth==NativeJoinAuth::OWE)encoded=AthSecurity::buildOWEStationRSN(next.rsn,sizeof(next.rsn),selectedBytes);
+    else if(auth==NativeJoinAuth::WPA1PSK)encoded=AthSecurity::buildWPA1StationIE(candidate.ap.wpa,candidate.ap.wpaLength,live.pairCipher,live.securityAKM,next.rsn,sizeof(next.rsn),selectedBytes);
+    else if(live.secure && !live.wepSelected)encoded=AthSecurity::buildSelectedStationRSN(candidate.groupCipher,live.pairCipher,live.securityAKM,next.rsn,sizeof(next.rsn),selectedBytes);
+    if(!encoded){AthSecurity::wipe(&next,sizeof(next));return false;}
+    next.rsnLength=UInt16(selectedBytes);
+    if(nativeJoinAuth(next,auth==NativeJoinAuth::SAE,false,auth==NativeJoinAuth::WPA1PSK,live.wepSelected,auth==NativeJoinAuth::OWE)!=auth){
         AthSecurity::wipe(&next,sizeof(next));return false;
     }
     if(observedOut)*observedOut=observed;

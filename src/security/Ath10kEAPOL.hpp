@@ -11,7 +11,8 @@ struct EAPOLEnvelope {
     EAPOLKind kind=EAPOLKind::Invalid;
     size_t bytes=0; // Ethernet header + declared EAPOL payload, excluding padding.
 };
-inline EAPOLEnvelope classifyEAPOL(const uint8_t *frame,size_t length){
+enum class EAPOLKeyProtocol : uint8_t { RSN, WPA1, DynamicWEP };
+inline EAPOLEnvelope classifyEAPOL(const uint8_t *frame,size_t length,EAPOLKeyProtocol protocol=EAPOLKeyProtocol::RSN){
     if(!frame || length<18 || frame[12]!=0x88 || frame[13]!=0x8e ||
        frame[14]<1 || frame[14]>3)return {};
     const size_t body=(size_t(frame[16])<<8)|frame[17];
@@ -31,9 +32,17 @@ inline EAPOLEnvelope classifyEAPOL(const uint8_t *frame,size_t length){
     case 1: return body?EAPOLEnvelope{}:EAPOLEnvelope{EAPOLKind::Start,bytes};
     case 2: return body?EAPOLEnvelope{}:EAPOLEnvelope{EAPOLKind::Logoff,bytes};
     case 3:
-        // Only the RSN descriptor belongs to our internal four-way owner.
-        // RC4/WPA descriptors and ASF alerts are not supported by this path.
-        if(body<95 || frame[18]!=2)return {};
+        // Descriptor1: type, key length, replay8, IV16, index, signature16.
+        // Only the stock EAP client authenticates/decrypts this envelope.
+        if(protocol==EAPOLKeyProtocol::DynamicWEP){
+            if(body<44 || frame[18]!=1)return {};
+            const size_t keyBytes=(size_t(frame[19])<<8)|frame[20];
+            if((keyBytes!=5 && keyBytes!=13) || (frame[45]&0x7f)>3 ||
+               (body!=44 && body!=44+keyBytes))return {};
+            return {EAPOLKind::Key,bytes};
+        }
+        // The association's selected protocol owns exactly one descriptor.
+        if(body<95 || frame[18]!=(protocol==EAPOLKeyProtocol::WPA1?254:2))return {};
         if(((size_t(frame[111])<<8)|frame[112])!=body-95)return {};
         return {EAPOLKind::Key,bytes};
     default: return {};

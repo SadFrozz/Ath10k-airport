@@ -9,6 +9,9 @@ struct WMIBSS {
     UInt8 ht[26]{},htOp[22]{},vht[12]{},vhtOp[5]{},wmm[16]{};
     UInt8 bssid[6]{}, ssid[32]{}, ssidLength=0, advertisedChannel=0;
     UInt8 rsn[257]{};UInt16 rsnLength=0;
+    UInt8 wpa[257]{};UInt16 wpaLength=0;
+    // Preserve the WFA transition advertisement; it does not authorize OWE.
+    UInt8 oweTransition[257]{};UInt16 oweTransitionLength=0;
     UInt8 rsnxe[18]{},rsnxeLength=0;
     bool hidden=true, privacy=false, rsnPresent=false, wpaPresent=false;
     bool timPresent=false;UInt8 dtimCount=0,dtimPeriod=0;
@@ -129,6 +132,10 @@ inline void recordWMIBSS(WMIBSSCache &cache, const UInt8 *f, UInt32 bytes,
         } else if(id==221 && len>=6 && f[p]==0 && f[p+1]==0x50 && f[p+2]==0xf2 && f[p+3]==2 && f[p+4]==1 && f[p+5]==1){
             if(haveWMM || !parseAPWMM(f+p,len,candidate.wmm,candidate.wmmCount)){rejectBSS(cache,BSSIEBounds);return;}
             haveWMM=true;candidate.wmmPresent=true;candidate.wmmVendor=true;
+        } else if(id==221 && len>=4 && f[p]==0x50 && f[p+1]==0x6f && f[p+2]==0x9a && f[p+3]==0x1c){
+            if(candidate.oweTransitionLength){rejectBSS(cache,BSSIEBounds);return;}
+            candidate.oweTransitionLength=static_cast<UInt16>(len+2);
+            for(UInt32 j=0;j<len+2;++j)candidate.oweTransition[j]=f[p-2+j];
         } else if(id==48){
             if(candidate.rsnPresent){rejectBSS(cache,BSSIEBounds);return;}
             candidate.rsnPresent=true;candidate.rsnLength=static_cast<UInt16>(len+2);
@@ -137,7 +144,11 @@ inline void recordWMIBSS(WMIBSSCache &cache, const UInt8 *f, UInt32 bytes,
             if(candidate.rsnxeLength || !AthSecurity::validRSNXE(f+p-2,len+2)){rejectBSS(cache,BSSIEBounds);return;}
             candidate.rsnxeLength=static_cast<UInt8>(len+2);
             for(UInt32 j=0;j<len+2;++j)candidate.rsnxe[j]=f[p-2+j];
-        } else if(id==221 && len>=4 && f[p]==0 && f[p+1]==0x50 && f[p+2]==0xf2 && f[p+3]==1){candidate.wpaPresent=true;}
+        } else if(id==221 && len>=4 && f[p]==0 && f[p+1]==0x50 && f[p+2]==0xf2 && f[p+3]==1){
+            if(candidate.wpaPresent){rejectBSS(cache,BSSIEBounds);return;}
+            candidate.wpaPresent=true;candidate.wpaLength=static_cast<UInt16>(len+2);
+            for(UInt32 j=0;j<len+2;++j)candidate.wpa[j]=f[p-2+j];
+        }
         p+=len;
     }
     if(haveDS && haveHT && dsChannel!=htChannel){rejectBSS(cache,BSSChannelConflict);return;}

@@ -4,13 +4,31 @@
 #include "../../security/Ath10kSecurity.hpp"
 extern "C" {
 #include <corecrypto/cchmac.h>
+#include <corecrypto/ccdigest.h>
 #include <corecrypto/ccsha1.h>
+#include <corecrypto/ccmd5.h>
 #include <corecrypto/ccsha2.h>
 #include <corecrypto/ccaes.h>
 #include <corecrypto/ccmode.h>
 }
 // Existing bounded provider shared by EAPOL and off-gate PMF jobs.
 struct Ath10kKernelCrypto {
+    static bool hmacMD5(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
+        if(!key || keyLength!=16 || !data || !length || length>512 || !out)return false;
+        const auto di=ccmd5_di();
+        // cchmac derives its scratch size from this descriptor. Reject an
+        // incompatible binding before writing the fixed 16-byte result.
+        if(!di || di->output_size!=16 || di->state_size!=16 || di->block_size!=64 ||
+           !di->initial_state || !di->compress || !di->final)return false;
+        cchmac(di,keyLength,key,length,data,out);return true;
+    }
+    static bool hash256(const UInt8 *data,size_t length,UInt8 *out) {
+        if(!data || !length || length>512 || !out)return false;
+        const auto di=ccsha256_di();
+        if(!di || di->output_size!=32 || di->state_size!=32 || di->block_size!=64 ||
+           !di->initial_state || !di->compress || !di->final)return false;
+        ccdigest(di,length,data,out);return true;
+    }
     static bool hmac256(const UInt8 *key,size_t keyLength,const UInt8 *data,size_t length,UInt8 *out) {
         const auto di=ccsha256_di();if(!di)return false;
         cchmac(di,keyLength,key,length,data,out);return true;

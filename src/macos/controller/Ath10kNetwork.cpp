@@ -461,7 +461,7 @@ void Ath10kPCIDevice::publishConnection()
 UInt32 Ath10kPCIDevice::outputPacket(mbuf_t packet,void *)
 {
 #ifdef ATH10K_NATIVE
-    if(!powerIOBlocked() && _networkEnabled && _wmiLive.active && _connection.securityAKM==1 &&
+    if(!powerIOBlocked() && _networkEnabled && _wmiLive.active && (_connection.securityAKM==1 || _connection.securityAKM==5) &&
        Ath10k::connectionAssociated(_connection) && mbuf_pkthdr_len(packet)>=14){
         UInt8 header[14]{};
         if(!mbuf_copydata(packet,0,sizeof(header),header) && header[12]==0x88 && header[13]==0x8e)
@@ -502,22 +502,34 @@ void Ath10kPCIDevice::deliverNetworkRX(const UInt8 *data,UInt8 status,UInt16 pee
 {
     if(_connection.disconnect!=Ath10k::DisconnectStage::None || !_networkEnabled || !_networkInterface || _connection.stage!=Ath10k::LinkStage::Connected)return;
     if(!data || availableBytes<300){_rxBatch.failed=true;Ath10k::rxDrop(_connection,Ath10k::ConnectionState::Length);return;}
+    // Preserve errored descriptors for qualification and rejection. In particular,
+    // stripping a raw TKIP trailer first can hide an otherwise valid MIC report.
+    const UInt32 attention=Ath10k::connLE32(data+4);
+    const UInt32 errors=(1u<<3)|(1u<<4)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<13)|
+        (1u<<16)|(1u<<17)|(1u<<24)|(1u<<27)|(1u<<28)|(1u<<29)|(1u<<30);
+    const bool normalize=status==1 && (attention&0x80000000u) && !(attention&errors);
     const UInt32 mode=(Ath10k::connLE32(data+32)>>8)&3;
     const UInt16 fc=availableBytes>=324?Ath10k::htcReadLE16(data+300):0;
-    if(status==1 && availableBytes>=324 && (mode==0 || mode==1) &&
+    if(normalize && availableBytes>=324 && (mode==0 || mode==1) &&
        ((fc&0x400) || (Ath10k::htcReadLE16(data+322)&15))){
         uint64_t tick=0,ns=0;clock_get_uptime(&tick);absolutetime_to_nanoseconds(tick,&ns);
         UInt32 normalized=0;
         const int result=_rxDefrag.receive(_connection,data,availableBytes,peer,indicatedLength,ns/1000000u,_rxNormalized,normalized);
         if(result<=0){_rxBatch.failed=true;return;}
         data=_rxNormalized;availableBytes=normalized;indicatedLength=0;
-    }else if(status==1 && mode==0){
+    }else if(normalize && mode==0){
         UInt32 normalized=0;
         if(!Ath10k::normalizeRawRX(data,availableBytes,indicatedLength,_rxNormalized,normalized)){
             _rxBatch.failed=true;Ath10k::rxDrop(_connection,Ath10k::ConnectionState::Decap);return;}
         data=_rxNormalized;availableBytes=normalized;indicatedLength=0;
     }
     if(!Ath10k::appendRXBatch(_connection,_rxBatch,data,availableBytes,status,peer,indicatedLength)){
+#ifdef ATH10K_NATIVE
+        if(_rxBatch.micFailure.valid){
+            const auto event=_rxBatch.micFailure;_rxBatch.micFailure={};
+            nativeRecordTKIPMIC(event,Ath10k::uptimeNS()/1000000u);
+        }
+#endif
         setProperty("Ath10kDataRxLastAttention",Ath10k::connLE32(data+4),32);
         setProperty("Ath10kDataRxLastDecap",(Ath10k::connLE32(data+32)>>8)&3,32);
         setProperty("Ath10kDataRxLastDescriptorLength",Ath10k::connLE32(data+24)&0x3fff,32);
@@ -530,6 +542,16 @@ void Ath10kPCIDevice::releaseRXBatch(Ath10k::RXBatch &b)
     auto &s=_connection;
     if(b.failed || !b.count || !_networkEnabled || !_networkInterface || s.stage!=Ath10k::LinkStage::Connected ||
        s.disconnect!=Ath10k::DisconnectStage::None)return;
+    // A retained/reordered MPDU belongs to the key epoch of its FIRST MSDU.
+    // Lifecycle flushes normally retire it; enforce that ownership again here
+    // before EAP routing, replay publication or delivery to the system.
+    if(b.securityGeneration!=s.securityGeneration){Ath10k::rxDrop(s,Ath10k::ConnectionState::Key);return;}
+    // A queued aggregate may predate the traffic block. Check every MSDU
+    // before committing PN or delivering its leading EAPOL subframe.
+    if(s.tkipDataBlocked || (s.secure && !s.portAuthorized))for(UInt32 i=0;i<b.count;++i){
+        const UInt8 *frame=b.data+b.offsets[i];
+        if(frame[12]!=0x88 || frame[13]!=0x8e){Ath10k::rxDrop(s,Ath10k::ConnectionState::Port);return;}
+    }
     UInt32 eapols=0;
     if(s.secure)for(UInt32 i=0;i<b.count;++i){const UInt8 *frame=b.data+b.offsets[i];
         if(frame[12]==0x88 && frame[13]==0x8e){
@@ -634,10 +656,18 @@ const char *Ath10kPCIDevice::submitNetworkCE(UInt32 ce,Ath10kDMABuffer &buffer,U
     if(!_regs.write32(doorbell,next) || !_regs.read32(doorbell,value) || value!=next)return "connection-ce-doorbell";
     return nullptr;
 }
-const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs,AthSecurity::ManagementTX protection)
+const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,bool mgmt,UInt64 nowMs,AthSecurity::ManagementTX protection,Ath10k::ConnectionState::EAPOLPurpose purpose,const Ath10k::WEPAuthenticationTX *wep)
 {
+    using EAPOLPurpose=Ath10k::ConnectionState::EAPOLPurpose;
+    if(wep && (wep->now!=nowMs || purpose!=EAPOLPurpose::Handshake))return "wep-tx-owner";
+    const bool eapol=!mgmt && data && bytes>=14 && data[12]==0x88 && data[13]==0x8e;
+    if(purpose!=EAPOLPurpose::Handshake && purpose!=EAPOLPurpose::MICReport && purpose!=EAPOLPurpose::MICDeauth)return "packet-receipt-purpose";
+    if(purpose==EAPOLPurpose::MICReport && (!eapol || _connection.micReportCompletion.pending))return "mic-report-receipt-busy";
+    if(purpose==EAPOLPurpose::MICDeauth && (!mgmt || !data || bytes!=26 ||
+       Ath10k::htcReadLE16(data)!=0xc0 || Ath10k::htcReadLE16(data+24)!=14 ||
+       !_connection.tkipDataBlocked || _connection.pmfRequired || _connection.micReportCompletion.pending))return "mic-deauth-receipt-busy";
     if(powerIOBlocked() || _connection.maintenance.step || _connection.csa.blocked || _connection.radio.blocked || _connection.radio.powerBlocked || _connection.txOwned || _connection.dataPending || !_wmiLive.active || _dmaQuarantine)return "connection-tx-busy";
-    if(!Ath10k::packetProtectionAllowed(data,bytes,_connection,mgmt,protection))return "packet-protection";
+    if(!Ath10k::packetProtectionAllowed(data,bytes,_connection,mgmt,protection,wep))return "packet-protection";
     if(!_packetBuffer.allocated() && !_packetBuffer.allocate(2048,128,_dmaMapper,Ath10kDMABuffer::Role::Payload))return "packet-allocation";
     if(!_packetCommand.allocated() && !_packetCommand.allocate(256,128,_dmaMapper))return "packet-command-allocation";
     if(!_packetFragments.allocated() && !_packetFragments.allocate(16,16,_dmaMapper))return "packet-fragment-allocation";
@@ -656,14 +686,18 @@ const char *Ath10kPCIDevice::submitNetworkPacket(const UInt8 *data,UInt32 bytes,
     _connection.lastTxProbe=mgmt && _connection.probe.active && bytes>=24 && Ath10k::htcReadLE16(data)==0x40;
     UInt32 length=Ath10k::buildHTTPacket(static_cast<UInt8 *>(_packetCommand.virtualAddress()),256,data,bytes,
         static_cast<UInt32>(_packetBuffer.dmaAddress()),static_cast<UInt32>(_packetFragments.dmaAddress()),
-        _htcHTTData.endpoint,_connection,mgmt,protection);
+        _htcHTTData.endpoint,_connection,mgmt,protection,255,wep);
     if(!length || !_packetBuffer.syncForDevice() || !_packetFragments.syncForDevice())return "packet-sync";
-    _connection.lastTxEAPOL=!mgmt && bytes>=14 && data[12]==0x88 && data[13]==0x8e;
+    _connection.lastTxEAPOL=eapol;
+    _connection.lastEAPOLPurpose=purpose;
     _connection.txSinceMs=nowMs;
     const char *error=submitNetworkCE(4,_packetCommand,length,_connection.txNext);
     if(!error){
         ++_connection.httSequence;
-        if(_connection.lastTxEAPOL)_connection.eapolCompletion.begin(_connection.txId);
+        if(eapol || purpose==EAPOLPurpose::MICDeauth){
+            auto &receipt=purpose!=EAPOLPurpose::Handshake?_connection.micReportCompletion:_connection.eapolCompletion;
+            receipt.begin(_connection.txId);
+        }
     }
     return error;
 }
@@ -688,9 +722,12 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(snapshot.currentSrcRead==s.txNext && s.txComplete){
             if(!_packetCommand.syncFromDevice() || !_ceSrcRings[4].syncFromDevice())return "packet-completion-sync";
             s.txOwned=false;
-            if(s.lastTxEAPOL)s.eapolCompletion.retire(s.txId,s.txStatus);
+            if(s.lastTxEAPOL || s.lastEAPOLPurpose==Ath10k::ConnectionState::EAPOLPurpose::MICDeauth){
+                auto &receipt=s.lastEAPOLPurpose!=Ath10k::ConnectionState::EAPOLPurpose::Handshake?s.micReportCompletion:s.eapolCompletion;
+                receipt.retire(s.txId,s.txStatus);
+            }
             if(s.txStatus){
-                if(s.lastTxEAPOL)s.eapolTxFailed=true;
+                if(s.lastTxEAPOL && s.lastEAPOLPurpose==Ath10k::ConnectionState::EAPOLPurpose::Handshake)s.eapolTxFailed=true;
                 ++s.txErrors;
                 if(s.txManagement && !s.lastTxProbe && !s.lastTxSpectrum && !s.lastTxPMF && !s.lastTxSAE){
                     const bool mlme=s.stage==LinkStage::Auth || s.stage==LinkStage::Assoc;
@@ -713,6 +750,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         s.txWakePending=false;_dataTXStalled=false;
         getOutputQueue()->service(1);
     }
+    if(s.wepIOActive && !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None)return nullptr;
     if(s.stats.step){const char *error=serviceStatsMaintenance(nowMs);if(error)return error;if(s.stats.step)return nullptr;}
     if(s.radio.step){const char *error=serviceRadioMaintenance(nowMs);if(error)return error;if(s.radio.step || s.radio.blocked)return nullptr;}
     if(s.maintenance.step){const char *error=serviceAPMaintenance(nowMs);if(error)return error;if(s.maintenance.step)return nullptr;}
@@ -724,6 +762,10 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             if(!_connectionCommand.syncFromDevice() || !_ceSrcRings[3].syncFromDevice())return "cancel-ce-sync";
             s.wmiOwned=false;if(s.stage==LinkStage::Up)s.vdevUp=true;
         }else return nowMs-s.sinceMs>=5000?"cancel-ce-timeout":nullptr;
+    }
+    if(s.cancelRequested && s.wepEchoPending && !s.wmiOwned){
+        s.rollback.active=true;s.rollback.echoPending=true;s.rollback.echoCookie=_connectionEcho.cookie;
+        s.wepEchoPending=false;
     }
     if(s.cancelRequested && s.submitted && ((s.stage==LinkStage::Start && !s.startReply) || (s.stage==LinkStage::Peer && !s.peerMapped) || (s.stage==LinkStage::Barrier && !_connectionEcho.replyReceived))){
         // The serial DMA command and its credit have been drained above. An
@@ -817,6 +859,9 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             // controlled-port publication. PMF keys must be ready for both.
             if(s.securityPhase==3 && !nativePMFPortReady())return "native-pmf-peer-not-ready";
 #endif
+            if(s.securityPhase==3 && s.initialGroupPending)return "initial-group-not-installed";
+            if(s.securityPhase==1 && s.pairKeySerial==~UInt64(0))return "pair-key-epoch-exhausted";
+            if(s.securityPhase==2 && s.groupKeySerial==~UInt64(0))return "group-key-epoch-exhausted";
             UInt32 bytes=Ath10k::buildSecurityWMI(static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,_htcWMIControl.endpoint,s);
             if(!bytes)return "security-command-build";
             if(s.securityPhase==4){_connectionEcho={};_connectionEcho.cookie=0xa7100057;_connectionEcho.submitted=true;}
@@ -833,16 +878,21 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
             AthSecurity::wipe(_connectionCommand.virtualAddress(),256);
         }
         if(s.securityPhase<=2 && !s.securityAck)return nullptr;
-        if(s.securityPhase==4 && (!_connectionEcho.replyReceived || (s.rekeyKind && _rxSetup.pendingMPDUs)))return nullptr;
+        if(s.securityPhase==4 && (!_connectionEcho.replyReceived || ((s.rekeyKind || s.wepSelected) && _rxSetup.pendingMPDUs)))return nullptr;
         if(s.securityPhase==1){
 #ifdef ATH10K_NATIVE
             if(!nativePMFPairwiseAcknowledged(s.temporalKey))return "native-pmf-pairwise-epoch";
 #endif
-            bcopy(s.temporalKey,s.installedPair,16);s.pairInstalled=true;
+            AthSecurity::wipe(s.installedPair,sizeof(s.installedPair));
+            bcopy(s.temporalKey,s.installedPair,s.pairCipher==AthSecurity::cipherTKIP?32:16);s.pairInstalled=true;s.pairKeyEpoch=++s.pairKeySerial;
         }
-        if(s.securityPhase==2){bcopy(s.groupKey,s.installedGroups[s.groupIndex],32);s.groupInstalled[s.groupIndex]=true;}
-        if(s.securityPhase==1 && s.rekeySkipGroup)s.securityPhase=2;
-        if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,16);AthSecurity::wipe(s.groupKey,32);}
+        if(s.securityPhase==2){
+            bcopy(s.groupKey,s.installedGroups[s.groupIndex],32);s.groupInstalled[s.groupIndex]=true;
+            s.groupKeyEpoch[s.groupIndex]=++s.groupKeySerial;
+            s.initialGroupPending=false;
+        }
+        if(s.securityPhase==1 && (s.rekeySkipGroup || s.initialGroupPending))s.securityPhase=2;
+        if(s.securityPhase==2){AthSecurity::wipe(s.temporalKey,sizeof(s.temporalKey));AthSecurity::wipe(s.groupKey,32);}
         ++s.securityPhase;s.submitted=false;
         if(s.rekeyKind && s.securityPhase==3)s.securityPhase=4;
         if(s.securityPhase==5){
@@ -851,12 +901,13 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
                 _rxReorder.discardForKeyChange([](Ath10k::RXBatch *b){IOFree(b,sizeof(*b));});
                 _rxDefrag.reset();_rxBatch.reset();
                 if(s.rekeyKind==2){bzero(s.pairPN,sizeof(s.pairPN));bzero(s.pairSeqValid,sizeof(s.pairSeqValid));}
-                if(!s.rekeySkipGroup){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN)v=pn;bzero(s.groupSeqValid,sizeof(s.groupSeqValid));}
+                if(!s.rekeySkipGroup){UInt64 pn=0;for(unsigned i=0;i<6;++i)pn|=UInt64(s.groupRSC[i])<<(8*i);for(auto &v:s.groupPN[s.groupIndex])v=pn;bzero(s.groupSeqValid,sizeof(s.groupSeqValid));}
                 s.rekeyKind=0;s.rekeySkipGroup=false;
             }
 #ifdef ATH10K_NATIVE
             if(!nativePMFPortReady())return "native-pmf-port-not-ready";
 #endif
+            s.initialGroupReply=false;
             ++s.securityGeneration;s.portAuthorized=true;networkLink(true);
             IOLog("Ath10kMac: WPA2 port authorized generation=%u peer=%u peers=%u channel=%u ap-step=%u\n",
                 s.securityGeneration,s.peerId,s.peerCount,s.operatingChannel,s.maintenance.step);
@@ -881,11 +932,22 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(!_connectionCommand.allocated() && !_connectionCommand.allocate(256,128,_dmaMapper))return "connection-command-allocation";
     }
 #ifdef ATH10K_NATIVE
+    if(s.securityAKM==18 && (s.stage==LinkStage::Auth || s.stage==LinkStage::Assoc)){
+        const char *error=nullptr;
+        if(!serviceNativeOWE(nowMs,error)){
+            if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();}return nullptr;
+        }
+    }
     if(s.stage==LinkStage::Auth && s.secure && (s.securityAKM==2 || s.securityAKM==6)){
         const char *error=nullptr;
         if(!nativePreparePersonalAuth(nowMs,error)){
             if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();}return nullptr;
         }
+    }
+    if(s.stage==LinkStage::Auth && s.sharedKeyAuth){
+        const char *error=serviceNativeSharedWEP(nowMs);
+        if(error){s.error=error;s.cancelRequested=true;discardNativeSecurity();return nullptr;}
+        if(!s.authReply || s.txOwned || !s.txComplete)return nullptr;
     }
     if(s.stage==LinkStage::Auth && s.securityAKM==8){
         const char *error=serviceNativeSAE(nowMs);
@@ -919,7 +981,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
         if(s.txOwned || s.wmiOwned)return nullptr;
         if(management){
             if(s.txPauseMask)return nullptr;
-            UInt8 frame[256];UInt32 length=0;
+            UInt8 frame[512];UInt32 length=0;
 #ifdef ATH10K_NATIVE
             if(s.stage==LinkStage::Assoc && s.securityAKM==8)length=buildNativeSAEAssociation(frame,sizeof(frame));
             else
@@ -1239,6 +1301,11 @@ const char *Ath10kPCIDevice::serviceDisconnect(UInt64 nowMs)
         // ownership still have to complete before wiping the association.
         if(!s.peerCount && (s.disconnect==DisconnectStage::ClearPair || s.disconnect==DisconnectStage::ClearGroup))
             s.disconnect=s.peerCreateIssued?DisconnectStage::DeletePeer:DisconnectStage::Stop;
+        // WEP owns multiple group/pair slots outside the RSN slot cache.
+        // Peer deletion/unmap retires all of them, followed by STOP/ECHO/RX.
+        if((s.pairCipher==1 || s.pairCipher==5) &&
+           (s.disconnect==DisconnectStage::ClearPair || s.disconnect==DisconnectStage::ClearGroup))
+            s.disconnect=DisconnectStage::DeletePeer;
         while((s.disconnect==DisconnectStage::ClearPair && !s.pairInstalled && s.securityPhase<2) ||
               (s.disconnect==DisconnectStage::ClearGroup && !s.groupInstalled[s.groupIndex] && s.securityPhase<3) ||
               (s.disconnect==DisconnectStage::DeletePeer && !s.peerCount && !s.peerCreateIssued) ||

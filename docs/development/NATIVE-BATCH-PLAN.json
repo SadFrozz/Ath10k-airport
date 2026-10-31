@@ -23,16 +23,130 @@
   "execution_policy": {
     "unit_of_work": "A complete related contract group, not one callback or one failing check",
     "active_group": [
-      "Preserve macOS packet service class through native/mbuf TX admission and HTT submission",
-      "Integrate recovered Fastlane mode lifecycle without unsupported ACM claims",
-      "Recover remaining congestion/battery policy consumers and cancellation together"
+      "Security admission and legacy compatibility: WEP-40/104, WPA1-Personal, WPA2 TKIP/CCMP, WPA3/PMF; explicit profile selection without downgrade",
+      "Authenticated PTK/GTK/IGTK delivery, replay/reinstallation protection, firmware completion and cancellation across reconnect/roam",
+      "RX validation and TKIP MIC failure/countermeasures, PMF/BIP, bounded malformed-input handling and secret retirement",
+      "Native macOS key-owner provenance and Enterprise admission; keep unsupported modes disabled until complete",
+      "Legacy Enterprise: WPA1/TKIP and dynamic WEP/802.1X, native EAP-method availability and distinct key descriptor ownership"
     ],
     "acceptance": "Review the entire group, run affected regressions during development, then one consolidated full regression and one candidate build after final edits",
     "publication": "Keep intermediate edits local; publish one reviewed batch without per-fix pushes or Actions runs",
     "hardware_gate": "Request explicit reboot authorization through the input form only when a meaningful integrated candidate is ready; reboot delay 10 seconds",
     "closed_stages": "Use make test-development; no repeated manual scan timing or reboot-success questions without new regression evidence",
     "truthfulness": "Report source integration, local production-path tests and offline build separately from physical inter-AP roaming; no physical handoff is available on this setup",
-    "version": "Advance build number only after successful push and verified remote head; local edits/unpushed commits keep previous number"
+    "version": "Advance build number only after successful push and verified remote head; local edits/unpushed commits keep previous number",
+    "legacy_enterprise_acceptance": {
+      "link_profiles": [
+        "WPA1-Enterprise TKIP/CCMP",
+        "WPA2-Enterprise TKIP/CCMP",
+        "802.1X dynamic WEP-40/104"
+      ],
+      "eap_inventory": [
+        "EAP-TLS",
+        "PEAP/EAP-MSCHAPv2",
+        "EAP-TTLS: PAP/CHAP/MSCHAP/MSCHAPv2",
+        "EAP-MD5",
+        "LEAP",
+        "EAP-FAST"
+      ],
+      "ownership": "Stock macOS owns EAP methods and trust decisions; kext owns admitted EAPOL transport, key installation and controlled-port barriers",
+      "acceptance": "Per OS and method distinguish static presence, runtime availability, key-export suitability, local integration and hardware interoperability; no automatic downgrade",
+      "delivery": "Part of the same unpublished security compatibility batch; no separate per-method pushes or reboot requests",
+      "dynamic_wep_checkpoint": {
+        "state": "Static WEP admission, Open/Shared authentication, firmware keys, RX reassembly, TX/port barriers and prepared-roam credentials integrated and locally tested. Dynamic WEP system admission/session authorization unfinished; hardware interoperability unverified.",
+        "evidence": "outputs/NATIVE-security-compatibility-20261030/wep-envelope/result.json",
+        "remaining": [
+          "Dynamic WEP system-session admission, authenticated key/replay provenance and controlled-port authorization",
+          "Hardware interoperability including WEP fragmentation/physical roam, and final grouped regression/installation approval"
+        ],
+        "routing_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-system-routing/result.json",
+        "transaction_evidence": "outputs/NATIVE-security-compatibility-20261030/key-transaction-fence/result.json",
+        "transaction_state": "Native CE/HTT/ECHO/RX executor integrated with cancellation and uncertain-owner retirement; not hardware verified",
+        "key_owner_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-key-owner/result.json",
+        "confirmed_slots_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-confirmed-slots/result.json",
+        "transmit_selection_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-transmit-selection/result.json",
+        "pair_mirror_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-pair-mirror/result.json",
+        "program_state": "Group/pair/default-TX operation order consumed by native service; complete programs alone publish confirmed slot metadata",
+        "lifecycle_state": "Static port completion follows confirmed slot programs, peer authorization and RX/ECHO barriers. Dynamic WEP session/port completion remains pending. Queued keys retain service/scan/roam ownership.",
+        "executor_state": "Native service loop now submits CE3 commands, owns HTT receipts and ECHO/RX fences, commits complete plans; cancellation retains DMA until disconnect. Local sanitized tests/build passed, not hardware tested.",
+        "htt_state": "Dedicated production HTT mailbox with ignored cancelled/duplicate receipts; no RSN acknowledgement crossover.",
+        "data_path_state": "WEP40/104 raw/native RX reassembly and confirmed RX/TX slot admission locally tested; fragment identity binds cipher/slot/key generation, no CCMP PN arithmetic for WEP IV. Hardware fragmentation interoperability unverified.",
+        "static_auth_contract": "Stock Apple80211 lower1/2, upper0, WEP40/104 length5/13 cipher1/2, flags15; native join/profile admission integrated under default-disabled Ath10kNativeWEPExperimental.",
+        "static_auth_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-native-auth-contract",
+        "shared_auth_state": "Native Shared-Key service/RX, bound challenge owner, retries/TX retirement, admission/profile retention and static key/port sequencing integrated locally; hardware interoperability unverified.",
+        "shared_auth_transport": "Owner-bound protected-frame build and NO_ENCRYPT submission integrated; 320-byte local frame buffer handles maximum response295; firmware interoperability unverified",
+        "static_profile_state": "Native static WEPOpen/WEPShared admission, credential retention and owner initialization locally integrated under separate default-disabled Ath10kNativeWEPExperimental gate",
+        "static_port_state": "Completed static firmware slot programs feed peer-authorize/ECHO phases; current-owner and matching-slot guards plus RX retirement precede port opening; initial auth deadline retires afterward",
+        "static_admission_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-native-admission",
+        "static_roam_state": "Prepared roam now preserves explicit WEPOpen/WEPShared, key length/cipher/index and credential generation, emits no RSN IE and rejects plaintext substitution; local profile tests pass; physical handoff unverified",
+        "fragment_evidence": "outputs/NATIVE-security-compatibility-20261030/wep-fragment-session-audit",
+        "stock_key_dispatch": "Apple cipher1/2 table entries confirmed standalone key program, bypass PMK/supplicant timer branch; dynamic session authorization still unproved",
+        "stock_key_dispatch_evidence": "outputs/NATIVE-security-compatibility-20261030/stock-wep-key-dispatch",
+        "userspace_boundary": "Dynamic profile securityType0x100/0x200 and public XPC WEP key flags/index are not WCL auth or eapolclient callback values; retain distinct producer contracts",
+        "userspace_boundary_evidence": "outputs/NATIVE-security-compatibility-20261030/stock-wep-userspace-boundaries",
+        "wcl_eap_predicate": "Observed exact WPA/RSN upper-auth whitelist excludes32/64; conditional key observer timer does not cover dynamic WEP",
+        "wcl_eap_predicate_evidence": "outputs/NATIVE-security-compatibility-20261030/stock-wep-eap-predicate",
+        "structural_validation": "Legacy WCL assoc validator bounds structure only, no auth whitelist; does not prove dynamic admission",
+        "structural_validation_evidence": "outputs/NATIVE-security-compatibility-20261030/stock-wep-join-validation"
+      }
+    },
+    "passwordless_hardware_priority": {
+      "requested": "Test passwordless APs first so user can disable them; RADIUS excluded from immediate urgency",
+      "installed": "1.0.110",
+      "open": "Native UI association, DHCP, 3/3 gateway replies and interface-bound HTTPS HTTP/2 200 observed after router correction; earlier candidate failures are historical",
+      "owe_transition": "Plaintext AKM0 association, DHCP .141 and en1 HTTPS200 verified after router firewall and reverse-route correction; not OWE support",
+      "owe": "Visible, recognized AKM18; association fails with -3900; native OWE remains unimplemented",
+      "remaining": [
+        "Complete OWE crypto/association/key ownership and protected transition selection; local advertisement preservation alone is insufficient",
+        "Finish Enterprise system TLS profile/admission inventory; loaded EAP gate is disabled",
+        "Group WPA/WEP admission, security metadata, firmware key lifecycle and RX/TX failures before one implementation batch"
+      ],
+      "evidence": "outputs/NATIVE-all-AP-matrix-20261030",
+      "owe_advertisement": "Local decoder/native serializer retain transition vendor IE; wmi_bss/native_wire ASan+UBSan pass, native build+symbol check pass. Not installed; OWE crypto still missing.",
+      "user_override_20261031": "Complete a single inventory of ALL supplied test APs before further driver fixes; prioritize passwordless cases, then group all defects for one implementation batch. Keep command/framework limitations separate from radio failures. No further driver code edits during collection.",
+      "all_ap_inventory": {
+        "total": 22,
+        "ui_personal_attempts": 14,
+        "hidden_owe_target": "not independently attempted; secure transition unsupported",
+        "enterprise_profiles": 7,
+        "enterprise_state": "visible; certificate/key chain preflight passed, identity not installed, loaded admission disabled; no RADIUS authentication claimed",
+        "results": "Five WEP, both WPA1 and WPA2 TKIP UI failures; WPA1 mislabelled WEP. Open, plaintext Transition, WPA2 CCMP, mixed WPA2 and SAE have bounded native-interface traffic success after router repair. Mixed success does not establish selected TKIP. Seven Enterprise profiles remain admission/profile-blocked; hidden OWE target unsupported.",
+        "installed_wpa_metadata_root_cause": "add6acf nativeBSSMessage omits WPA vendor IE; existing local serializer change preserves it",
+        "dhcp_evidence": "AP rules restored with approval; per-station reverse routes corrected. WPA2/SAE/mixed WPA2/Transition DHCP+HTTPS passed, so earlier no-address/no-traffic cases were test-stand defects.",
+        "collection_status": "All 22 supplied profiles classified; 14 visible non-Enterprise profiles attempted. Seven Enterprise profiles and hidden OWE target have explicit implementation/profile barriers, not authentication passes. Collected defects now feed the combined implementation package."
+      },
+      "owe_foundation": "Group19 wire/KDF plus compact-point validation, blinded ECDH and one-shot station/BSSID/generation/deadline-bound exchange locally tested with macOS CoreCrypto; opt-in AKM18/CCMP/PMF handshake, group/pair rekey and negative frames tested; two-stage native worker compiled and tested for queued/running cancellation and stale completion; core association DH encoding/response capture tested; default-off native request admission, retained profile/roam encoding, controller scheduling and PMK/PMF handoff integrated and locally tested; stock AKM18 admission capability96 recovered and gated consistently; end-to-end stock secure-transition selection and hardware interoperability remain unverified"
+    },
+    "security_package_checkpoint": {
+      "state": "Unpublished, uninstalled integrated compatibility package; no per-feature publication or reboot",
+      "local_implementation": [
+        "Static WEP Open/Shared with confirmed firmware key/port barriers",
+        "WPA1/TKIP and retained GTK/MIC lifecycle",
+        "OWE group19 worker, association, four-way/PMF, stock capability96",
+        "Enterprise AKM1 and AKM5 SHA256/CCMP/PMF native EAP/MSK handoff"
+      ],
+      "new_validation": "AKM5 independent handshake vectors and production native admission/MSK/EAP transport tests passed ASan/UBSan; native compile/link/symbol check passed",
+      "not_claimed": [
+        "Dynamic WEP session authorization",
+        "FT/Suite-B",
+        "Hardware interoperability of new profiles",
+        "Final full-package regression"
+      ],
+      "evidence": "outputs/NATIVE-security-compatibility-20261030/security-batch-integration/eap-sha256",
+      "policy_review": {
+        "implementation": "Enterprise AKM5 required-PMF admission accepts Enterprise Transition Disable; authenticated OWE/AKM5 KDEs share PMF-bound delivery and retirement with SAE",
+        "new_msk": "Independent changed-MSK AKM5 vectors prove changed PTK, replay-floor retention, old-MSK MIC rejection and recovery with valid new-MSK M3",
+        "not_claimed": "Native Enterprise/OWE AP interoperability, dynamic-WEP session admission or full package acceptance"
+      },
+      "offline_validation": {
+        "uuid": "A0A505AC-F750-3636-B243-63C0B5A44A94",
+        "signature": "adhoc verified strict",
+        "dependencies": "Exact candidate UUID included in locally created auxiliary collection",
+        "live_changes": "None"
+      },
+      "consolidated_regression": "All 87 C++ tests passed with ASan/UBSan across full run and two fixture-only continuations; evidence final-package-regression",
+      "builds": "Release and Debug compile/link/symbol checks passed; Windows OWE source list fixed, Windows execution not tested"
+    }
   },
   "current_candidate": {
     "version": "1.0.110",
@@ -46,26 +160,108 @@
     "bounded_runtime": "120/120 en1 gateway replies; SAE/PMF ready; NoAck unchanged 12->12; one descriptive latency spike (0.83%) accepted under user policy"
   },
   "active_scope": {
-    "name": "Host traffic priority and native Fastlane policy",
-    "status": "Local host-priority/Fastlane package passed consolidated validation; unpublished and uninstalled",
-    "contract": "docs/contracts/NATIVE-CONTRACT.md",
-    "groups": [
-      "Preserve macOS packet service class through native/mbuf TX admission and HTT submission",
-      "Integrate recovered Fastlane mode lifecycle without unsupported ACM claims",
-      "Recover remaining congestion/battery policy consumers and cancellation together"
+    "name": "Security compatibility and native key lifecycle",
+    "status": "Unpublished grouped implementation after whole-AP inventory; installed driver unchanged",
+    "contracts": [
+      "docs/contracts/NATIVE-CONTRACT.md",
+      "docs/contracts/NATIVE-EAP-CONTRACT.md",
+      "docs/contracts/WPA3-CONTRACT.md"
     ],
-    "validation": {
-      "focused": "Priority, production TX submission, policy dispatch and termination fixtures passed with ASan/UBSan",
-      "native_build": "passed",
-      "offline_dependencies": "Isolated signature and exact UUID 9A28E4F5-FD99-3724-9599-3B470EFC47AE inclusion passed",
-      "full_regression": "71 tests plus runner checks passed ASan/UBSan; session 68932 exited zero",
-      "hardware": "Not installed"
+    "groups": [
+      "Security admission and legacy compatibility: WEP-40/104, WPA1-Personal, WPA2 TKIP/CCMP, WPA3/PMF; explicit profile selection without downgrade",
+      "Authenticated PTK/GTK/IGTK delivery, replay/reinstallation protection, firmware completion and cancellation across reconnect/roam",
+      "RX validation and TKIP MIC failure/countermeasures, PMF/BIP, bounded malformed-input handling and secret retirement",
+      "Native macOS key-owner provenance and Enterprise admission; keep unsupported modes disabled until complete",
+      "Legacy Enterprise: WPA1/TKIP and dynamic WEP/802.1X, native EAP-method availability and distinct key descriptor ownership"
+    ],
+    "publication": "One completed reviewed package; no per-fix commits or version increments",
+    "next_security_batch": {
+      "status": "In progress; user prioritized security over traffic statistics",
+      "groups": [
+        "Security admission and legacy compatibility: WEP-40/104, WPA1-Personal, WPA2 TKIP/CCMP, WPA3/PMF; explicit profile selection without downgrade",
+        "Authenticated PTK/GTK/IGTK delivery, replay/reinstallation protection, firmware completion and cancellation across reconnect/roam",
+        "RX validation and TKIP MIC failure/countermeasures, PMF/BIP, bounded malformed-input handling and secret retirement",
+        "Native macOS key-owner provenance and Enterprise admission; keep unsupported modes disabled until complete",
+        "Legacy Enterprise: WPA1/TKIP and dynamic WEP/802.1X, native EAP-method availability and distinct key descriptor ownership"
+      ],
+      "publication": "One completed reviewed package; no per-fix commits or version increments",
+      "deferred": "Traffic statistics research preserved locally; 1.0.111 installation/reboot remains deferred",
+      "hardware_limits": [
+        "Legacy and Enterprise APs now supplied; installed legacy UI failures and Enterprise admission/profile barriers recorded, acceptance remains pending.",
+        "AP-driven rekey and group BIP remain separate hardware evidence",
+        "Enterprise remains default-disabled"
+      ],
+      "legacy_enterprise_inventory": {
+        "link_profiles": [
+          "WPA1-Enterprise/TKIP",
+          "WPA2-Enterprise TKIP/CCMP",
+          "Dynamic WEP-40/104 with 802.1X"
+        ],
+        "eap_methods_to_audit": [
+          "EAP-TLS",
+          "PEAP / EAP-MSCHAPv2",
+          "EAP-TTLS / PAP, CHAP, MSCHAP, MSCHAPv2",
+          "EAP-MD5",
+          "LEAP",
+          "EAP-FAST"
+        ],
+        "status": "Requirements only; stock OS availability, usable key export and end-to-end integration must be established separately",
+        "ownership": "Stock macOS owns EAP methods and trust; native kext owns admitted link/key lifecycle; no companion app or OS patches"
+      },
+      "key_slot_review": {
+        "status": "Local source integration: retained GTK tracking and per-slot replay counters; focused validation/native build passed, final batch/hardware gates open",
+        "finding": "Supplicant remembers only currentGTK/currentGTKIndex; firmware retains installedGroups[4]. Returning to older still-installed GTK can be classified as GroupKeys and install it again. Group replay counters are currently shared per TID, not per installed slot.",
+        "required_group": [
+          "Track GTK identity and replay floors per installed key slot",
+          "Distinguish selecting a retained slot from installing new key material",
+          "Suppress reinstall without losing valid GTK slot activation",
+          "Keep MIC failure evidence and queued RX bound to the acknowledged slot/epoch",
+          "Test A-to-B-to-A GTK rotation, repeated index changes, teardown and failure together"
+        ],
+        "do_not_claim": "An observed attack or hardware failure; source analysis identifies a missing invariant",
+        "remaining": [
+          "MIC qualification, report TX ownership and countermeasure lifecycle",
+          "Independent hardware AP rotation evidence and consolidated final regression"
+        ]
+      },
+      "mic_transport_checkpoint": {
+        "status": "Current RSN CCMP-pairwise/TKIP-group MIC lifecycle locally integrated including native RX, notices, bounded report/deauth, rejoin exclusion and provider rematch timing persistence; not hardware verified",
+        "tests": [
+          "native_mic_persistence",
+          "native_tkip_mic_service",
+          "tkip_mic_owner",
+          "network_rx",
+          "native_eap_service",
+          "native_eap_callback",
+          "native_eapol_completion",
+          "connection",
+          "security_disconnect",
+          "rx_security_diagnostics",
+          "native_security_lifecycle",
+          "native_notifications",
+          "rsn_policy",
+          "security",
+          "native_pmf_receive",
+          "native_sae_radio"
+        ],
+        "native_build_uuid": "BEBE9667-17A1-3B6E-8555-86972C44BAFC",
+        "native_build": "Compile/link and symbol check passed; warnings present; not signed or installed",
+        "remaining": [
+          "Extend security package to WPA1, pairwise TKIP and WEP/dynamic WEP without advertising incomplete modes",
+          "Final whole-package regression, signature/dependency checks and explicit installation approval",
+          "Physical MIC/legacy/Enterprise interoperability remains unverified"
+        ]
+      }
     },
-    "remaining_boundaries": [
-      "Enabled ACM override remains rejected before host-side mutation",
-      "Congestion monitor and battery policy remain unimplemented; producer gates recovered, caller requirement not fully established",
-      "Firmware ARP/NS offload and DHCP sleep activity hint remain separate unfinished work"
-    ]
+    "hardware_inventory": "outputs/NATIVE-all-AP-matrix-20261030",
+    "remaining_integration": [
+      "Dynamic-WEP native session admission, authenticated key/replay provenance and port authorization; static Open/Shared WEP is locally integrated",
+      "Cross-profile final review of firmware key cancellation and retirement; shared key executor is locally integrated",
+      "System Enterprise profile/session startup and method availability, FT/Suite-B remain unsupported",
+      "Stock OWE protected transition target selection and AP interoperability; group19 crypto/association/PMF and capability96 are locally integrated",
+      "One consolidated package regression, signature/dependency validation and one approved hardware candidate covering all available AP profiles"
+    ],
+    "existing_features": "SAE and PMF already implemented; preserve and cover once in consolidated regression."
   },
   "implemented": {
     "personal": "Native association/traffic, SAE, PMF, internal PTK/GTK/IGTK paths and bounded PTK notification implemented; radio evidence and remaining scenarios are separate",
@@ -109,14 +305,13 @@
     "note": "Historical verification of 826c310, not proof for subsequent changes"
   },
   "prepared_candidate": {
-    "version": "1.0.110",
-    "uuid": "E39009FE-C6F8-385B-8B0C-B6DC48AED01A",
-    "source_commit": "add6acf41627edc4d7158a31db7bec597c752d08",
-    "installed": true,
-    "authorization": "explicitly authorized and executed",
-    "evidence": "outputs/NATIVE-1.0.110-hardware-candidate-20261030/READY.json",
-    "validation": "69 sanitized tests for same runtime code; metadata rebuild, strict signature and exact UUID offline inclusion; SD candidate and current EFI rollback hashes verified",
-    "boot_verified": true
+    "version": "1.0.111",
+    "uuid": "30F95F8D-88FA-3B59-82D1-0438C40EC9C1",
+    "source_commit": "8235cbda431a4a7b90fbce09c9f70014c925a746",
+    "installed": false,
+    "authorization": "User deferred installation/reboot; do not execute",
+    "evidence": "outputs/NATIVE-1.0.111-hardware-candidate-20261030/READY.json",
+    "validation": "71 tests, metadata rebuild, signature, exact-UUID offline inclusion and SD rollback verified"
   },
   "completed_groups": [
     {
@@ -138,7 +333,7 @@
         "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
         "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
       },
-      "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
+      "startup_evidence": "Installed airportd user-mode start→ack→associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
       "next_group": {
         "name": "Address and traffic configuration callbacks",
         "status": "Host-cache batch published and 1.0.110 boot-verified; bounded native traffic passed. Radio offload, sleep hint and conditional traffic engineering remain separate unfinished work",
@@ -178,6 +373,62 @@
         "source_version_after_publication": "1.0.109",
         "version_metadata_published": false
       }
+    },
+    {
+      "name": "Host traffic priority and native Fastlane policy",
+      "status": "Published as 8235cbd after 71 sanitized tests and offline checks; 1.0.111 metadata assigned after remote verification, hardware candidate preparation pending",
+      "contract": "docs/contracts/NATIVE-CONTRACT.md",
+      "groups": [
+        "Preserve macOS packet service class through native/mbuf TX admission and HTT submission",
+        "Integrate recovered Fastlane mode lifecycle without unsupported ACM claims",
+        "Recover remaining congestion/battery policy consumers and cancellation together"
+      ],
+      "validation": {
+        "focused": "Priority, production TX submission, policy dispatch and termination fixtures passed with ASan/UBSan",
+        "native_build": "passed",
+        "offline_dependencies": "Isolated signature and exact UUID 9A28E4F5-FD99-3724-9599-3B470EFC47AE inclusion passed",
+        "full_regression": "71 tests plus runner checks passed ASan/UBSan; session 68932 exited zero",
+        "hardware": "Not installed"
+      },
+      "remaining_boundaries": [
+        "Enabled ACM override remains rejected before host-side mutation",
+        "Congestion monitor and battery policy remain unimplemented; producer gates recovered, caller requirement not fully established",
+        "Firmware ARP/NS offload and DHCP sleep activity hint remain separate unfinished work"
+      ],
+      "publication": {
+        "commit": "8235cbda431a4a7b90fbce09c9f70014c925a746",
+        "tree": "7349c298a1106199865e26caaa9e1c06362612c2",
+        "remote_verified": true,
+        "source_version_after_publication": "1.0.111",
+        "metadata_published": false
+      }
     }
-  ]
+  ],
+  "local_rsn_pairwise_tkip": {
+    "state": "WPA1/RSN-TKIP source integration and native startup fixtures pass behind explicit experimental gate; not installed",
+    "evidence": "outputs/NATIVE-security-compatibility-20261030/rsn-pairwise-tkip",
+    "remaining": [
+      "Verify stock capability discovery and exact runtime request contract for legacy profiles",
+      "Kernel legacy crypto execution and final signature/KC dependency acceptance",
+      "Dynamic WEP and native Enterprise startup/provenance/roaming",
+      "Final grouped regression and hardware candidate"
+    ],
+    "mic_evidence": "outputs/NATIVE-security-compatibility-20261030/pairwise-mic-integration",
+    "radio_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-radio-policy",
+    "association_encoding_evidence": "outputs/NATIVE-security-compatibility-20261030/selected-rsn-encoding",
+    "admission_evidence": "outputs/NATIVE-security-compatibility-20261030/selected-rsn-admission",
+    "stock_request_evidence": "outputs/NATIVE-security-compatibility-20261030/stock-join-security-contract",
+    "profile_ownership_evidence": "outputs/NATIVE-security-compatibility-20261030/profile-cipher-binding",
+    "native_request_evidence": "outputs/NATIVE-security-compatibility-20261030/native-selected-request",
+    "wpa1_handshake_evidence": "outputs/NATIVE-security-compatibility-20261030/wpa1-handshake",
+    "wpa1_install_evidence": "outputs/NATIVE-security-compatibility-20261030/wpa1-native-install",
+    "wpa1_profile_association_evidence": "outputs/NATIVE-security-compatibility-20261030/wpa1-profile-association",
+    "wpa1_profile_owner_evidence": "outputs/NATIVE-security-compatibility-20261030/wpa1-profile-owner",
+    "password_owner_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-password-owner",
+    "startup_review": "Fixed direct PMK nonce RNG failure handling; injected failure passes nativeBeginJoin test",
+    "master_key_handoff_evidence": "outputs/NATIVE-security-compatibility-20261030/native-master-key-handoff",
+    "crypto_admission_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-crypto-gate",
+    "native_startup_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-native-startup",
+    "capability_library_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-capabilities-libraries"
+  }
 }

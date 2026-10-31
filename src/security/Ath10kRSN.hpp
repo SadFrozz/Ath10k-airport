@@ -60,6 +60,62 @@ inline bool parseRSN(const uint8_t *ie, size_t n, RSNInfo &out) {
     return true;
 }
 
+// WPA vendor IE uses 00-50-f2 selectors, not RSN's 00-0f-ac.
+// Describes an advertisement only; it does not admit a cipher or key owner.
+struct WPAInfo {
+    uint32_t pairwise=0,akms=0;
+    uint8_t group=0;
+    uint16_t capabilities=0;
+};
+inline uint8_t wpaSuiteType(const uint8_t *p){
+    return p[0]==0 && p[1]==0x50 && p[2]==0xf2?p[3]:uint8_t(255);
+}
+inline bool parseWPA(const uint8_t *ie,size_t n,WPAInfo &out){
+    out={};
+    if(!ie || n<8 || n>257 || ie[0]!=221 || size_t(ie[1])+2!=n ||
+       wpaSuiteType(ie+2)!=1 || rsnLE16(ie+6)!=1)return false;
+    // Legacy omitted fields default to TKIP and 802.1X. Never default to PSK.
+    WPAInfo candidate{};candidate.group=2;candidate.pairwise=1u<<2;candidate.akms=1u<<1;
+    size_t pos=8;
+    if(pos<n){
+        if(n-pos<4)return false;
+        candidate.group=wpaSuiteType(ie+pos);pos+=4;
+    }
+    for(unsigned section=0;section<2 && pos<n;++section){
+        if(n-pos<2)return false;
+        const size_t count=rsnLE16(ie+pos);pos+=2;
+        if(!count || count>(n-pos)/4)return false;
+        uint32_t suites=0;
+        for(size_t i=0;i<count;++i,pos+=4){
+            const uint8_t type=wpaSuiteType(ie+pos);
+            if(type<32)suites|=uint32_t(1)<<type;
+        }
+        (section?candidate.akms:candidate.pairwise)=suites;
+    }
+    if(pos<n){
+        if(n-pos!=2)return false;
+        candidate.capabilities=rsnLE16(ie+pos);pos+=2;
+    }
+    if(pos!=n)return false;
+    out=candidate;return true;
+}
+
+// Build the one explicitly requested WPA1 suite for association and M2.
+// This encoder does not authorize native admission or select a fallback.
+inline bool buildWPA1StationIE(const uint8_t *ap,size_t apBytes,uint8_t pairwise,
+                               uint8_t akm,uint8_t *out,size_t capacity,size_t &bytes){
+    bytes=0;WPAInfo info{};
+    if(!out || capacity<24 || (pairwise!=2 && pairwise!=4) ||
+       (akm!=1 && akm!=2) || !parseWPA(ap,apBytes,info) ||
+       (info.group!=2 && info.group!=4) ||
+       !(info.pairwise&(uint32_t(1)<<pairwise)) || !(info.akms&(uint32_t(1)<<akm)))return false;
+    const uint8_t selected[24]={221,22,0,0x50,0xf2,1,1,0,
+        0,0x50,0xf2,info.group,1,0,0,0x50,0xf2,pairwise,
+        1,0,0,0x50,0xf2,akm};
+    for(size_t i=0;i<sizeof(selected);++i)out[i]=selected[i];
+    bytes=sizeof(selected);return true;
+}
+
 enum class PersonalMode : uint8_t { WPA2, WPA3 };
 enum class SecurityError : uint8_t {
     None, MalformedRSN, UnsupportedCipher, UnsupportedAKM,

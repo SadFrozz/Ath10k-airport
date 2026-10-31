@@ -61,7 +61,7 @@ def inventory():
                     'limitation': 'Producer dispatch reconstructed; caller state ownership and host-supplicant interoperability remain pending'}
             row['requirement_audit'] = (
                 'stock debug-gated PMK export; retain unsupported, no PMK exposure added' if name == 'getCUR_PMK' else
-                'gated MSK-only callback for an active WPA2 EAP owner; enterprise join not yet admitted, traffic keys/PMKSA/password remain rejected' if name == 'setCIPHER_KEY' else
+                'gated MSK callback for explicitly admitted AKM1/AKM5 Enterprise owners; legacy WEP slot callback has separate ownership. Dynamic-WEP session admission, FT/Suite-B and radio interoperability remain unverified' if name == 'setCIPHER_KEY' else
                 'no cross-association PMKSA cache implemented; successful no-op does not claim stock address side effects')
         if name in ('getHT_CAPABILITY', 'getVHT_CAPABILITY'):
             row['stock_consumer_evidence'] = [dict(
@@ -89,7 +89,7 @@ def inventory():
                 row['queue_contract'] = 'WCL caller -> gated validation -> WCL-only host marking; reject entry while radio held'
             row['stock_producer_evidence'] = [dict(module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66', address=policy[0], evidence='outputs/NATIVE-traffic-policy-contract-20261030/queue-power-producers.json')]
         if name == 'setTRAFFIC_ENG_PARAMS':
-            row['requirement_audit'] = 'Stock feature-gated capability acknowledgement, not a parameter setter. Unsupported matches disabled traffic-engineering mode; enabling the separate monitor/queue policy remains unimplemented'
+            row['requirement_audit'] = 'Stock feature-gated capability acknowledgement, not a parameter setter. Unsupported matches disabled traffic-engineering mode; enabling the separate monitor/queue policy remains unimplemented. Installed CoreWLAN capabilities omit NSNumber90, which airportd WiFiDeviceIsTrafficEngineeringSupported requires; live-traffic-capability.json records the bounded observation'
             row['stock_producer_evidence'] = [dict(
                 module='AppleBCMWLANCoreMac', uuid='4C3822FC-8902-3AF6-A791-DD4A8D9E9C66',
                 producer='AppleBCMWLANInfraProtocol::setTRAFFIC_ENG_PARAMS', address='0xffffff8001550892',

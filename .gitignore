@@ -5,3 +5,6 @@ __pycache__/
 /usb-backup/
 /.cache/
 /src/core/Ath10kPayload.hpp
+
+# Private lab credentials (including numbered downloaded copies).
+ATH10K_AIRPORT_TEST_SSIDS.private*.md

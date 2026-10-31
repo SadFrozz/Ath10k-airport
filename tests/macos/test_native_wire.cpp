@@ -1,4 +1,5 @@
 #include <cassert>
+#include "../../src/macos/native/Ath10kNativeWEPKey.hpp"
 #include <array>
 #include <vector>
 #include <cstring>
@@ -11,7 +12,156 @@
 #include "../../src/macos/native/Ath10kNativeMAC.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamEvents.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamCache.hpp"
+static void staticWEPEnvelopeTests(){
+ AirportWCL::JoinRequest j{};j.ssidLength=1;j.ssid[0]='x';j.bssid[0]=2;j.keyFlags=15;
+ NativeWEPJoinView view{};
+ for(unsigned lower:{1u,2u})for(unsigned cipher:{1u,2u})for(unsigned index=0;index<4;++index){
+  j.lowerAuth=lower;j.keyCipher=cipher;j.keyLength=cipher==1?5:13;j.keyIndex=index;
+  assert(nativeWEPJoinEnvelope(j,view));
+  assert(view.key==j.key && view.length==j.keyLength && view.index==index && view.shared==(lower==2));
+  // Wire recognition cannot accidentally enable the unfinished radio path.
+  assert(nativeJoinAuth(j,true,true,true)==NativeJoinAuth::Unsupported);
+  const auto good=j;
+  for(unsigned flag:{0u,1u,2u,5u,9u,16u,65535u}){
+   j.keyFlags=flag;assert(!nativeWEPJoinEnvelope(j,view) && !view.key);j=good;
+  }
+  j.keyLength=0;assert(nativeJoinAuth(j,true,true,true,true)==NativeJoinAuth::Unsupported);j=good;
+  j.keyLength=cipher==1?13:5;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.upperAuth=64;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.lowerAuth=3;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.keyIndex=4;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.upperAuthExt=1;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.transitionDisable=1;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.rsnLength=1;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.ssidLength=33;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.bssid[0]=0;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+  j.bssid[0]=3;assert(!nativeWEPJoinEnvelope(j,view));j=good;
+ }
+}
+static void selectedRequest(){
+ {AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuth=2048;
+  size_t bytes=0;assert(AthSecurity::buildEAPSHA256StationRSN(j.rsn,sizeof(j.rsn),bytes));j.rsnLength=bytes;
+  NativeSelectedRSN selected{};
+  assert(nativeJoinAuth(j,true,false)==NativeJoinAuth::Unsupported);
+  assert(nativeJoinAuth(j,true,true)==NativeJoinAuth::EAPSHA256);
+  assert(nativeSelectedRSN(j,NativeJoinAuth::EAPSHA256,selected));
+  assert(selected.pairwise==4 && selected.group==4 && !selected.legacy);
+  const auto good=j;
+  for(unsigned mode=0;mode<6;++mode){j=good;
+   if(mode==0)j.keyLength=32;if(mode==1)j.keyCipher=9;if(mode==2)j.keyFlags=1;
+   if(mode==3)j.keyIndex=1;if(mode==4)j.upperAuth|=4;if(mode==5)j.upperAuthExt=1;
+   assert(nativeJoinAuth(j,true,true)==NativeJoinAuth::Unsupported);
+  }
+  j=good;j.transitionDisable=NativeTransitionDisable::Enterprise;
+  assert(nativeJoinAuth(j,true,true)==NativeJoinAuth::EAPSHA256);
+  assert(nativeSelectedRSN(j,NativeJoinAuth::EAPSHA256,selected));
+  for(unsigned mode=0;mode<5;++mode){j=good;
+   if(mode==0)j.rsn[7]=2;if(mode==1)j.rsn[13]=2;if(mode==2)j.rsn[19]=1;
+   if(mode==3)j.rsn[20]&=~0x80;if(mode==4)j.rsn[27]=11;
+   assert(!nativeSelectedRSN(j,NativeJoinAuth::EAPSHA256,selected));
+  }
+ }
+
+ for(auto auth:{NativeJoinAuth::PSK,NativeJoinAuth::EAP,NativeJoinAuth::PSKSHA256})
+ for(uint8_t group:{2,4})for(uint8_t pair:{2,4}){
+  AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuth=auth==NativeJoinAuth::PSK?8:auth==NativeJoinAuth::EAP?4:1024;
+  const uint8_t akm=auth==NativeJoinAuth::PSK?2:auth==NativeJoinAuth::EAP?1:6;
+  size_t bytes=0;if(!AthSecurity::buildSelectedStationRSN(group,pair,akm,j.rsn,sizeof(j.rsn),bytes))continue;j.rsnLength=bytes;
+  NativeSelectedRSN out{};out.group=0x55;const auto before=out;
+  const bool ordinary=pair==4 && (auth!=NativeJoinAuth::EAP || group==4);
+  assert(nativeSelectedRSN(j,auth,out)==ordinary);
+  if(!ordinary)assert(!memcmp(&out,&before,sizeof(out)));
+  assert(nativeSelectedRSN(j,auth,out,true) && out.specified && out.pairwise==pair && out.group==group);
+  assert(out.legacy==(pair==2 || (auth==NativeJoinAuth::EAP && group==2)));
+  j.keyCipher=10;assert(nativeSelectedRSN(j,auth,out,true));j.keyCipher=6;assert(nativeSelectedRSN(j,auth,out,true));
+  j.rsn[19]=akm==1?2:1;assert(!nativeSelectedRSN(j,auth,out,true));j.rsn[19]=akm;
+  for(unsigned n=1;n<bytes;++n){j.rsnLength=n;assert(!nativeSelectedRSN(j,auth,out,true));}j.rsnLength=bytes;
+  j.upperAuth|=1;assert(!nativeSelectedRSN(j,auth,out,true));
+ }
+ for(bool eap:{false,true})for(uint8_t pair:{2,4})for(uint8_t group:{2,4}){
+  AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuth=eap?1:2;
+  const auto auth=eap?NativeJoinAuth::WPA1EAP:NativeJoinAuth::WPA1PSK;
+  if(!eap){j.keyLength=32;j.keyCipher=6;}
+  assert(nativeJoinAuth(j,true,true)==NativeJoinAuth::Unsupported);
+  assert(nativeJoinAuth(j,true,true,true)==auth);
+  NativeSelectedRSN selected{};assert(!nativeSelectedRSN(j,auth,selected,true));
+  assert(nativeSelectedRSN(j,auth,selected,true,true) && selected.wpa1 && !selected.specified && selected.pairwise==2);
+  uint8_t ie[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,group,1,0,0,0x50,0xf2,pair,1,0,0,0x50,0xf2,uint8_t(eap?1:2)};
+  memcpy(j.rsn,ie,sizeof(ie));j.rsnLength=sizeof(ie);
+  assert(nativeSelectedRSN(j,auth,selected,true,true));
+  assert(selected.wpa1 && selected.legacy && selected.specified && selected.pairwise==pair && selected.group==group);
+  const auto before=selected;
+  j.rsn[23]=eap?2:1;assert(!nativeSelectedRSN(j,auth,selected,true,true));
+  assert(!memcmp(&before,&selected,sizeof(before)));j.rsn[23]=eap?1:2;
+  for(unsigned n=1;n<sizeof(ie);++n){j.rsnLength=n;assert(!nativeSelectedRSN(j,auth,selected,true,true));}
+  j.rsnLength=sizeof(ie);j.upperAuth|=eap?4:8;
+  assert(nativeJoinAuth(j,true,true,true)==NativeJoinAuth::Unsupported);
+  assert(!nativeSelectedRSN(j,auth,selected,true,true));j.upperAuth=eap?1:2;
+  j.transitionDisable=eap?NativeTransitionDisable::Enterprise:NativeTransitionDisable::Personal;
+  assert(nativeJoinAuth(j,true,true,true)==NativeJoinAuth::Unsupported);
+  assert(!nativeSelectedRSN(j,auth,selected,true,true));
+ }
+ AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuth=8;NativeSelectedRSN out{};
+ assert(nativeSelectedRSN(j,NativeJoinAuth::PSK,out) && !out.specified && out.pairwise==4);
+ const uint8_t mixed[]={48,24,1,0,0,15,172,4,2,0,0,15,172,4,0,15,172,2,1,0,0,15,172,2,0,0};
+ memcpy(j.rsn,mixed,sizeof(mixed));j.rsnLength=sizeof(mixed);assert(!nativeSelectedRSN(j,NativeJoinAuth::PSK,out,true));
+ j.upperAuth=4096;size_t bytes=0;assert(AthSecurity::buildSAEStationRSN(nullptr,0,j.rsn,sizeof(j.rsn),bytes));j.rsnLength=bytes;
+ assert(nativeSelectedRSN(j,NativeJoinAuth::SAE,out) && out.pairwise==4 && !out.legacy);
+ j.upperAuth=0;assert(!nativeSelectedRSN(j,NativeJoinAuth::Open,out));j.rsnLength=0;assert(nativeSelectedRSN(j,NativeJoinAuth::Open,out));
+}
+
+static void dynamicWEPEnvelopeTests(){
+ uint8_t peer[6]={2,1,2,3,4,5};std::array<uint8_t,149> wire{};
+ auto put32=[&](size_t at,uint32_t n){for(unsigned i=0;i<4;++i)wire[at+i]=uint8_t(n>>(8*i));};
+ AthNative::DynamicWEPKeyView view{};
+ for(unsigned cipher:{1u,2u})for(unsigned index=0;index<4;++index)for(unsigned flags:{1u,2u,5u,9u}){
+  wire.fill(0);put32(0,1);put32(4,cipher==1?5:13);put32(8,cipher);wire[12]=flags;wire[14]=index;
+  for(unsigned i=0;i<13;++i)wire[16+i]=uint8_t(i+1);
+  for(unsigned address=0;address<3;++address){
+   for(unsigned i=0;i<6;++i)wire[92+i]=address==0?0:address==1?255:peer[i];
+   assert(AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));
+   assert(view.key==wire.data()+16 && view.length==(cipher==1?5:13) && view.index==index);
+   assert(view.flags==flags && view.group==(flags==2) && view.transmit==bool(flags&4));
+  }
+  const auto good=wire;
+  for(size_t n=0;n<148;++n){assert(!AthNative::decodeDynamicWEPKey(wire.data(),n,peer,view));assert(!view.key);}
+  assert(!AthNative::decodeDynamicWEPKey(wire.data(),149,peer,view));
+  for(auto at:{0u,4u,8u,80u,100u,120u}){
+   put32(at,0xffffffff);assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));assert(!view.key);wire=good;
+  }
+  for(unsigned bad:{0u,3u,4u,6u,8u,13u,0xffffu}){
+   wire[12]=uint8_t(bad);wire[13]=uint8_t(bad>>8);
+   assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));wire=good;
+  }
+  wire[14]=4;assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));wire=good;
+  wire[92]^=4;assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));wire=good;
+  // Exact cipher/length match; WEP104 must not be confused with TKIP.
+  put32(4,cipher==1?13:5);assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,peer,view));
+ }
+ assert(!AthNative::decodeDynamicWEPKey(nullptr,148,peer,view));
+ assert(!AthNative::decodeDynamicWEPKey(wire.data(),148,nullptr,view));
+}
+
 int main(){
+    {AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuthExt=1;j.ssidLength=1;j.ssid[0]='x';j.bssid[0]=2;
+     assert(nativeJoinAuth(j,true,true,true,true)==NativeJoinAuth::Unsupported);
+     assert(nativeJoinAuth(j,false,false,false,false,true)==NativeJoinAuth::OWE);
+     NativeSelectedRSN selected{};assert(nativeSelectedRSN(j,NativeJoinAuth::OWE,selected));
+     size_t bytes=0;assert(AthSecurity::buildOWEStationRSN(j.rsn,sizeof(j.rsn),bytes));j.rsnLength=bytes;
+     assert(nativeSelectedRSN(j,NativeJoinAuth::OWE,selected) && selected.pairwise==4 && selected.group==4);
+     const auto good=j;
+     for(unsigned field=0;field<7;++field){j=good;
+      if(field==0)j.upperAuth=8;if(field==1)j.upperAuthExt=2;if(field==2)j.keyLength=1;
+      if(field==3)j.keyCipher=10;if(field==4)j.keyFlags=1;if(field==5)j.keyIndex=1;if(field==6)j.lowerAuth=2;
+      assert(nativeJoinAuth(j,false,false,false,false,true)!=NativeJoinAuth::OWE);
+      assert(!nativeSelectedRSN(j,NativeJoinAuth::OWE,selected));
+     }
+     j=good;j.rsn[19]=8;assert(!nativeSelectedRSN(j,NativeJoinAuth::OWE,selected));
+    }
+
+ staticWEPEnvelopeTests();
+ dynamicWEPEnvelopeTests();
+ selectedRequest();
  {using namespace AthNative::RoamEvents;
   const uint8_t target[]={2,1,2,3,4,5};
   for(unsigned failureStage=0;failureStage<4;++failureStage){
@@ -323,6 +473,23 @@ int main(){
  b.hidden=true;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==(AirportWCL::RSSIValid|AirportWCL::SSIDPresent));
  b.hidden=false;assert(nativeBSSMessage(b,bytes,1600)==n);assert(m->flags==AirportWCL::RSSIValid);
  assert(AirportWCL::validIEs(bytes+sizeof(*m),m->ieLength));assert(n==sizeof(*m)+m->ieLength);assert(bytes[1600]==0x5a);
+ {auto legacy=b;const UInt8 wpa[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2};
+  memcpy(legacy.wpa,wpa,sizeof(wpa));legacy.wpaLength=sizeof(wpa);legacy.wpaPresent=true;
+  const auto wanted=n+sizeof(wpa);memset(bytes,0x5a,sizeof(bytes));
+  assert(!nativeBSSMessage(legacy,bytes,wanted-1));for(auto byte:bytes)assert(byte==0x5a);
+  assert(nativeBSSMessage(legacy,bytes,wanted)==wanted && bytes[wanted]==0x5a);
+  assert(!memcmp(bytes+wanted-sizeof(wpa),wpa,sizeof(wpa)));
+  legacy.wpa[5]=2;assert(!nativeBSSMessage(legacy,bytes,1600));
+ }
+ { auto owe=b;const UInt8 ie[]={221,14,0x50,0x6f,0x9a,0x1c,2,1,2,3,4,5,3,'o','w','e'};
+   memcpy(owe.oweTransition,ie,sizeof(ie));owe.oweTransitionLength=sizeof(ie);
+   memset(bytes,0x5a,sizeof(bytes));assert(!nativeBSSMessage(owe,bytes,n+sizeof(ie)-1));
+   for(auto byte:bytes)assert(byte==0x5a);
+   assert(nativeBSSMessage(owe,bytes,n+sizeof(ie))==n+sizeof(ie));
+   assert(!memcmp(bytes+n,ie,sizeof(ie)) && bytes[n+sizeof(ie)]==0x5a);
+   owe.oweTransition[5]=0;assert(!nativeBSSMessage(owe,bytes,1600));
+   owe.oweTransition[5]=0x1c;owe.oweTransitionLength=258;assert(!nativeBSSMessage(owe,bytes,1600));
+ }
  // Preserve every standard RSNXE capability byte in the complete beacon IE
  // message; the fixed extended-BSS RSNE slot has no invented RSNXE offset.
  for(unsigned body=1;body<=16;++body){auto extended=b;
@@ -341,6 +508,19 @@ int main(){
   maximum.rsnxeLength=18;maximum.rsnxe[0]=244;maximum.rsnxe[1]=16;maximum.rsnxe[2]=0x2f;
   const auto cap=sizeof(*m)+800;memset(bytes,0x5a,sizeof(bytes));auto length=nativeBSSMessage(maximum,bytes,cap);
   assert(length && length<=cap && bytes[cap]==0x5a);
+  maximum.wpaLength=257;maximum.wpaPresent=true;
+  maximum.wpa[0]=221;maximum.wpa[1]=255;maximum.wpa[3]=0x50;maximum.wpa[4]=0xf2;maximum.wpa[5]=1;
+  const size_t required=length+maximum.wpaLength;
+  assert(required<1600);
+  memset(bytes,0x5a,sizeof(bytes));assert(!nativeBSSMessage(maximum,bytes,required-1));
+  for(auto byte:bytes)assert(byte==0x5a);
+  assert(nativeBSSMessage(maximum,bytes,required)==required && bytes[required]==0x5a);
+  bool haveWPA=false,haveRSN=false;
+  for(size_t at=sizeof(*m);at<required;at+=size_t(bytes[at+1])+2){
+   if(bytes[at]==48){assert(!haveRSN && !memcmp(bytes+at,maximum.rsn,257));haveRSN=true;}
+   if(bytes[at]==221){assert(!haveWPA && !memcmp(bytes+at,maximum.wpa,257));haveWPA=true;}
+  }
+  assert(haveWPA && haveRSN && AirportWCL::validIEs(bytes+sizeof(*m),m->ieLength));
  }
  assert(nativeBSSMessage(b,bytes,1600)==n);
  assert(!nativeBSSMessage(b,bytes,30));b.rateCount=33;assert(!nativeBSSMessage(b,bytes,1600));b.rateCount=32;

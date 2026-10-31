@@ -9,7 +9,7 @@ static_assert(offsetof(AirportWCL::BeaconMetadata,flags)==0x3c, "Sequoia beacon 
 #include <string.h>
 // Keep wire decoding separate from implemented authentication. In particular,
 // a 64-byte password slot is not a 32-byte PMK and must never be truncated.
-enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256, SAE, EAP };
+enum class NativeJoinAuth { Unsupported, Open, PSK, PSKSHA256, SAE, EAP, WPA1PSK, WPA1EAP, WEPOpen, WEPShared, OWE, EAPSHA256 };
 // WFA Transition Disable bitmap. Stock WCL forwards bits 0..4 unchanged;
 // bit 4 has not been identified for this ABI and cannot be silently ignored.
 namespace NativeTransitionDisable {
@@ -19,24 +19,68 @@ inline bool nativeJoinPolicyKnown(const AirportWCL::JoinRequest &join){
     // Stock authtypeupper2str(0,1) names OWE. It is not plaintext Open.
     return !join.upperAuthExt && !(join.transitionDisable&~NativeTransitionDisable::Known);
 }
+// Decode the stock static-WEP envelope independently of admission. The
+// Apple80211 producer uses lower auth1/2 (Open System/Shared Key), upper0,
+// cipher1/2 with5/13 bytes and combined unicast/multicast/TX/RX flags0xf.
+// A decoded request still needs authentication, firmware keys and port barriers.
+struct NativeWEPJoinView {
+    const uint8_t *key=nullptr;
+    uint8_t length=0,index=0;
+    bool shared=false;
+};
+inline bool nativeWEPJoinEnvelope(const AirportWCL::JoinRequest &join,NativeWEPJoinView &out){
+    out={};
+    if((join.lowerAuth!=1 && join.lowerAuth!=2) || join.upperAuth ||
+       !nativeJoinPolicyKnown(join) || join.transitionDisable || join.rsnLength ||
+       join.keyFlags!=15 || join.keyIndex>3 || !join.ssidLength ||
+       join.ssidLength>sizeof(join.ssid) || (join.bssid[0]&1) ||
+       !((join.keyCipher==1 && join.keyLength==5) ||
+         (join.keyCipher==2 && join.keyLength==13)))return false;
+    uint8_t any=0;for(auto value:join.bssid)any|=value;
+    if(!any)return false;
+    out.key=join.key;out.length=uint8_t(join.keyLength);out.index=uint8_t(join.keyIndex);
+    out.shared=join.lowerAuth==2;return true;
+}
 inline bool nativeSAEPasswordEnvelope(const AirportWCL::JoinRequest &join);
-inline bool nativePSKPasswordEnvelope(const AirportWCL::JoinRequest &join){
+inline bool nativePSKPasswordEnvelope(const AirportWCL::JoinRequest &join,bool allowWPA1=false){
     if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join) ||
        (join.transitionDisable&(NativeTransitionDisable::Personal|NativeTransitionDisable::SAEPK)) ||
-       (join.upperAuth!=8 && join.upperAuth!=1024) || join.keyCipher!=10 || join.keyFlags || join.keyIndex ||
+       (join.upperAuth!=8 && join.upperAuth!=1024 && !(allowWPA1 && join.upperAuth==2)) || join.keyCipher!=10 || join.keyFlags || join.keyIndex ||
        !join.ssidLength || join.ssidLength>sizeof(join.ssid) || join.rsnLength>sizeof(join.rsn) ||
        !AthSecurity::validPSKPassword(join.key,join.keyLength) || (join.bssid[0]&1))return false;
     UInt8 any=0;for(auto value:join.bssid)any|=value;return any!=0;
 }
-inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false,bool allowEAP=false){
+inline bool nativeOWEEnvelope(const AirportWCL::JoinRequest &join){
+    UInt8 any=0;for(auto b:join.bssid)any|=b;
+    return join.lowerAuth==1 && !join.upperAuth && join.upperAuthExt==1 &&
+        !(join.transitionDisable&~NativeTransitionDisable::Known) &&
+        !join.keyLength && !join.keyCipher && !join.keyFlags && !join.keyIndex &&
+        join.ssidLength && join.ssidLength<=sizeof(join.ssid) && join.rsnLength<=sizeof(join.rsn) &&
+        any && !(join.bssid[0]&1);
+}
+inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false,bool allowEAP=false,bool allowWPA1=false,bool allowWEP=false,bool allowOWE=false){
+    if(allowOWE && nativeOWEEnvelope(join))return NativeJoinAuth::OWE;
+    NativeWEPJoinView wep{};
+    if(allowWEP && nativeWEPJoinEnvelope(join,wep))return wep.shared?NativeJoinAuth::WEPShared:NativeJoinAuth::WEPOpen;
     if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join))return NativeJoinAuth::Unsupported;
-    // Ordinary WPA2-Enterprise only: credentials belong to the system EAP
+    if(allowWPA1 && allowEAP && join.upperAuth==1 && !join.keyLength && !join.keyFlags &&
+       !join.keyIndex && !join.keyCipher && !(join.transitionDisable&NativeTransitionDisable::Enterprise))return NativeJoinAuth::WPA1EAP;
+    if(allowWPA1 && join.upperAuth==2 && !join.keyFlags && !join.keyIndex &&
+       !(join.transitionDisable&(NativeTransitionDisable::Personal|NativeTransitionDisable::SAEPK)) &&
+       (nativePSKPasswordEnvelope(join,true) || (join.keyLength==32 && (join.keyCipher==6 || join.keyCipher==7))))return NativeJoinAuth::WPA1PSK;
+    // Explicit WPA2-Enterprise profiles: credentials belong to the system EAP
     // client. Never interpret a supplied password/PMK as an enterprise profile.
+    // AKM5 is admitted only with CCMP and required PMF downstream, satisfying
+    // Enterprise transition-disable; do not mistake it for the legacy AKM1 path.
+    if(allowEAP && join.upperAuth==(1u<<11) && !join.keyLength && !join.keyFlags &&
+       !join.keyIndex && !join.keyCipher)
+        return NativeJoinAuth::EAPSHA256;
     if(allowEAP && join.upperAuth==(1u<<2) && !join.keyLength && !join.keyFlags &&
        !join.keyIndex && !join.keyCipher && !(join.transitionDisable&NativeTransitionDisable::Enterprise))
         return NativeJoinAuth::EAP;
     if(allowSAE && nativeSAEPasswordEnvelope(join) && !join.keyFlags && !join.keyIndex)return NativeJoinAuth::SAE;
     if(!join.upperAuth && !join.keyLength){
+        if(join.keyCipher==1 || join.keyCipher==2)return NativeJoinAuth::Unsupported;
         if(join.transitionDisable&NativeTransitionDisable::EnhancedOpen)return NativeJoinAuth::Unsupported;
         return NativeJoinAuth::Open;
     }
@@ -48,6 +92,62 @@ inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool al
     // FT-SAE, enterprise and mixed requests are not admitted. SAE requires the
     // explicit experimental path above. Never downgrade an AKM.
     return NativeJoinAuth::Unsupported;
+}
+// Selected association RSNE is independent of the PMK/password cipher field.
+// Empty override preserves the currently supported CCMP default. A nonempty
+// request must select one suite/AKM; an AP multi-suite list is not a selection.
+struct NativeSelectedRSN {uint8_t pairwise=AthSecurity::cipherCCMP,group=0;bool specified=false,legacy=false,wpa1=false;};
+inline bool nativeSelectedRSN(const AirportWCL::JoinRequest &join,NativeJoinAuth auth,
+    NativeSelectedRSN &out,bool allowLegacy=false,bool allowWPA1=false){
+    if(auth==NativeJoinAuth::WEPOpen || auth==NativeJoinAuth::WEPShared){
+        NativeWEPJoinView wep{};
+        if(!allowLegacy || !nativeWEPJoinEnvelope(join,wep) || wep.shared!=(auth==NativeJoinAuth::WEPShared))return false;
+        NativeSelectedRSN selected{};selected.pairwise=selected.group=wep.length==5?1:5;
+        selected.legacy=true;out=selected;return true;
+    }
+    if(auth==NativeJoinAuth::OWE){
+        if(!nativeOWEEnvelope(join))return false;
+        NativeSelectedRSN selected{};
+        if(join.rsnLength){AthSecurity::RSNInfo info{};
+            if(!AthSecurity::validOWEPersonalRSN(join.rsn,join.rsnLength) ||
+               !AthSecurity::parseRSN(join.rsn,join.rsnLength,info) || info.akms!=(1u<<18) || info.pairwise!=(1u<<4) || info.pmkidCount)return false;
+            selected.group=4;selected.specified=true;
+        }
+        out=selected;return true;
+    }
+    if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join) || join.rsnLength>sizeof(join.rsn))return false;
+    if(auth==NativeJoinAuth::WPA1PSK || auth==NativeJoinAuth::WPA1EAP){
+        const bool eap=auth==NativeJoinAuth::WPA1EAP;
+        if(!allowWPA1 || join.upperAuth!=(eap?1u:2u) ||
+           (join.transitionDisable&(eap?NativeTransitionDisable::Enterprise:(NativeTransitionDisable::Personal|NativeTransitionDisable::SAEPK))))return false;
+        NativeSelectedRSN selected{};selected.pairwise=2;selected.legacy=selected.wpa1=true;
+        if(join.rsnLength){
+            AthSecurity::WPAInfo info{};uint8_t encoded[24]{};size_t n=0;
+            if(!AthSecurity::parseWPA(join.rsn,join.rsnLength,info) || join.rsnLength<24 ||
+               AthSecurity::rsnLE16(join.rsn+12)!=1 || AthSecurity::rsnLE16(join.rsn+18)!=1 ||
+               !AthSecurity::buildWPA1StationIE(join.rsn,join.rsnLength,join.rsn[17],eap?1:2,encoded,sizeof(encoded),n) ||
+               info.akms!=(1u<<(eap?1:2)))return false;
+            selected.pairwise=join.rsn[17];selected.group=info.group;selected.specified=true;
+        }
+        out=selected;return true;
+    }
+    const uint32_t upper=auth==NativeJoinAuth::Open?0:auth==NativeJoinAuth::PSK?8:
+        auth==NativeJoinAuth::PSKSHA256?1024:auth==NativeJoinAuth::SAE?4096:auth==NativeJoinAuth::EAP?4:auth==NativeJoinAuth::EAPSHA256?2048:~uint32_t(0);
+    if(auth==NativeJoinAuth::Unsupported || join.upperAuth!=upper)return false;
+    NativeSelectedRSN selected{};
+    if(!join.rsnLength){out=selected;return true;}
+    if(auth==NativeJoinAuth::Open)return false;
+    AthSecurity::RSNInfo info{};
+    if(!AthSecurity::parseRSN(join.rsn,join.rsnLength,info) ||
+       AthSecurity::rsnLE16(join.rsn+8)!=1 || AthSecurity::rsnLE16(join.rsn+14)!=1)return false;
+    const uint8_t pair=join.rsn[13],akm=auth==NativeJoinAuth::EAPSHA256?5:auth==NativeJoinAuth::EAP?1:auth==NativeJoinAuth::SAE?8:auth==NativeJoinAuth::PSKSHA256?6:2;
+    if((pair!=2 && pair!=4) || info.pairwise!=(1u<<pair) || info.akms!=(1u<<akm))return false;
+    if(auth==NativeJoinAuth::EAPSHA256){if(pair!=4 || !AthSecurity::validEAPSHA256RSN(join.rsn,join.rsnLength) || info.pmkidCount)return false;}
+    else if(auth==NativeJoinAuth::SAE){if(pair!=4 || !AthSecurity::validSAEPersonalRSN(join.rsn,join.rsnLength))return false;}
+    else if(!AthSecurity::supportsSelectedRSN(join.rsn,join.rsnLength,akm,pair,allowLegacy))return false;
+    selected.pairwise=pair;selected.group=info.group;selected.specified=true;
+    selected.legacy=pair==2 || (auth==NativeJoinAuth::EAP && info.group==2);
+    out=selected;return true;
 }
 // A bounded password-shaped request; admission also checks owners and AP policy.
 // Sequoia ciphertype2str maps 10 to CIPHER_PWD, distinct from PMK (6).
@@ -133,10 +233,23 @@ inline bool nativeScanMatches(const AirportWCL::ScanRequest &scan,const Ath10k::
 }
 inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capacity) {
     if(!buffer || b.ssidLength>sizeof(b.ssid) || b.rateCount>sizeof(b.rates) ||
-       b.rsnLength>sizeof(b.rsn) || b.rsnxeLength>sizeof(b.rsnxe) || b.countryLength>sizeof(b.country))return 0;
+       b.oweTransitionLength>sizeof(b.oweTransition) || b.rsnLength>sizeof(b.rsn) || b.wpaLength>sizeof(b.wpa) || b.rsnxeLength>sizeof(b.rsnxe) || b.countryLength>sizeof(b.country))return 0;
     if(b.rsnLength && !AirportWCL::validIEs(b.rsn,b.rsnLength))return 0;
     if(b.rsnxeLength && !AthSecurity::validRSNXE(b.rsnxe,b.rsnxeLength))return 0;
-    if(capacity<sizeof(AirportWCL::BeaconMetadata)+800)return 0;
+    if(b.wpaLength && (b.wpaLength<6 || b.wpa[0]!=221 ||
+       size_t(b.wpa[1])+2!=b.wpaLength || b.wpa[2]!=0 || b.wpa[3]!=0x50 ||
+       b.wpa[4]!=0xf2 || b.wpa[5]!=1))return 0;
+    if(b.oweTransitionLength && (b.oweTransitionLength<6 || b.oweTransition[0]!=221 ||
+       size_t(b.oweTransition[1])+2!=b.oweTransitionLength || b.oweTransition[2]!=0x50 ||
+       b.oweTransition[3]!=0x6f || b.oweTransition[4]!=0x9a || b.oweTransition[5]!=0x1c))return 0;
+    // Preflight the entire advertisement before writing any bytes. WPA and
+    // RSN may coexist; neither may disappear because the other is present.
+    const size_t ieBytes=2+b.ssidLength+2+b.rateCount+(b.rateCount>8?2:0)+3+
+        b.rsnLength+b.wpaLength+b.oweTransitionLength+b.rsnxeLength+(b.htPresent?28:0)+
+        (b.htOperation?24:0)+(b.vhtPresent?14:0)+(b.vhtOperation?7:0)+
+        (b.countryPresent?2+b.countryLength:0);
+    if(capacity<sizeof(AirportWCL::BeaconMetadata) ||
+       ieBytes>capacity-sizeof(AirportWCL::BeaconMetadata))return 0;
     // The byte buffer may be unaligned inside Connection/Native objects.
     AirportWCL::BeaconMetadata metadata{};auto m=&metadata;
     unsigned ch=b.advertisedChannel?b.advertisedChannel:b.rxChannel;
@@ -152,6 +265,8 @@ inline size_t nativeBSSMessage(const Ath10k::WMIBSS &b,UInt8 *buffer,size_t capa
     if(b.rateCount>8)ie(50,b.rates+8,b.rateCount-8);
     UInt8 channel=ch;ie(3,&channel,1);
     if(b.rsnLength){bcopy(b.rsn,out+bytes,b.rsnLength);bytes+=b.rsnLength;}
+    if(b.wpaLength){bcopy(b.wpa,out+bytes,b.wpaLength);bytes+=b.wpaLength;}
+    if(b.oweTransitionLength){bcopy(b.oweTransition,out+bytes,b.oweTransitionLength);bytes+=b.oweTransitionLength;}
     if(b.rsnxeLength){bcopy(b.rsnxe,out+bytes,b.rsnxeLength);bytes+=b.rsnxeLength;}
     if(b.htPresent)ie(45,b.ht,26);if(b.htOperation)ie(61,b.htOp,22);
     if(b.vhtPresent)ie(191,b.vht,12);if(b.vhtOperation)ie(192,b.vhtOp,5);

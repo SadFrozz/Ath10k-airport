@@ -4,6 +4,7 @@
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
+#include "../../src/macos/native/Ath10kNativeWEPExecution.hpp"
 #include "../../src/macos/native/Ath10kNativeRoamEvents.hpp"
 #include "../../src/macos/native/Ath10kNativePMFInbox.hpp"
 #include "../../src/macos/native/Ath10kNativeWire.hpp"
@@ -11,7 +12,8 @@
 #include "../fixtures/sha256_vectors.inc"
 // No crypto operation is invoked: begin stores the fixture and reset must
 // wipe it. Definitions are deliberately absent to catch accidental operations.
-struct Ath10kKernelCrypto {};
+struct Ath10kKernelCrypto {static bool hmacMD5(const uint8_t*,size_t,const uint8_t*,size_t,uint8_t*){return false;}};
+namespace Ath10k { inline UInt64 uptimeNS(){return 100000000;} }
 static std::vector<unsigned> cleanup;
 struct Ath10kPMFSession {
     UInt64 generation=9;UInt64 activeGeneration(){return generation;}
@@ -31,10 +33,12 @@ struct Ath10kSAEWorkItem {
     void discard(){cleanup.push_back(2);}
     void release(){cleanup.push_back(3);delete this;}
 };
+struct Ath10kNativeOWEJob {void release(){cleanup.push_back(9);delete this;}};
 struct Ath10kSAEWorker {
     static inline unsigned created=0,cancelled=0,drained=0,released=0;
     static inline bool failInit=false;
     bool init(){++created;return !failInit;}
+    bool cancelFor(const void *){cleanup.push_back(8);return true;}
     void cancel(){++cancelled;cleanup.push_back(5);}
     void shutdown(){++drained;}
     void release(){++released;delete this;}
@@ -45,8 +49,8 @@ public:
     class NativeSecurity;
     NativeSecurity *_nativeSecurity=nullptr;
     AirportWCL::JoinRequest _nativeJoin{};
-    struct {UInt32 securityGeneration=0;UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
-        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4;unsigned securityPhase=0;
+    struct {bool wepSelected=false,wepIOActive=false,wepTransmitValid=false,secure=true;UInt8 wepTransmitIndex=0,wepInstalledLengths[2][4]{};UInt32 securityGeneration=0;UInt8 local[6]{},bssid[6]{};Ath10k::LinkStage stage=Ath10k::LinkStage::Connected;
+        Ath10k::DisconnectStage disconnect=Ath10k::DisconnectStage::None;bool cancelRequested=false,pmfRequired=false,initialGroupPending=false,pmfTXPending=false,pairInstalled=false,portAuthorized=false;UInt8 groupCipher=4,pairCipher=4;unsigned securityPhase=0;
         struct {bool pending=false,inFlight=false;unsigned length=0,dropped=0;} spectrum;} _connection;
     void discardIfStopped(UInt64 now=0);
     unsigned eapQueueStops=0;void nativeSetEAPQueue(bool active){assert(!active);++eapQueueStops;}
@@ -58,12 +62,26 @@ public:
     bool firmwareReady=true;bool nativePMFFirmwareReady(){return firmwareReady;}
     const char *beforeFirmwareAuthorization(unsigned);
 };
+#include "../../src/security/Ath10kTKIPMICOwner.hpp"
 #include "native_security_class.inc"
 #include "native_security_discard.inc"
 #include "native_pmf_key_hooks.inc"
 #include "native_pmf_firmware_guard.inc"
 #include "native_security_terminal_cleanup.inc"
 int main(){
+    // Host secret retirement cannot release an uncertain firmware operation.
+    {Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity sec;d._nativeSecurity=&sec;
+     assert(sec.eapOwner.beginDynamicWEP(s_sta,s_ap,0,1000));
+     uint8_t key[148]{};key[0]=1;key[4]=5;key[8]=1;key[12]=2;key[16]=7;
+     assert(sec.eapOwner.setWEPKey(sec.eapOwner.generation(),s_sta,s_ap,key,sizeof(key),1)==AthNative::EAPOwner::KeyResult::Accepted);
+     assert(sec.wepExecution.begin(sec.eapOwner,s_sta,s_ap,7,2,900));
+     assert(sec.wepExecution.submitted(sec.eapOwner,s_sta,s_ap,3));
+     d.discardNativeSecurity();
+     assert(!sec.eapOwner.generation() && !sec.eapOwner.pending());
+     assert(sec.wepExecution.state()==AthNative::WEPExecution::State::Uncertain);
+     assert(!sec.wepExecution.acknowledge(7,3));
+    }
+
     for(unsigned outcome=0;outcome<8;++outcome){
       Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity sec;d._nativeSecurity=&sec;
       AirportWCL::JoinRequest request{};request.lowerAuth=1;request.ssidLength=4;
@@ -104,7 +122,22 @@ int main(){
 
     // EAP can be alive before a profile or four-way key owner is ready.
     for(unsigned terminal=0;terminal<4;++terminal){
-      Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
+      {
+      Ath10kPCIDevice::NativeSecurity state;
+      using MIC=AthSecurity::TKIPMICOwner;
+      MIC::Evidence first{1,1,1,0,16},out{};MIC::Ticket ticket{};
+      assert(state.tkipMICOwner.begin(1,0));
+      assert(state.tkipMICOwner.detect(first,10)==MIC::Detection::Report);
+      assert(state.tkipMICOwner.next(11,out,ticket) && state.tkipMICOwner.submitted(ticket));
+      state.reset(); // Real association cleanup, not an isolated owner reset.
+      assert(!state.tkipMICOwner.pending() && !state.tkipMICOwner.complete(ticket,0,12));
+      assert(state.tkipMICOwner.begin(2,20));first.association=2;first.keyEpoch=2;
+      assert(state.tkipMICOwner.detect(first,21)==MIC::Detection::Countermeasures);
+      state.reset();state.reset();
+      assert(state.tkipMICOwner.blocked(60020) && !state.tkipMICOwner.begin(3,60020));
+      assert(state.tkipMICOwner.begin(3,60021));
+    }
+    Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
       assert(security.eapOwner.begin(s_sta,s_ap,100,1000));
       security.eapTXInFlight=true;
       if(terminal==0)d._connection.cancelRequested=true;
@@ -117,7 +150,22 @@ int main(){
     // Open profiles have no crypto owner; terminal cleanup must still retire
     // their identity/generation before a subsequent prepared handoff can run.
     for(unsigned terminal=0;terminal<4;++terminal){
-      Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
+      {
+      Ath10kPCIDevice::NativeSecurity state;
+      using MIC=AthSecurity::TKIPMICOwner;
+      MIC::Evidence first{1,1,1,0,16},out{};MIC::Ticket ticket{};
+      assert(state.tkipMICOwner.begin(1,0));
+      assert(state.tkipMICOwner.detect(first,10)==MIC::Detection::Report);
+      assert(state.tkipMICOwner.next(11,out,ticket) && state.tkipMICOwner.submitted(ticket));
+      state.reset(); // Real association cleanup, not an isolated owner reset.
+      assert(!state.tkipMICOwner.pending() && !state.tkipMICOwner.complete(ticket,0,12));
+      assert(state.tkipMICOwner.begin(2,20));first.association=2;first.keyEpoch=2;
+      assert(state.tkipMICOwner.detect(first,21)==MIC::Detection::Countermeasures);
+      state.reset();state.reset();
+      assert(state.tkipMICOwner.blocked(60020) && !state.tkipMICOwner.begin(3,60020));
+      assert(state.tkipMICOwner.begin(3,60021));
+    }
+    Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;d._nativeSecurity=&security;
       AirportWCL::JoinRequest request{};request.lowerAuth=1;request.ssidLength=4;
       memcpy(request.ssid,"open",4);memcpy(request.bssid,s_ap,6);
       assert(security.profile.replace(request,s_sta,false));
@@ -209,6 +257,21 @@ int main(){
       s->drainSAEWorker();assert(Ath10kSAEWorker::drained==1);delete s;
       assert(Ath10kSAEWorker::released==2 && Ath10kSAEWorker::cancelled==2);
     }
+    {
+      Ath10kPCIDevice::NativeSecurity state;
+      using MIC=AthSecurity::TKIPMICOwner;
+      MIC::Evidence first{1,1,1,0,16},out{};MIC::Ticket ticket{};
+      assert(state.tkipMICOwner.begin(1,0));
+      assert(state.tkipMICOwner.detect(first,10)==MIC::Detection::Report);
+      assert(state.tkipMICOwner.next(11,out,ticket) && state.tkipMICOwner.submitted(ticket));
+      state.reset(); // Real association cleanup, not an isolated owner reset.
+      assert(!state.tkipMICOwner.pending() && !state.tkipMICOwner.complete(ticket,0,12));
+      assert(state.tkipMICOwner.begin(2,20));first.association=2;first.keyEpoch=2;
+      assert(state.tkipMICOwner.detect(first,21)==MIC::Detection::Countermeasures);
+      state.reset();state.reset();
+      assert(state.tkipMICOwner.blocked(60020) && !state.tkipMICOwner.begin(3,60020));
+      assert(state.tkipMICOwner.begin(3,60021));
+    }
     Ath10kPCIDevice d;Ath10kPCIDevice::NativeSecurity security;
     d._nativeSecurity=&security;
     AirportWCL::JoinRequest profile{};profile.lowerAuth=1;profile.upperAuth=1024;
@@ -261,4 +324,11 @@ int main(){
     d.discardNativeSecurity();
     assert(!memcmp(&security.supplicant,&pristine,sizeof(pristine)));
     d._nativeSecurity=nullptr;d.discardNativeSecurity();
+    {cleanup.clear();auto owner=new Ath10kPCIDevice::NativeSecurity;
+     assert(owner->prepareSAEWorker());owner->oweJob=new Ath10kNativeOWEJob;owner->owePhase=3;owner->oweSubmitted=true;owner->oweDeadline=5100;owner->oweLastNow=130;
+     owner->reset();assert(!owner->oweJob && !owner->owePhase && !owner->oweSubmitted && !owner->oweDeadline && !owner->oweLastNow);
+     assert(cleanup.size()>=2 && cleanup[0]==8 && cleanup[1]==9);
+     owner->reset();unsigned retired=0;for(auto v:cleanup)retired+=v==9;assert(retired==1);delete owner;
+    }
+
 }

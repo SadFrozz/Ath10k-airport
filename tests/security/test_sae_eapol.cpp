@@ -130,15 +130,16 @@ int main(){
  assert(s.receive(w_m3,sizeof(w_m3))==S::Keys);
  assert(s.keyChanges==(S::PTKChanged|S::GTKChanged|S::IGTKChanged));
  assert(!memcmp(s.keys,w_ptk+32,16) && !memcmp(s.keys+16,w_gtk,16));
+ for(size_t i=56;i<S::keyPayloadLength;++i)assert(!s.keys[i]);
  assert(s.managementKey.keyID==4 && s.managementKey.ipn==1 && !memcmp(s.managementKey.key,w_igtk,16));
  assert(s.outputLength==sizeof(w_m4) && !memcmp(s.output,w_m4,sizeof(w_m4)));
- const auto firstManagement=s.managementKey;uint8_t oldKeys[56];memcpy(oldKeys,s.keys,56);
- assert(s.receive(w_m3,sizeof(w_m3))==S::Reply && !memcmp(s.keys,oldKeys,56));
+ const auto firstManagement=s.managementKey;uint8_t oldKeys[S::keyPayloadLength];memcpy(oldKeys,s.keys,sizeof(oldKeys));
+ assert(s.receive(w_m3,sizeof(w_m3))==S::Reply && !memcmp(s.keys,oldKeys,sizeof(oldKeys)));
  assert(s.receive(w_m3_retry,sizeof(w_m3_retry))==S::Reply);
  assert(s.outputLength==sizeof(w_m4_retry) && !memcmp(s.output,w_m4_retry,sizeof(w_m4_retry)));
  assert(!memcmp(&s.managementKey,&firstManagement,sizeof(firstManagement)));
  assert(s.receive(w_mgmt_only,sizeof(w_mgmt_only))==S::ManagementKeys && s.keyChanges==S::IGTKChanged);
- assert(!memcmp(s.keys,oldKeys,56));assert(s.managementKey.keyID==5 && !memcmp(s.managementKey.key,w_next_igtk,16));
+ assert(!memcmp(s.keys,oldKeys,sizeof(oldKeys)));assert(s.managementKey.keyID==5 && !memcmp(s.managementKey.key,w_next_igtk,16));
  assert(s.outputLength==sizeof(w_mgmt_ack) && !memcmp(s.output,w_mgmt_ack,sizeof(w_mgmt_ack)));
  assert(s.receive(w_mgmt_only,sizeof(w_mgmt_only))==S::Reply);
  assert(s.receive(w_group_both,sizeof(w_group_both))==S::GroupKeys && s.keyChanges==(S::GTKChanged|S::IGTKChanged));
@@ -168,7 +169,7 @@ int main(){
  for(auto packet:{Packet{w_missing_igtk,sizeof(w_missing_igtk)},Packet{w_duplicate_igtk,sizeof(w_duplicate_igtk)},
      Packet{w_bad_igtk_id,sizeof(w_bad_igtk_id)},Packet{w_bad_padding,sizeof(w_bad_padding)},
      Packet{w_changed_rsn,sizeof(w_changed_rsn)},Packet{w_bad_wrap,sizeof(w_bad_wrap)}}){
-   S bad;begin(bad);assert(bad.receive(w_m1,sizeof(w_m1))==S::Reply);memset(bad.keys,0xa5,56);
+   S bad;begin(bad);assert(bad.receive(w_m1,sizeof(w_m1))==S::Reply);memset(bad.keys,0xa5,sizeof(bad.keys));
    assert(bad.receive(packet.p,packet.n)==S::Fatal);
    for(auto v:bad.keys)assert(v==0xa5);assert(!bad.keyChanges && !bad.managementKey.keyID);
  }
@@ -176,15 +177,15 @@ int main(){
    uint8_t frame[sizeof(w_m3)];memcpy(frame,w_m3,sizeof(frame));frame[14+81]^=1;
    assert(bad.receive(frame,sizeof(frame))==S::Fatal && !bad.keyChanges && !bad.managementKey.keyID);
  }
- { S bad;connected(bad);const auto previous=bad.managementKey;uint8_t before[56];memcpy(before,bad.keys,56);
+ { S bad;connected(bad);const auto previous=bad.managementKey;uint8_t before[S::keyPayloadLength];memcpy(before,bad.keys,sizeof(before));
    uint8_t frame[sizeof(w_mgmt_only)];memcpy(frame,w_mgmt_only,sizeof(frame));frame[14+81]^=1;
    assert(bad.receive(frame,sizeof(frame))==S::Ignore);
-   assert(!memcmp(before,bad.keys,56) && !memcmp(&bad.managementKey,&previous,sizeof(previous)));
+   assert(!memcmp(before,bad.keys,sizeof(before)) && !memcmp(&bad.managementKey,&previous,sizeof(previous)));
  }
  { using F=AthSecurity::Supplicant<FailedEncrypt,true,true>;F bad;begin(bad);
    FailedEncrypt::calls=FailedEncrypt::failAt=0;assert(bad.receive(w_m1,sizeof(w_m1))==F::Reply);
    FailedEncrypt::calls=0;FailedEncrypt::failAt=2+(sizeof(w_m3)-14+15)/16;
-   memset(bad.keys,0xa5,56);assert(bad.receive(w_m3,sizeof(w_m3))==F::Fatal);
+   memset(bad.keys,0xa5,sizeof(bad.keys));assert(bad.receive(w_m3,sizeof(w_m3))==F::Fatal);
    for(auto v:bad.keys)assert(v==0xa5);assert(!bad.keyChanges && !bad.managementKey.keyID);
    FailedEncrypt::failAt=0;
  }

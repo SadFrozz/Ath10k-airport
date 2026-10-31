@@ -134,7 +134,8 @@ public:
                 }else deliver(2,managementResponse(_connection,_connection.stage==LinkStage::Assoc,
                     rejectAssociation && _connection.stage==LinkStage::Assoc?17:0));
             }else{
-                assert(networkUp && f[9]==0x46 && Ath10k::htcReadLE16(f+10)==0xc00);
+                const UInt8 expected=_connection.tkipDataBlocked?0x42:0x46;
+                assert(networkUp && f[9]==expected && Ath10k::htcReadLE16(f+10)==0xc00);
                 assert(Ath10k::wmiReadLE32(f+16)==_packetFragments.dmaAddress());
                 auto *frags=static_cast<const UInt8 *>(_packetFragments.virtualAddress());
                 assert(Ath10k::wmiReadLE32(frags)==_packetBuffer.dmaAddress());
@@ -465,14 +466,21 @@ static void peerMapTests(){
     p[12]^=2;Ath10k::commitConnectionHTT(s,p);
     assert(!s.peerCount && s.stage==LinkStage::Failed);
 }
-static void secureConnectionTests(){
+static void secureConnectionTests(bool separateInitialGroup=false){
     {
         Ath10k::ConnectionState tkip{};tkip.secure=true;tkip.securityPhase=2;tkip.groupCipher=AthSecurity::cipherTKIP;tkip.groupIndex=3;
+        for(unsigned i=0;i<32;++i)tkip.groupKey[i]=UInt8(0x40+i);
         UInt8 command[256]{};const UInt32 bytes=Ath10k::buildSecurityWMI(command,sizeof(command),2,tkip);
         assert(bytes==144 && Ath10k::htcReadLE16(command+2)==136);
         assert(Ath10k::wmiReadLE32(command+36)==AthSecurity::cipherTKIP && Ath10k::wmiReadLE32(command+96)==32);
         assert(Ath10k::wmiReadLE32(command+100)==8 && Ath10k::wmiReadLE32(command+104)==8);
         assert(Ath10k::htcReadLE16(command+108)==32 && Ath10k::htcReadLE16(command+110)==17);
+        assert(!memcmp(command+112,tkip.groupKey,16));
+        assert(!memcmp(command+128,tkip.groupKey+24,8)); // Station TX MIC.
+        assert(!memcmp(command+136,tkip.groupKey+16,8)); // Station RX MIC.
+        for(unsigned i=0;i<32;++i)assert(tkip.groupKey[i]==UInt8(0x40+i));
+        UInt8 retry[256]{};assert(Ath10k::buildSecurityWMI(retry,sizeof(retry),2,tkip)==bytes);
+        assert(!memcmp(command,retry,bytes)); // Retries must not swap stored keys again.
         tkip.groupCipher=0;assert(Ath10k::buildSecurityWMI(command,sizeof(command),2,tkip)==0);
     }
     ConnectionDriver d;auto &s=d._connection;s.secure=true;
@@ -497,19 +505,40 @@ static void secureConnectionTests(){
     };
     d.connect();assert(s.stage==LinkStage::Connected && !d.networkUp && !s.portAuthorized);
     // PTK/GTK acknowledgements alone must not enable DHCP.
-    s.securityPhase=1;s.groupIndex=1;s.submitted=false;
+    s.securityPhase=1;s.groupIndex=1;s.submitted=false;s.initialGroupPending=separateInitialGroup;
     for(unsigned i=0;i<16;++i){s.temporalKey[i]=UInt8(i);s.groupKey[i]=UInt8(i+16);}
     for(unsigned t=1800;t<1900;t+=10)d.tick(t);
+    if(separateInitialGroup){
+        assert(installs==1 && s.securityPhase==3 && s.initialGroupPending && s.pairInstalled);
+        assert(!s.groupInstalled[1] && !s.portAuthorized && !d.networkUp);
+        // A mistaken early authorize request cannot cross the firmware barrier.
+        s.authorizeRequested=true;
+        assert(!strcmp(d.serviceConnection(1891),"initial-group-not-installed"));
+        s.authorizeRequested=false;
+        s.securityPhase=2;s.submitted=false;s.initialGroupReply=true;
+        for(unsigned i=0;i<16;++i)s.groupKey[i]=UInt8(i+16);
+        for(unsigned t=1892;t<1900;++t)d.tick(t);
+        assert(!s.initialGroupPending && s.groupInstalled[1] && !s.authorizeRequested);
+        UInt8 eapol[64]{},tx[256]{};eapol[12]=0x88;eapol[13]=0x8e;
+        assert(Ath10k::buildHTTPacket(tx,sizeof(tx),eapol,sizeof(eapol),0x1000,0x2000,1,s,false));
+        assert(tx[9]==0x42); // PTK-protected initial group ACK before authorization.
+        eapol[12]=8;eapol[13]=0;
+        assert(Ath10k::buildHTTPacket(tx,sizeof(tx),eapol,sizeof(eapol),0x1000,0x2000,1,s,false));
+        assert(tx[9]==0x46); // No blanket encryption exception for ordinary data.
+    }
     assert(installs==2 && s.securityPhase==3 && !d.networkUp);
+    assert(s.pairKeyEpoch==1 && s.pairKeySerial==1);
     for(auto c:s.temporalKey)assert(!c);
     for(auto c:s.groupKey)assert(!c);
     s.authorizeRequested=true;
     for(unsigned t=1900;t<2000;t+=10)d.tick(t);
-    assert(s.securityPhase==5 && s.portAuthorized && d.networkUp);
+    assert(s.securityPhase==5 && s.portAuthorized && d.networkUp && !s.initialGroupReply);
 
     // GTK replacement: keep Ethernet link up; PN changes only after key ACK/ECHO
     // and pending RX delivery has drained. The pairwise replay floor is preserved.
-    s.pairPN[0]=42;s.groupPN[0]=41;s.portAuthorized=false;s.securityPhase=2;
+    assert(s.groupKeyEpoch[s.groupIndex]==1 && s.groupKeySerial==1);
+    const UInt8 previousGroup=s.groupIndex;
+    s.pairPN[0]=42;s.groupPN[s.groupIndex][0]=41;s.portAuthorized=false;s.securityPhase=2;
     s.rekeyKind=1;s.groupIndex=2;s.sinceMs=2000;s.submitted=false;
     for(unsigned i=0;i<16;++i)s.groupKey[i]=UInt8(100+i);
     s.groupRSC[0]=5;
@@ -524,22 +553,25 @@ static void secureConnectionTests(){
     assert(!d.serviceConnection(2000) && installs==2 && !s.submitted);
     d._wmiScan.completed=true;d._rxSetup.pendingMPDUs=1;
     for(unsigned t=2000;t<2100;t+=10)d.tick(t);
-    assert(installs==3 && s.securityPhase==4 && !s.portAuthorized && d.networkUp && s.groupPN[0]==41);
+    assert(installs==3 && s.securityPhase==4 && !s.portAuthorized && d.networkUp && s.groupPN[previousGroup][0]==41 && !s.groupPN[2][0]);
     assert(oldRX.pending==2 && d._rxReorder.held==2 && d._rxDefrag.entries[0].active);
     d._rxSetup.pendingMPDUs=0;d.tick(2110);
-    assert(s.portAuthorized && s.securityPhase==5 && s.securityGeneration==2 && s.pairPN[0]==42 && s.groupPN[0]==5);
-    assert(s.groupInstalled[2] && s.installedGroups[2][0]==100);
+    assert(s.portAuthorized && s.securityPhase==5 && s.securityGeneration==2 && s.pairPN[0]==42 && s.groupPN[s.groupIndex][0]==5);
+    assert(s.groupInstalled[2] && s.installedGroups[2][0]==100 && s.groupPN[previousGroup][0]==41);
+    assert(s.groupKeyEpoch[previousGroup]==1 && s.groupKeyEpoch[2]==2 && s.groupKeySerial==2);
     assert(oldRX.initialized && oldRX.head==2 && oldRX.peer==7 && oldRX.tid==3 && oldRX.generation==9);
     assert(!oldRX.pending && !d._rxReorder.held && !oldRX.gapSince && !d._rxReorder.released);
     for(auto *slot:oldRX.slots)assert(!slot);
     assert(!d._rxDefrag.entries[0].active && !d._rxBatch.count);
     // PTK replacement with unchanged GTK must not reinstall GTK or reset its PN.
-    s.pairPN[0]=55;s.groupPN[0]=30;s.portAuthorized=false;s.securityPhase=1;
+    s.pairPN[0]=55;s.groupPN[s.groupIndex][0]=30;s.portAuthorized=false;s.securityPhase=1;
     s.rekeyKind=2;s.rekeySkipGroup=true;s.submitted=false;s.sinceMs=2200;
     for(unsigned i=0;i<16;++i){s.temporalKey[i]=UInt8(150+i);s.groupKey[i]=UInt8(100+i);}
     for(unsigned t=2200;t<2300;t+=10)d.tick(t);
     assert(installs==4 && s.securityGeneration==3 && s.portAuthorized && !s.rekeyKind);
-    assert(s.pairPN[0]==0 && s.groupPN[0]==30 && s.installedPair[0]==150);
+    assert(s.pairPN[0]==0 && s.groupPN[s.groupIndex][0]==30 && s.installedPair[0]==150);
+    assert(s.groupKeyEpoch[2]==2 && s.groupKeySerial==2);
+    assert(s.pairKeyEpoch==2 && s.pairKeySerial==2);
     UInt8 packet[64]{},cmd[256]{};packet[12]=8;
     assert(Ath10k::buildHTTPacket(cmd,256,packet,64,0x1000,0x2000,1,s,false));assert(cmd[9]==0x42);
     s.portAuthorized=false;
@@ -780,6 +812,76 @@ static void htTests(){
     vht.releaseWMIRuntime();
     Ath10k::ConnectionState s{};caps(s.ap,true);s.operatingChannel=36;
     Ath10k::negotiateHighThroughput(s);assert(s.htEnabled && s.vhtEnabled && s.width==20 && s.vhtMap==0xfffe && Ath10k::peerRateSet(s,1,20).rx==0xfffd);
+    // A TKIP group cipher does not prevent CCMP unicast HT/VHT. Pairwise
+    // WEP/TKIP does, including when an AP continues advertising fast modes.
+    for(UInt8 cipher:{UInt8(1),UInt8(2),UInt8(5)}){
+        auto legacy=s;legacy.pairCipher=cipher;legacy.groupCipher=4;
+        UInt8 rejected[256];memset(rejected,0xa5,sizeof(rejected));legacy.stage=LinkStage::Assoc;
+        assert(!Ath10k::buildStationManagement(rejected,sizeof(rejected),legacy));
+        assert(!Ath10k::buildConnectionWMI(rejected,sizeof(rejected),2,legacy,LinkStage::PeerAssoc));
+        for(auto byte:rejected)assert(byte==0xa5);
+        Ath10k::negotiateHighThroughput(legacy);Ath10k::rememberNegotiatedRates(legacy);
+        assert(!legacy.htEnabled && !legacy.vhtEnabled && !legacy.htRateCount && legacy.width==20);
+        assert(legacy.nss==1 && !legacy.shortGI && !legacy.localHT && !legacy.localVHT);
+        assert(!legacy.negotiatedHTMask && legacy.negotiatedWidth==20 && legacy.negotiatedVHTRx==0xffff);
+        assert(!strcmp(legacy.phyReason,"legacy-pairwise-no-ht-vht"));
+        Ath10k::negotiateHighThroughput(legacy);assert(!legacy.htEnabled && !legacy.vhtEnabled);
+        legacy.ap.rateCount=1;legacy.ap.rates[0]=12;legacy.wmmConfigured=true;
+        const auto bytes=Ath10k::buildStationManagement(rejected,sizeof(rejected),legacy);assert(bytes>=28);
+        for(unsigned pos=28;pos<bytes;pos+=2+rejected[pos+1]){
+            assert(pos+2+rejected[pos+1]<=bytes);assert(rejected[pos]!=45 && rejected[pos]!=191 && rejected[pos]!=199);
+        }
+        // A maintenance override must not resurrect wider PHY flags.
+        assert(Ath10k::buildConnectionWMI(rejected,sizeof(rejected),2,legacy,LinkStage::PeerAssoc,2,80));
+        assert(!(Ath10k::connLE32(rejected+36)&(0x1000u|0x2000u|0x02000000u|0x04000000u)));
+        assert(Ath10k::connLE32(rejected+64)==1 && Ath10k::connLE32(rejected+72)==0);
+
+        Ath10k::CandidateConfiguration candidate{};candidate.ap=s.ap;candidate.operatingChannel=36;
+        candidate.firmwareHT=s.firmwareHT;candidate.firmwareVHT=s.firmwareVHT;candidate.pairCipher=cipher;
+        Ath10k::negotiateHighThroughput(candidate);assert(!candidate.htEnabled && !candidate.vhtEnabled);
+    }
+    {auto mixed=s;mixed.groupCipher=AthSecurity::cipherTKIP;
+     Ath10k::negotiateHighThroughput(mixed);assert(mixed.htEnabled && mixed.vhtEnabled);}
+    for(UInt8 group:{UInt8(2),UInt8(4)})for(UInt8 pair:{UInt8(2),UInt8(4)})for(UInt8 akm:{UInt8(1),UInt8(2)}){
+        auto selected=s;selected.secure=true;selected.pairCipher=pair;selected.groupCipher=group;selected.securityAKM=akm;
+        selected.stage=LinkStage::Assoc;selected.ap.rateCount=1;selected.ap.rates[0]=12;
+        Ath10k::negotiateHighThroughput(selected);UInt8 frame[256]{};
+        const auto bytes=Ath10k::buildStationManagement(frame,sizeof(frame),selected);assert(bytes>=28);
+        unsigned rsnCount=0;
+        for(unsigned pos=28;pos<bytes;pos+=2+frame[pos+1]){
+            assert(pos+2+frame[pos+1]<=bytes);
+            if(frame[pos]==48){AthSecurity::RSNInfo parsed{};assert(AthSecurity::parseRSN(frame+pos,frame[pos+1]+2,parsed));
+                assert(parsed.group==group && parsed.pairwise==(1u<<pair) && parsed.akms==(1u<<akm));++rsnCount;}
+        }
+        assert(rsnCount==1);
+        UInt8 ie[22];size_t ieBytes=0;
+        assert(AthSecurity::buildSelectedStationRSN(group,pair,akm,ie,sizeof(ie),ieBytes));
+        const bool ordinary=pair==4 && (akm!=1 || group==4);
+        assert(Ath10k::connectionRSNAccepted(selected,ie,ieBytes)==ordinary);
+        selected.legacyRSNAllowed=true;assert(Ath10k::connectionRSNAccepted(selected,ie,ieBytes));
+        ie[13]=pair==2?4:2;assert(!Ath10k::connectionRSNAccepted(selected,ie,ieBytes));ie[13]=pair;
+        selected.pmfRequired=true;assert(!Ath10k::connectionRSNAccepted(selected,ie,ieBytes));
+    }
+
+    for(UInt8 group:{UInt8(2),UInt8(4)})for(UInt8 pair:{UInt8(2),UInt8(4)})for(UInt8 akm:{UInt8(1),UInt8(2)}){
+        auto selected=s;selected.secure=true;selected.wpa1Selected=true;
+        selected.pairCipher=pair;selected.groupCipher=group;selected.securityAKM=akm;selected.stage=LinkStage::Assoc;
+        UInt8 ie[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,group,1,0,0,0x50,0xf2,pair,1,0,0,0x50,0xf2,akm};
+        memcpy(selected.ap.wpa,ie,sizeof(ie));selected.ap.wpaLength=sizeof(ie);selected.ap.wpaPresent=true;
+        selected.ap.rateCount=1;selected.ap.rates[0]=12;
+        Ath10k::negotiateHighThroughput(selected);
+        assert(Ath10k::connectionRSNAccepted(selected,ie,sizeof(ie)));
+        assert(!Ath10k::connectionRSNAccepted(selected,AthSecurity::stationRSN,sizeof(AthSecurity::stationRSN)));
+        UInt8 frame[256]{};const auto bytes=Ath10k::buildStationManagement(frame,sizeof(frame),selected);assert(bytes>=28);
+        unsigned count=0;for(unsigned pos=28;pos<bytes;pos+=2+frame[pos+1]){
+            assert(frame[pos]!=48);
+            if(frame[pos]==221 && frame[pos+1]>=4 && frame[pos+5]==1){
+                assert(frame[pos+1]==22 && !memcmp(frame+pos,ie,sizeof(ie)));++count;}
+        }assert(count==1);
+        selected.groupCipher=group==2?4:2;assert(!Ath10k::buildStationManagement(frame,sizeof(frame),selected));
+        selected.groupCipher=group;selected.pmfRequired=true;assert(!Ath10k::buildStationManagement(frame,sizeof(frame),selected));
+    }
+
     s.ap.vhtOp[3]=0;s.ap.vhtOp[4]=0;Ath10k::negotiateHighThroughput(s);
     assert(s.htEnabled && s.vhtEnabled && s.width==20 && s.vhtMap==0xfffe && Ath10k::peerRateSet(s,1,20).rx==0xfffd);
     s.ap.vhtOp[3]=0xfc;s.ap.vhtOp[4]=0xff;
@@ -944,6 +1046,30 @@ static void deferredDataWakeTests(){
     assert(!d.serviceConnection(1840));assert(d.queue.wakes==2 && !d._dataTXStalled);
     d.releaseWMIRuntime();
 }
+static void sharedWEPSubmission(){
+ ConnectionDriver d;d.connect();auto &s=d._connection;
+ s.stage=LinkStage::Auth;s.secure=s.sharedKeyAuth=true;s.pairCipher=1;s.portAuthorized=false;s.securityAKM=0;
+ AthSecurity::WEPSharedAuthentication owner;UInt8 key[5]{},iv[3]={1,2,3},challenge[9]={1,0,2,0,0,0,16,1,42},frame[64]{};
+ assert(owner.begin(1,s.local,s.bssid,key,5,0,iv,1900,3000));assert(owner.requestSubmitted());
+ assert(owner.receive(1,s.local,s.bssid,challenge,sizeof(challenge),1950));
+ const auto n=owner.buildResponseFrame(1,s.local,s.bssid,2000,1,frame,sizeof(frame));assert(n==41);
+ Ath10k::WEPAuthenticationTX proof{&owner,1,2000};bool submitted=false;
+ d._regs.tx4Consume=[&](){
+  const auto *cmd=static_cast<const UInt8 *>(d._packetCommand.virtualAddress());
+  assert(cmd[9]==0x65 && !memcmp(d._packetBuffer.virtualAddress(),frame,n));submitted=true;
+  d.deliver(1,mgmtCompletion(s.txId));
+ };
+ const auto mode=AthSecurity::ManagementTX::SoftwareWEPAuthentication;
+ const auto purpose=Ath10k::ConnectionState::EAPOLPurpose::Handshake;
+ const auto id=s.txId;
+ assert(d.submitNetworkPacket(frame,n,true,2000,mode));assert(!submitted && s.txId==id);
+ proof.now=1999;assert(d.submitNetworkPacket(frame,n,true,2000,mode,purpose,&proof));assert(!submitted && s.txId==id);
+ proof.now=2000;assert(!d.submitNetworkPacket(frame,n,true,2000,mode,purpose,&proof));
+ assert(submitted && s.txOwned && !s.lastTxPMF && !s.lastTxEAPOL);
+ owner.cancel(); // DMA retains its own copied ciphertext until retirement.
+ s.submitted=true;s.managementRetryMs=3000;d.tick(2010);assert(!s.txOwned);
+ d.releaseWMIRuntime();
+}
 static void protectedManagementTransport(){
     ConnectionDriver d;d.connect();auto &s=d._connection;s.secure=true;s.pairInstalled=true;s.pmfRequired=true;s.portAuthorized=true;s.securityPhase=5;
     UInt8 plain[28]{};plain[0]=0xd0;plain[1]=0x40;memcpy(plain+4,s.bssid,6);memcpy(plain+10,s.local,6);memcpy(plain+16,s.bssid,6);
@@ -962,6 +1088,9 @@ static void protectedManagementTransport(){
     assert(s.txId==id && s.txComplete==complete && !s.txOwned && !submitted);
     assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::SoftwareCCMP));
     assert(!s.txOwned && !submitted);
+    s.pairCipher=AthSecurity::cipherTKIP;
+    assert(d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::HardwareCCMP));
+    assert(!s.txOwned && !submitted);s.pairCipher=AthSecurity::cipherCCMP;
     assert(!d.submitNetworkPacket(prepared.frame,prepared.bytes,true,2000,AthSecurity::ManagementTX::HardwareCCMP));
     assert(submitted && s.txOwned && s.lastTxPMF);d.tick(2010);assert(!s.txOwned && !s.cancelRequested);
     d._regs.tx4Consume=[&](){d.deliver(1,mgmtCompletion(s.txId,1));};
@@ -1101,11 +1230,113 @@ static void associationIdentifierTests(){
     assert(!ignored.diagnostics.associationRejects);
     d.releaseWMIRuntime();
 }
+static void oweAssociationTests(){
+    ConnectionDriver d;d.connect();assert(d.networkUp);
+    auto base=d._connection;base.stage=LinkStage::Assoc;base.submitted=true;base.assocReply=false;
+    base.htEnabled=base.vhtEnabled=false;base.securityAKM=18;base.secure=base.pmfRequired=true;
+    base.wepSelected=base.wpa1Selected=false;base.pairCipher=base.groupCipher=4;base.oweResponseReady=false;
+    UInt8 x[32]{};x[31]=1; // Format-only; worker must reject invalid curve points.
+    assert(AthSecurity::encodeOWEGroup19Parameter(x,32,base.oweRequest,37));base.oweRequestReady=true;
+    UInt8 rsn[28];size_t rsnBytes=0;assert(AthSecurity::buildOWEStationRSN(rsn,sizeof(rsn),rsnBytes));
+    base.ap.rsnPresent=true;base.ap.rsnLength=rsnBytes;memcpy(base.ap.rsn,rsn,rsnBytes);
+    UInt8 request[512];auto length=Ath10k::buildStationManagement(request,sizeof(request),base);assert(length);
+    unsigned dhCount=0,rsnCount=0;for(unsigned p=28;p<length;p+=2+request[p+1]){
+        if(request[p]==255){++dhCount;assert(request[p+1]==35 && !memcmp(request+p,base.oweRequest,37));}
+        if(request[p]==48){++rsnCount;assert(!memcmp(request+p,rsn,28));}
+    }assert(dhCount==1 && rsnCount==1);
+    auto missing=base;missing.oweRequestReady=false;assert(!Ath10k::buildStationManagement(request,sizeof(request),missing));
+    auto packet=managementResponse(base,true);std::vector<UInt8> response(packet.begin()+60,packet.begin()+90);
+    response.insert(response.end(),rsn,rsn+28);response.insert(response.end(),base.oweRequest,base.oweRequest+37);
+    for(unsigned scenario=0;scenario<7;++scenario){auto state=base;auto frame=response;
+        if(scenario==1)frame.resize(58); // Missing DH.
+        if(scenario==2)frame.insert(frame.end(),base.oweRequest,base.oweRequest+37); // Duplicate DH.
+        if(scenario==3)frame[61]=20; // Unsupported group.
+        if(scenario==4)frame.pop_back(); // Truncated element.
+        if(scenario==5)frame.erase(frame.begin()+30,frame.begin()+58); // Missing RSN.
+        if(scenario==6)frame[10]^=2; // Wrong sender.
+        Ath10k::receiveStationManagement(state,frame.data(),frame.size(),0,state.operatingChannel);
+        assert(state.assocReply==(scenario==0) && state.oweResponseReady==(scenario==0));
+        if(!scenario){assert(!memcmp(state.oweResponse,base.oweRequest,37));
+            frame.back()^=1;Ath10k::receiveStationManagement(state,frame.data(),frame.size(),0,state.operatingChannel);
+            assert(!memcmp(state.oweResponse,base.oweRequest,37));}
+    }
+    auto cleared=base;cleared.oweResponseReady=true;Ath10k::resetDisconnected(cleared);
+    assert(!cleared.oweRequestReady && !cleared.oweResponseReady);
+    d.releaseWMIRuntime();
+}
 int main(){
+    oweAssociationTests();
+    {UInt8 wire[32];
+     for(UInt8 index=0;index<4;++index){memset(wire,0x5a,sizeof(wire));
+      assert(Ath10k::buildWEPTransmitIndexWMI(wire,sizeof(wire),2,17,index)==28);
+      assert(wire[0]==2 && wire[5]==17 && Ath10k::htcReadLE16(wire+2)==20);
+      assert(Ath10k::connLE32(wire+8)==0x5008 && Ath10k::htcReadLE16(wire+12)==12 && Ath10k::htcReadLE16(wire+14)==95);
+      assert(!Ath10k::connLE32(wire+16) && Ath10k::connLE32(wire+20)==0x21 && Ath10k::connLE32(wire+24)==index);
+      for(unsigned i=28;i<sizeof(wire);++i)assert(wire[i]==0x5a);
+     }
+     for(unsigned n=0;n<28;++n){memset(wire,0x5a,sizeof(wire));assert(!Ath10k::buildWEPTransmitIndexWMI(wire,n,2,0,0));for(auto b:wire)assert(b==0x5a);}
+     for(UInt8 endpoint:{UInt8(0),UInt8(255)})assert(!Ath10k::buildWEPTransmitIndexWMI(wire,sizeof(wire),endpoint,0,0));
+     assert(!Ath10k::buildWEPTransmitIndexWMI(wire,sizeof(wire),2,0,4));
+    }
+
+    { // Programming and receipt cipher namespaces must never be interchanged.
+     struct Case{UInt8 selected,wmi,htt,length;};
+     for(const auto c:{Case{1,1,3,5},Case{5,1,2,13},Case{2,2,4,32},Case{4,4,6,16}}){
+      const auto spec=Ath10k::firmwareKeyCipher(c.selected);
+      assert(spec.wmi==c.wmi && spec.htt==c.htt && spec.length==c.length);
+      UInt8 frame[160]{},key[32]{},peer[6]={2,1,2,3,4,5};
+      for(UInt32 flags:{0u,1u,2u,3u}){
+       assert(Ath10k::buildKeyWMI(frame,sizeof(frame),2,1,peer,3,flags,spec.wmi,key,spec.length));
+       assert(Ath10k::connLE32(frame+36)==c.wmi && Ath10k::connLE32(frame+96)==c.length);
+       assert(Ath10k::connLE32(frame+32)==flags && Ath10k::connLE32(frame+28)==3);
+      }
+      Ath10k::ConnectionState state{};state.pairCipher=state.groupCipher=c.selected;
+      for(UInt8 phase:{UInt8(1),UInt8(2)}){
+       state.securityPhase=phase;
+       const auto expected=Ath10k::expectedSecurityIndication(state);
+       assert(expected==((c.selected==1 || c.selected==5)?0xff:UInt8(c.htt|(phase==1?0x80:0))));
+      }
+     }
+     for(unsigned cipher=0;cipher<256;++cipher)if(cipher!=1 && cipher!=2 && cipher!=4 && cipher!=5){
+      const auto spec=Ath10k::firmwareKeyCipher(UInt8(cipher));assert(!spec.wmi && !spec.htt && !spec.length);
+     }
+    }
+
+    {UInt8 command[160],key[32]{},peer[6]={2,1,2,3,4,5};
+     const UInt8 rsc[6]={0x01,0x23,0x45,0x67,0x89,0xab};
+     for(unsigned i=0;i<32;++i)key[i]=UInt8(0x80+i);
+     for(UInt8 endpoint:{UInt8(0),UInt8(255)}){
+      memset(command,0x5a,sizeof(command));
+      assert(!Ath10k::buildKeyWMI(command,sizeof(command),endpoint,7,peer,0,0,4,key,16));
+      for(auto byte:command)assert(byte==0x5a);
+     }
+     for(UInt32 n:{5u,13u,16u,32u}){
+      const UInt32 cipher=n==16?4:n==32?2:1,expected=112+((n+3)&~3u);
+      memset(command,0x5a,sizeof(command));
+      assert(!Ath10k::buildKeyWMI(command,expected-1,2,7,peer,3,1,cipher,key,n));
+      for(auto byte:command)assert(byte==0x5a);
+      assert(Ath10k::buildKeyWMI(command,expected,2,7,peer,3,1,cipher,key,n)==expected);
+      assert(command[expected]==0x5a && Ath10k::connLE32(command+96)==n);
+      assert(Ath10k::htcReadLE16(command+108)==((n+3)&~3u));
+      for(UInt32 at=112+n;at<expected;++at)assert(!command[at]);
+      assert(!memcmp(command+112,key,n) && !memcmp(command+20,peer,6));
+      assert(command[0]==2 && command[5]==7 && Ath10k::htcReadLE16(command+2)==expected-8);
+      assert(Ath10k::buildKeyWMI(command,expected,2,7,peer,3,1,cipher,key,n,rsc)==expected);
+      assert(!memcmp(command+40,rsc,6) && !command[46] && !command[47]);
+      assert(Ath10k::buildKeyWMI(command,160,2,7,peer,3,1,0,nullptr,n)==expected);
+      for(UInt32 at=112;at<expected;++at)assert(!command[at]);
+     }
+     assert(!Ath10k::buildKeyWMI(command,160,2,7,peer,4,1,1,key,5));
+     assert(!Ath10k::buildKeyWMI(command,160,2,7,peer,0,4,1,key,5));
+     assert(!Ath10k::buildKeyWMI(command,160,2,7,peer,0,0,0,key,5));
+     assert(!Ath10k::buildKeyWMI(command,160,2,7,peer,0,0,1,nullptr,5));
+    }
+
     associationComebackTests();
     associationIdentifierTests();
     rsnxeBSSScanTests();
     pmfFirmwarePolicy();
+    sharedWEPSubmission();
     protectedManagementTransport();
     deferredDataWakeTests();
     partialCancelTests();
@@ -1114,7 +1345,7 @@ int main(){
     pipelineTests();
     statsEventTests();
     disconnectTests();
-    secureConnectionTests();
+    secureConnectionTests();secureConnectionTests(true);
     startResponseTests();
     peerMapTests();
     rxLayoutTests();
@@ -1128,6 +1359,37 @@ int main(){
     UInt8 ethernet[60]{};ethernet[0]=0xff;memcpy(ethernet+6,good._connection.local,6);ethernet[12]=8;ethernet[13]=6;
     assert(!good.submitNetworkPacket(ethernet,sizeof(ethernet),false,1800));assert(good._connection.txOwned);
     good.tick(1810);assert(!good._connection.txOwned && good._connection.txPackets==1);rxTests(good._connection);amsduTests(good._connection);
+    // Independent receipt ownership through the actual submission/retirement path.
+    using Purpose=Ath10k::ConnectionState::EAPOLPurpose;
+    assert(good.submitNetworkPacket(ethernet,sizeof(ethernet),false,1811,AthSecurity::ManagementTX::Plain,Purpose::MICReport));
+    assert(!good._connection.txOwned && !good._connection.micReportCompletion.pending);
+    ethernet[12]=0x88;ethernet[13]=0x8e;
+    good._connection.eapolCompletion.begin(900);
+    good._connection.tkipDataBlocked=true;good._connection.secure=true;
+    assert(!Ath10k::dataTXAdmissionOpen(good._connection));
+    UInt8 htt[256]{};
+    assert(Ath10k::buildHTTPacket(htt,sizeof(htt),ethernet,sizeof(ethernet),0x1000,0x2000,1,good._connection,false));
+    assert(htt[9]==0x42); // Key authorization survives the ordinary-data block.
+    ethernet[12]=8;ethernet[13]=6;
+    assert(!Ath10k::buildHTTPacket(htt,sizeof(htt),ethernet,sizeof(ethernet),0x1000,0x2000,1,good._connection,false));
+    ethernet[12]=0x88;ethernet[13]=0x8e;
+    assert(!good.submitNetworkPacket(ethernet,sizeof(ethernet),false,1812,AthSecurity::ManagementTX::Plain,Purpose::MICReport));
+    const auto micID=good._connection.txId;
+    good.tick(1813);
+    assert(!good._connection.txOwned && good._connection.micReportCompletion.complete);
+    assert(good._connection.micReportCompletion.id==micID);
+    assert(good._connection.eapolCompletion.id==900 && !good._connection.eapolCompletion.complete);
+    assert(!good._connection.authorizeRequested && !good._connection.eapolTxFailed);
+    assert(good.submitNetworkPacket(ethernet,sizeof(ethernet),false,1814,AthSecurity::ManagementTX::Plain,Purpose::MICReport));
+    assert(!good._connection.txOwned); // Unconsumed result cannot be overwritten.
+    good._connection.micReportCompletion.clear();good._connection.eapolCompletion.clear();
+    UInt8 micDeauth[26]{};micDeauth[0]=0xc0;Ath10k::htcWriteLE16(micDeauth+24,14);
+    memcpy(micDeauth+4,good._connection.bssid,6);memcpy(micDeauth+10,good._connection.local,6);memcpy(micDeauth+16,good._connection.bssid,6);
+    assert(!good.submitNetworkPacket(micDeauth,sizeof(micDeauth),true,1815,AthSecurity::ManagementTX::Plain,Purpose::MICDeauth));
+    good.tick(1816);assert(good._connection.micReportCompletion.complete && !good._connection.eapolCompletion.pending);
+    good._connection.micReportCompletion.clear();micDeauth[24]=3;
+    assert(good.submitNetworkPacket(micDeauth,sizeof(micDeauth),true,1817,AthSecurity::ManagementTX::Plain,Purpose::MICDeauth));
+    good._connection.tkipDataBlocked=false;good._connection.secure=false;
     auto deauth=managementResponse(good._connection,false);deauth[60]=0xc0;
     good.deliver(2,deauth);good.tick(1820);assert(good._wmiLive.active && !good.networkUp && good._connection.disconnect!=Ath10k::DisconnectStage::None);good.releaseWMIRuntime();
     chainedRxTests();
@@ -1142,6 +1404,38 @@ int main(){
     UInt8 wire[256];cs.stage=LinkStage::Start;
     assert(Ath10k::buildConnectionWMI(wire,sizeof(wire),2,cs)==120);
     assert(Ath10k::wmiReadLE32(wire+92)==2412 && Ath10k::wmiReadLE32(wire+96)==2412);
+    { // The selected protocol controls AP admission, including mixed-mode APs.
+      auto selected=cs;selected.secure=true;selected.wpa1Selected=true;selected.pairCipher=2;selected.securityAKM=2;
+      auto ap=adjacent._wmiBSS.entries[0];ap.privacy=true;ap.capabilities|=0x10;
+      UInt8 wpa[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2};
+      memcpy(ap.wpa,wpa,sizeof(wpa));ap.wpaLength=sizeof(wpa);ap.wpaPresent=true;
+      memcpy(ap.rsn,AthSecurity::stationRSN,sizeof(AthSecurity::stationRSN));ap.rsnLength=sizeof(AthSecurity::stationRSN);ap.rsnPresent=true;
+      const auto before=selected;Ath10k::CandidateConfiguration prepared{};
+      assert(!Ath10k::prepareBSSCandidate(selected,ap,prepared));
+      assert(prepared.groupCipher==2 && prepared.pairCipher==2 && !prepared.htEnabled);
+      assert(!memcmp(&before,&selected,sizeof(selected)));
+      ap.wpaLength=0;ap.wpaPresent=false;
+      assert(Ath10k::prepareBSSCandidate(selected,ap,prepared)); // RSNE cannot substitute for requested WPA1.
+      ap.wpaLength=sizeof(wpa);ap.wpaPresent=true;ap.rsnLength=0;ap.rsnPresent=false;
+      selected.wpa1Selected=false;selected.pairCipher=4;
+      assert(Ath10k::prepareBSSCandidate(selected,ap,prepared)); // WPA IE cannot substitute for requested WPA2.
+    }
+    { // Explicit WEP cannot select open or RSN/WPA profiles by privacy alone.
+      for(UInt8 cipher:{UInt8(1),UInt8(5)}){
+       auto selected=cs;selected.secure=selected.wepSelected=true;selected.pairCipher=cipher;
+       auto ap=adjacent._wmiBSS.entries[0];ap.privacy=true;ap.capabilities|=0x10;
+       ap.rsnPresent=ap.wpaPresent=false;ap.rsnLength=ap.wpaLength=0;
+       Ath10k::CandidateConfiguration prepared{};assert(!Ath10k::prepareBSSCandidate(selected,ap,prepared));
+       assert(prepared.groupCipher==cipher && !prepared.htEnabled && !prepared.vhtEnabled);
+       Ath10k::applyBSSCandidate(selected,prepared);selected.stage=LinkStage::Assoc;
+       UInt8 frame[320]{};const auto n=Ath10k::buildStationManagement(frame,sizeof(frame),selected);assert(n && (frame[24]&16));
+       for(unsigned at=28;at<n;at+=2+frame[at+1])assert(frame[at]!=48 && !(frame[at]==221 && frame[at+1]>=4 && frame[at+5]==1));
+       ap.privacy=false;assert(Ath10k::prepareBSSCandidate(selected,ap,prepared));ap.privacy=true;
+       ap.rsnPresent=true;assert(Ath10k::prepareBSSCandidate(selected,ap,prepared));ap.rsnPresent=false;
+       ap.wpaPresent=true;assert(Ath10k::prepareBSSCandidate(selected,ap,prepared));ap.wpaPresent=false;
+       selected.wepSelected=false;assert(Ath10k::prepareBSSCandidate(selected,ap,prepared));
+      }
+    }
     { // Reject unsupported basic rates before touching the selected AP.
       auto candidate=adjacent._wmiBSS;
       candidate.entries[0].advertisedChannel=6;

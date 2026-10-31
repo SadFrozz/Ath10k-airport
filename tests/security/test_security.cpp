@@ -56,19 +56,55 @@ static std::vector<uint8_t> aesWrap(const uint8_t key[16],const uint8_t *plain,s
  }
  std::vector<uint8_t> out(bytes+8);memcpy(out.data(),a,8);memcpy(out.data()+8,r.data(),bytes);return out;
 }
-static std::vector<uint8_t> tkipM3(const uint8_t *rsn,size_t rsnBytes,const uint8_t gtk[32]){
+static std::vector<uint8_t> tkipM3(const uint8_t *rsn,size_t rsnBytes,const uint8_t gtk[32],uint8_t index=1){
  constexpr size_t plainBytes=72,cipherBytes=80,keyBytes=99,eapolBytes=keyBytes+cipherBytes;
  std::vector<uint8_t> frame(v_m3,v_m3+14+keyBytes);frame.resize(14+eapolBytes,0);uint8_t *p=frame.data()+14;
  putBE16(p+2,uint16_t(eapolBytes-4));putBE16(p+97,uint16_t(cipherBytes));
  std::vector<uint8_t> plain(plainBytes,0);memcpy(plain.data(),rsn,rsnBytes);size_t at=rsnBytes;
  plain[at++]=221;plain[at++]=38;plain[at++]=0;plain[at++]=15;plain[at++]=172;plain[at++]=1;
- plain[at++]=1;plain[at++]=0;memcpy(plain.data()+at,gtk,32);at+=32;
+ plain[at++]=index;plain[at++]=0;memcpy(plain.data()+at,gtk,32);at+=32;
  plain[at++]=221; // WPA key-data padding marker, followed by zeroes.
  assert(at<=plainBytes);auto wrapped=aesWrap(v_ptk+16,plain.data(),plainBytes);assert(wrapped.size()==cipherBytes);
  memcpy(p+99,wrapped.data(),cipherBytes);memset(p+81,0,16);uint8_t digest[20]{};
  assert(OpenSSLCrypto::hmac(v_ptk,16,p,eapolBytes,digest));memcpy(p+81,digest,16);return frame;
 }
+static void retainedGTKTests(){
+ S s;assert(s.begin(v_pmk,v_snonce,v_sta,v_ap,AthSecurity::stationRSNTKIP,sizeof(AthSecurity::stationRSNTKIP)));
+ assert(s.receive(v_m1,sizeof(v_m1))==S::Reply);
+ uint8_t a[32],b[32];for(unsigned i=0;i<32;++i){a[i]=uint8_t(0x40+i);b[i]=uint8_t(0x80+i);}
+ auto initial=tkipM3(AthSecurity::stationRSNTKIP,sizeof(AthSecurity::stationRSNTKIP),a);
+ assert(s.receive(initial.data(),initial.size())==S::Keys);
+ auto group=[&](const uint8_t *key,uint8_t index,uint8_t replay){
+  auto f=tkipM3(AthSecurity::stationRSNTKIP,sizeof(AthSecurity::stationRSNTKIP),key,index);
+  auto p=f.data()+14;putBE16(p+5,0x1382);p[16]=replay;memset(p+81,0,16);
+  uint8_t digest[20];assert(OpenSSLCrypto::hmac(v_ptk,16,p,f.size()-14,digest));memcpy(p+81,digest,16);return f;
+ };
+ auto second=group(b,2,3);assert(s.receive(second.data(),second.size())==S::GroupKeys);
+ auto retained=group(a,1,4);assert(s.receive(retained.data(),retained.size())==S::Reply);
+ assert(s.receive(retained.data(),retained.size())==S::Reply);
+ auto secondAgain=group(b,2,5);assert(s.receive(secondAgain.data(),secondAgain.size())==S::Reply);
+ auto relocated=group(a,3,6);assert(s.receive(relocated.data(),relocated.size())==S::Fatal);
+}
 static void rekeyTests(){
+ for(uint8_t index:{uint8_t(2),uint8_t(3)}){
+  S trial;start(trial);assert(trial.receive(v_m1,sizeof(v_m1))==S::Reply);
+  assert(trial.receive(v_m3,sizeof(v_m3))==S::Keys);
+  assert(trial.receive(r_group_new,sizeof(r_group_new))==S::GroupKeys);
+  assert(trial.receive(r_pair1,sizeof(r_pair1))==S::Reply);
+  uint8_t plain[48]{};memcpy(plain,v_rsn,sizeof(v_rsn));size_t at=sizeof(v_rsn);
+  const uint8_t kde[]={221,22,0,15,172,1,index,0};memcpy(plain+at,kde,sizeof(kde));
+  memcpy(plain+at+8,r_new_gtk,16);plain[at+24]=221;
+  auto wrapped=aesWrap(r_new_ptk+16,plain,sizeof(plain));
+  std::vector<uint8_t> frame(r_pair3,r_pair3+sizeof(r_pair3));auto p=frame.data()+14;
+  assert(wrapped.size()==AthSecurity::be16(p+97));memcpy(p+99,wrapped.data(),wrapped.size());
+  memset(p+81,0,16);uint8_t digest[20]{};
+  assert(OpenSSLCrypto::hmac(r_new_ptk,16,p,frame.size()-14,digest));memcpy(p+81,digest,16);
+  uint8_t prior[S::keyPayloadLength];memcpy(prior,trial.keys,sizeof(prior));
+  const auto result=trial.receive(frame.data(),frame.size());
+  if(index==2)assert(result==S::PairKeys && trial.keyChanges==S::PTKChanged);
+  else assert(result==S::Fatal && !trial.outputLength && !memcmp(prior,trial.keys,sizeof(prior)));
+ }
+
  S s;start(s);assert(s.receive(v_m1,sizeof(v_m1))==S::Reply);assert(s.receive(v_m3,sizeof(v_m3))==S::Keys);
  assert(s.receive(r_group_new,sizeof(r_group_new))==S::GroupKeys);
  assert(!memcmp(s.keys+16,r_new_gtk,16) && s.keys[48]==AthSecurity::cipherCCMP && s.keys[49]==2 && s.keys[50]==9);
@@ -182,7 +218,120 @@ static void enterpriseExchange(){
  uint8_t required[sizeof(e_rsn)];memcpy(required,e_rsn,sizeof(required));required[20]=0xc0;
  assert(!e.begin(e_pmk,e_snonce,e_sta,e_ap,required,sizeof(required),1));
 }
+static void eapolVersionTests(){
+ for(uint8_t version:{1,2,3}){
+  S s;start(s);std::vector<uint8_t> m1(v_m1,v_m1+sizeof(v_m1)),m3(v_m3,v_m3+sizeof(v_m3));
+  m1[14]=m3[14]=version;uint8_t digest[20];memset(m3.data()+95,0,16);
+  assert(OpenSSLCrypto::hmac(v_ptk,16,m3.data()+14,m3.size()-14,digest));memcpy(m3.data()+95,digest,16);
+  assert(AthSecurity::classifyEAPOL(m1.data(),m1.size()).kind==AthSecurity::EAPOLKind::Key);
+  assert(s.receive(m1.data(),m1.size())==S::Reply && s.output[14]==version);
+  assert(s.receive(m3.data(),m3.size())==S::Keys && s.output[14]==version);
+  uint8_t reply[99];memcpy(reply,s.output+14,sizeof(reply));memset(reply+81,0,16);
+  assert(OpenSSLCrypto::hmac(v_ptk,16,reply,sizeof(reply),digest));assert(!memcmp(s.output+95,digest,16));
+ }
+ for(unsigned version=0;version<256;++version)if(version<1 || version>3){
+  S s;start(s);std::vector<uint8_t> m1(v_m1,v_m1+sizeof(v_m1));m1[14]=uint8_t(version);
+  assert(s.receive(m1.data(),m1.size())==S::Ignore && !s.outputLength);
+ }
+}
+struct ReportFailureCrypto:OpenSSLCrypto {
+ static inline bool fail=false;
+ static bool hmac(const uint8_t *key,size_t keyBytes,const uint8_t *p,size_t bytes,uint8_t *out){
+  if(fail){memset(out,0x77,20);return false;}
+  return OpenSSLCrypto::hmac(key,keyBytes,p,bytes,out);
+ }
+};
+static void micReportFailureOwnership(){
+ using R=AthSecurity::Supplicant<ReportFailureCrypto>;
+ R s;assert(s.begin(v_pmk,v_snonce,v_sta,v_ap,AthSecurity::stationRSNTKIP,sizeof(AthSecurity::stationRSNTKIP)));
+ assert(s.receive(v_m1,sizeof(v_m1))==R::Reply);
+ uint8_t key[32];for(unsigned i=0;i<32;++i)key[i]=uint8_t(i+32);
+ auto m3=tkipM3(AthSecurity::stationRSNTKIP,sizeof(AthSecurity::stationRSNTKIP),key);
+ assert(s.receive(m3.data(),m3.size())==R::Keys);
+ uint8_t out[113];memset(out,0xa5,sizeof(out));size_t bytes=999;
+ ReportFailureCrypto::fail=true;
+ assert(!s.buildGroupMICFailureReport(out,sizeof(out),bytes) && !bytes);
+ for(auto value:out)assert(value==0xa5);
+ ReportFailureCrypto::fail=false;
+ assert(s.buildGroupMICFailureReport(out,sizeof(out),bytes));
+ assert(AthSecurity::be64(out+23)==0); // Failed signing cannot consume a request counter.
+ assert(s.receive(m3.data(),m3.size())==R::Reply); // Cached handshake survives.
+ s.reset();assert(!s.buildGroupMICFailureReport(out,sizeof(out),bytes));
+}
+static void groupMICFailureReportTests(){
+ using namespace AthSecurity;
+ S s;uint8_t report[114];memset(report,0xa5,sizeof(report));size_t bytes=999;
+ assert(!s.buildGroupMICFailureReport(report,sizeof(report),bytes) && !bytes);
+ assert(s.begin(v_pmk,v_snonce,v_sta,v_ap,stationRSNTKIP,sizeof(stationRSNTKIP)));
+ assert(s.receive(v_m1,sizeof(v_m1))==S::Reply);
+ assert(!s.buildGroupMICFailureReport(report,sizeof(report),bytes));
+ uint8_t gtk[32];for(unsigned i=0;i<32;++i)gtk[i]=uint8_t(0x40+i);
+ auto m3=tkipM3(stationRSNTKIP,sizeof(stationRSNTKIP),gtk);
+ assert(s.receive(m3.data(),m3.size())==S::Keys);
+ std::vector<uint8_t> reply(s.output,s.output+s.outputLength);
+ for(unsigned i=0;i<2;++i){
+  assert(s.buildGroupMICFailureReport(report,sizeof(report),bytes));assert(bytes==113 && report[113]==0xa5);
+  assert(!memcmp(report,v_ap,6) && !memcmp(report+6,v_sta,6));
+  assert(be16(report+19)==0x0f02 && be64(report+23)==i);
+  uint8_t packet[99],digest[20];memcpy(packet,report+14,99);memset(packet+81,0,16);
+  assert(OpenSSLCrypto::hmac(v_ptk,16,packet,99,digest));assert(!memcmp(digest,report+95,16));
+  assert(s.outputLength==reply.size() && !memcmp(s.output,reply.data(),reply.size()));
+ }
+ assert(!s.buildGroupMICFailureReport(report,112,bytes));
+ assert(!s.buildGroupMICFailureReport(report,sizeof(report),bytes,0));
+ assert(!s.buildGroupMICFailureReport(report,sizeof(report),bytes,4));
+ assert(s.buildGroupMICFailureReport(report,sizeof(report),bytes,3));assert(be64(report+23)==2);
+ // Counter independence: a duplicate authenticated M3 still yields cached M4.
+ assert(s.receive(m3.data(),m3.size())==S::Reply);
+ assert(s.outputLength==reply.size() && !memcmp(s.output,reply.data(),reply.size()));
+ // Unauthenticated replacement M1 must not change the report signing key.
+ std::vector<uint8_t> next(v_m1,v_m1+sizeof(v_m1));next[30]=9;next[31]^=1;
+ assert(s.receive(next.data(),next.size())==S::Reply && s.pairwisePending());
+ assert(s.buildGroupMICFailureReport(report,sizeof(report),bytes));
+ uint8_t packet[99],digest[20];memcpy(packet,report+14,99);memset(packet+81,0,16);
+ assert(OpenSSLCrypto::hmac(v_ptk,16,packet,99,digest));assert(!memcmp(digest,report+95,16));
+ s.reset();assert(!s.buildGroupMICFailureReport(report,sizeof(report),bytes));
+ S ccmp;start(ccmp);assert(ccmp.receive(v_m1,sizeof(v_m1))==S::Reply);
+ assert(ccmp.receive(v_m3,sizeof(v_m3))==S::Keys);
+ assert(!ccmp.buildGroupMICFailureReport(report,sizeof(report),bytes));
+}
+struct FailingPTKCrypto {
+ static inline unsigned calls=0,failAt=0;
+ static bool hmac(const uint8_t *k,size_t kl,const uint8_t *p,size_t n,uint8_t *out){
+  if(calls++==failAt){memset(out,0x77,20);return false;}
+  return OpenSSLCrypto::hmac(k,kl,p,n,out);
+ }
+};
+static void ptkExpansion(){
+ uint8_t key[32],context[76],out[65];
+ for(unsigned i=0;i<32;++i)key[i]=uint8_t(i);
+ for(unsigned i=0;i<76;++i)context[i]=uint8_t(i);
+ // Python hashlib/hmac SHA1 reference: label+NUL, context, counter 0..3.
+ const uint8_t expected[]={228,73,142,115,117,128,70,73,190,230,63,62,137,99,149,104,226,228,60,234,18,40,41,228,202,249,160,217,3,167,193,237,74,122,43,229,134,70,189,10,117,48,245,179,204,206,14,102,82,232,139,135,71,71,140,245,120,82,96,200,195,231,221,42};
+ for(size_t bytes:{size_t(48),size_t(64)}){
+  memset(out,0xa5,sizeof(out));
+  assert(AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(key,context,out,bytes,bytes));
+  assert(!memcmp(out,expected,bytes));assert(out[bytes]==0xa5);
+  for(unsigned block=0;block<(bytes+19)/20;++block){
+   memset(out,0xa5,sizeof(out));FailingPTKCrypto::calls=0;FailingPTKCrypto::failAt=block;
+   assert(!AthSecurity::deriveSHA1PTK<FailingPTKCrypto>(key,context,out,bytes,sizeof(out)));
+   for(auto byte:out)assert(byte==0xa5);
+  }
+ }
+ for(size_t bytes=0;bytes<=65;++bytes)if(bytes!=48 && bytes!=64)
+  assert(!AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(key,context,out,bytes,sizeof(out)));
+ assert(!AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(key,context,out,64,63));
+ assert(!AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(nullptr,context,out,48,65));
+ assert(!AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(key,nullptr,out,48,65));
+ assert(!AthSecurity::deriveSHA1PTK<OpenSSLCrypto>(key,context,nullptr,48,65));
+ for(auto byte:out)assert(byte==0xa5);
+}
 int main(){
+ micReportFailureOwnership();
+ retainedGTKTests();
+ eapolVersionTests();
+ groupMICFailureReportTests();
+ ptkExpansion();
  enterpriseExchange();
  eapEnvelopeChecks();
  { AthSecurity::PMFKeyEpochs state;AthSecurity::IGTKCMAC128 key{},snapshot{};

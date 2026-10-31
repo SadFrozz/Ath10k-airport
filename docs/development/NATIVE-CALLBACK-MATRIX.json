@@ -730,7 +730,7 @@
       "implementation": "forwarded",
       "operation": "setCIPHER_KEY",
       "queue_contract": "WCL caller -> gated radio dispatcher",
-      "requirement_audit": "gated MSK-only callback for an active WPA2 EAP owner; enterprise join not yet admitted, traffic keys/PMKSA/password remain rejected",
+      "requirement_audit": "gated MSK callback for explicitly admitted AKM1/AKM5 Enterprise owners; legacy WEP slot callback has separate ownership. Dynamic-WEP session admission, FT/Suite-B and radio interoperability remain unverified",
       "stock_consumer_evidence": [
         {
           "module": "IO80211Family",
@@ -1838,7 +1838,7 @@
       "implementation": "unsupported",
       "operation": null,
       "queue_contract": "inline rejection; no radio access",
-      "requirement_audit": "Stock feature-gated capability acknowledgement, not a parameter setter. Unsupported matches disabled traffic-engineering mode; enabling the separate monitor/queue policy remains unimplemented",
+      "requirement_audit": "Stock feature-gated capability acknowledgement, not a parameter setter. Unsupported matches disabled traffic-engineering mode; enabling the separate monitor/queue policy remains unimplemented. Installed CoreWLAN capabilities omit NSNumber90, which airportd WiFiDeviceIsTrafficEngineeringSupported requires; live-traffic-capability.json records the bounded observation",
       "stock_consumer_evidence": [
         {
           "module": "IO80211Family",

@@ -85,7 +85,7 @@ LDFLAGS = $(ARCH) -static -nostdlib -Xlinker -kext \
 
 ifeq ($(NATIVE),1)
 CXXFLAGS += -DATH10K_NATIVE=1 -I$(PROJ_ROOT)/build/generated/itlwm
-NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kNativeSAEPreparation.o $(BUILD_DIR)/Ath10kNativePSKPreparation.o $(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
+NATIVE_OBJECT := $(BUILD_DIR)/Ath10kNative.o $(BUILD_DIR)/Ath10kSAEWorker.o $(BUILD_DIR)/Ath10kSAESession.o $(BUILD_DIR)/Ath10kNativeSAEPreparation.o $(BUILD_DIR)/Ath10kNativePSKPreparation.o $(BUILD_DIR)/Ath10kNativeOWEJob.o $(BUILD_DIR)/Ath10kNativeSAEKernelBackend.o $(BUILD_DIR)/Ath10kP256CheckJob.o $(BUILD_DIR)/Ath10kPMFSession.o
 endif
 
 ifeq ($(P256_DIAGNOSTIC),1)
@@ -109,6 +109,9 @@ $(BUILD_DIR)/Ath10kSAESession.o: src/macos/native/Ath10kSAESession.cpp src/macos
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kNativeSAEPreparation.o: src/macos/native/Ath10kNativeSAEPreparation.cpp src/macos/native/Ath10kNativeSAEPreparation.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/Ath10kNativeOWEJob.o: src/macos/native/Ath10kNativeOWEJob.cpp src/macos/native/Ath10kNativeOWEJob.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Ath10kNativePSKPreparation.o: src/macos/native/Ath10kNativePSKPreparation.cpp src/macos/native/Ath10kNativePSKPreparation.hpp | $(BUILD_DIR)

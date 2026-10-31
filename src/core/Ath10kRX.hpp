@@ -6,14 +6,55 @@ static constexpr UInt32 kRXAssemblyBytes=16384+300,kRXBatchBytes=16384,kRXSubfra
 inline void rxDrop(ConnectionState &s,ConnectionState::RxDrop reason){
     ++s.rxDropped;++s.rxReasons[reason];s.rxLastReason=reason;
 }
+// Qualified evidence only; never advances replay state or authorizes data.
+// TKIP evidence is non-fragmented/non-A-MSDU and bound to its installed key.
+struct GroupTKIPMICFailure {
+    UInt64 tsc=0,keyEpoch=0;UInt32 generation=0;UInt16 peer=0;UInt8 keyIndex=0,tid=0;
+    bool valid=false,pairwise=false;
+};
+inline GroupTKIPMICFailure qualifyGroupTKIPMICFailure(const ConnectionState &s,
+    const UInt8 *d,UInt32 available,UInt8 status,UInt16 peer,UInt16 indicated=0){
+    if(!d || available<300 || (status!=1 && status!=9) || !s.secure ||
+       !s.portAuthorized || s.securityPhase!=5 || s.rekeyKind ||
+       s.stage!=LinkStage::Connected || s.disconnect!=DisconnectStage::None ||
+       !mappedPeer(s,peer))return {};
+    const UInt32 mode=(connLE32(d+32)>>8)&3;
+    const UInt32 length=indicated?indicated:(connLE32(d+24)&0x3fff);
+    if(length>available-300 || length<(mode==0?48u:mode==1?32u:14u))return {};
+    const UInt32 attention=connLE32(d+4),info=connLE32(d+12);
+    const UInt32 bad=(1u<<3)|(1u<<4)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<13)|
+        (1u<<16)|(1u<<17)|(1u<<24)|(1u<<27)|(1u<<29)|(1u<<30);
+    if(!(attention&0x80000000u) || (attention&bad) ||
+       (status!=9 && !(attention&(1u<<28))) ||
+       (connLE32(d+56)&0xc000u)!=0xc000u ||
+       !(info&(1u<<13)) || (info>>28)!=4 || (info&0x7ff)!=peer)return {};
+    const UInt8 *h=d+236;const UInt16 fc=htcReadLE16(h);
+    if((fc&0x470f)!=0x4208 || !sameMAC(h+10,s.bssid) ||
+       (htcReadLE16(h+22)&15))return {};
+    const bool pairwise=!(h[4]&1);
+    if((pairwise?s.pairCipher:s.groupCipher)!=AthSecurity::cipherTKIP ||
+       (pairwise && (!sameMAC(h+4,s.local) || !s.pairInstalled || !s.pairKeyEpoch)))return {};
+    const bool qos=(fc&0x80)!=0;if(qos && (h[24]&0x80))return {};
+    const UInt8 *iv=h+(qos?((fc&0x8000)?32:28):24);
+    const UInt8 index=iv[3]>>6,tid=qos?(h[24]&15):16;
+    if(!(iv[3]&0x20) || (pairwise?index!=0:(!s.groupInstalled[index] || !s.groupKeyEpoch[index])) ||
+       iv[1]!=UInt8((iv[0]|0x20)&0x7f))return {};
+    const UInt64 tsc=UInt64(iv[2])|(UInt64(iv[0])<<8)|(UInt64(iv[4])<<16)|
+        (UInt64(iv[5])<<24)|(UInt64(iv[6])<<32)|(UInt64(iv[7])<<40);
+    UInt64 floor=pairwise?s.pairPN[tid]:s.groupPN[index][tid];
+    if(!pairwise && index==s.groupIndex){UInt64 rsc=0;for(unsigned i=0;i<6;++i)rsc|=UInt64(s.groupRSC[i])<<(8*i);if(rsc>floor)floor=rsc;}
+    if(!tsc || tsc<=floor)return {};
+    return {tsc,pairwise?s.pairKeyEpoch:s.groupKeyEpoch[index],s.securityGeneration,peer,index,tid,true,pairwise};
+}
 // All MSDUs in one MPDU are validated before the first one is delivered.
 // Compact storage avoids a 192*1514 array on the kernel stack.
 struct RXBatch {
+    GroupTKIPMICFailure micFailure{};
     UInt8 descriptor[300]{},data[kRXBatchBytes]{};
     UInt16 offsets[kRXSubframes]{},lengths[kRXSubframes]{},peer=0,sequence=0;
     UInt8 nativeHeader[24]{};bool nativeHeaderValid=false;
-    UInt32 count=0,used=0;UInt8 tid=16;bool failed=false,fragment=false;
-    void reset(){count=used=0;failed=fragment=false;nativeHeaderValid=false;tid=16;}
+    UInt32 count=0,used=0,securityGeneration=0;UInt8 tid=16;bool failed=false,fragment=false;
+    void reset(){micFailure={};count=used=0;failed=fragment=false;nativeHeaderValid=false;tid=16;}
 };
 // 802.11 fragmentation is separate from DMA buffer chaining. A station only
 // accepts unicast fragments from its AP. CCMP fragments must have consecutive
@@ -23,7 +64,7 @@ struct RXDefrag {
         UInt8 bytes[2048]{},identity[24]{};UInt32 used=0;
         UInt16 sequence=0,peer=0;UInt8 next=0,key=0,header=24,mode=0;UInt64 pn=0,since=0;
         UInt16 offset[16]{},length[16]{},moreMask=0,qosControl=0;UInt64 fragmentPN[16]{};
-        UInt32 securityGeneration=0;UInt8 htControl[16][4]{};
+        UInt32 securityGeneration=0;UInt8 cipher=0,htControl[16][4]{};
         bool active=false,encrypted=false;
     } entries[17]{};
     UInt32 completed=0,waiting=0,rejected=0,timeouts=0,duplicates=0;
@@ -34,7 +75,7 @@ struct RXDefrag {
     int receive(ConnectionState &s,const UInt8 *d,UInt32 available,UInt16 peer,
                 UInt16 indicated,UInt64 now,UInt8 *out,UInt32 &outBytes){
         auto fail=[&](){++rejected;rxDrop(s,ConnectionState::Fragment);return -1;};
-        if(!d || available<324)return fail();
+        if(!d || !out || available<324)return fail();
         const UInt32 mode=(connLE32(d+32)>>8)&3,length=indicated?indicated:(connLE32(d+24)&0x3fff);
         if((mode!=0 && mode!=1) || length>available-300 || length<24)return fail();
         const UInt8 *p=d+300;const UInt16 fc=htcReadLE16(p),sc=htcReadLE16(p+22);
@@ -58,18 +99,36 @@ struct RXDefrag {
         const UInt32 bad=(1u<<3)|(1u<<4)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<13)|
             (1u<<16)|(1u<<17)|(1u<<24)|(1u<<27)|(1u<<28)|(1u<<29)|(1u<<30);
         if(!(attention&0x80000000u) || (attention&bad)){e.active=false;return fail();}
-        const UInt64 pn=UInt64(connLE32(d+16))|(UInt64(htcReadLE16(d+20))<<32);
+        UInt64 pn=UInt64(connLE32(d+16))|(UInt64(htcReadLE16(d+20))<<32);
         const UInt8 *iv=d+236+(qos?((fc&0x8000)?32:28):24);const UInt8 key=iv[3]>>6;
-        if(s.secure && (!encrypted || !(info&(1u<<13)) || (info>>28)!=6 ||
-            s.securityPhase<3 || key || !(iv[3]&0x20) || !pn || pn<=s.pairPN[tid]))return fail();
-        if(!s.secure && encrypted)return fail();
-        const UInt32 skip=rawHeader+(mode==0 && encrypted?8:0),trim=mode==0?(encrypted?12:4):0;
+        const bool wep=s.secure && (s.pairCipher==1 || s.pairCipher==5);
+        const UInt8 cipher=static_cast<UInt8>(info>>28);
+        if(wep){
+            const UInt8 installed=s.wepInstalledLengths[0][key];
+            // WEP has a 24-bit IV, not a monotonic CCMP PN. Bind every
+            // fragment to a confirmed slot and the key-set generation instead.
+            if(!encrypted || !(info&(1u<<13)) || s.wepIOActive ||
+               (info&0x7ff)!=peer || (iv[3]&0x3f) ||
+               (installed!=5 && installed!=13) || cipher!=(installed==5?0:1)){
+                e.active=false;return fail();
+            }
+            pn=UInt64(iv[0])|(UInt64(iv[1])<<8)|(UInt64(iv[2])<<16);
+        }else if(s.secure && (!encrypted || !(info&(1u<<13)) || cipher!=6 ||
+            s.securityPhase<3 || key || !(iv[3]&0x20) || !pn || pn<=s.pairPN[tid])){
+            e.active=false;return fail();
+        }
+        if(!s.secure && encrypted){e.active=false;return fail();}
+        const UInt32 skip=rawHeader+(mode==0 && encrypted?(wep?4:8):0);
+        const UInt32 trim=mode==0?(encrypted?(wep?8:12):4):0;
         if(length<skip+trim)return fail();
+        if(wep && mode==0){
+            for(UInt32 i=0;i<4;++i)if(p[rawHeader+i]!=iv[i]){e.active=false;return fail();}
+        }
         const UInt32 body=length-skip-trim;
         const UInt16 qosControl=qos?htcReadLE16(d+260):0;
         auto identityMatches=[&](){
             if(e.peer!=peer || e.key!=key || e.encrypted!=encrypted || e.header!=header || e.mode!=mode ||
-               e.securityGeneration!=s.securityGeneration || e.qosControl!=qosControl ||
+               e.securityGeneration!=s.securityGeneration || e.cipher!=cipher || e.qosControl!=qosControl ||
                ((fc^htcReadLE16(e.identity))&0xc3ff))return false;
             for(UInt32 i=4;i<22;++i)if(p[i]!=e.identity[i])return false;
             if(mode==1 && header==26 && (p[24]!=e.bytes[324] || p[25]!=e.bytes[325]))return false;
@@ -88,13 +147,13 @@ struct RXDefrag {
         if(!fragment){
             e.active=false;e.used=300+header;e.sequence=sc>>4;e.peer=peer;e.next=0;
             e.key=key;e.encrypted=encrypted;e.since=now;
-            e.securityGeneration=s.securityGeneration;e.qosControl=qosControl;e.moreMask=0;
+            e.securityGeneration=s.securityGeneration;e.cipher=cipher;e.qosControl=qosControl;e.moreMask=0;
             e.header=static_cast<UInt8>(header);e.mode=static_cast<UInt8>(mode);
             for(UInt32 i=0;i<300;++i)e.bytes[i]=d[i];
             for(UInt32 i=0;i<header;++i)e.bytes[300+i]=p[i];
             for(UInt32 i=0;i<24;++i)e.identity[i]=p[i];
         }else if(!e.active || e.sequence!=(sc>>4) || e.next!=fragment || !identityMatches() ||
-            (s.secure && pn!=e.pn+1)){
+            (s.secure && !wep && pn!=e.pn+1)){
             e.active=false;return fail();
         }else {
             // DA, transmitter and SA must remain identical across fragments.
@@ -129,9 +188,17 @@ inline bool normalizeRawRX(const UInt8 *d,UInt32 available,UInt16 indicated,UInt
     const UInt8 *p=d+300;const UInt16 fc=htcReadLE16(p);
     const bool qos=(fc&0x80)!=0,encrypted=(fc&0x4000)!=0;
     const UInt32 nativeHeader=qos?26:24,rawHeader=nativeHeader+((qos && (fc&0x8000))?4:0);
-    const UInt32 skip=rawHeader+(encrypted?8:0),trim=encrypted?12:4;
+    const UInt32 cipher=connLE32(d+12)>>28;
+    // Decrypted raw TKIP retains the eight-byte IV, Michael MIC (8), ICV (4)
+    // and FCS (4). CCMP retains IV (8), MIC (8) and FCS (4).
+    // ath10k_htt_rx_h_undecap_raw strips these separately. Keep descriptor
+    // integrity flags intact: appendRXBatch must still reject MIC/decrypt errors.
+    // rx_desc.h has a separate namespace from HTT SECURITY_IND: WEP40=0,
+    // WEP104=1. WEP retains a four-byte IV/key ID and a four-byte ICV.
+    const bool wep=cipher==0 || cipher==1;
+    const UInt32 skip=rawHeader+(encrypted?(wep?4:8):0),trim=encrypted?(wep?8:(cipher==4?16:12)):4;
     if(length>available-300 || length<skip+trim || (fc&0x400) || (htcReadLE16(p+22)&15))return false;
-    if(encrypted && ((connLE32(d+12)>>28)!=6 || !(connLE32(d+12)&(1u<<13))))return false;
+    if(encrypted && ((!wep && cipher!=6 && cipher!=4) || !(connLE32(d+12)&(1u<<13))))return false;
     const UInt32 body=length-skip-trim;
     if(300+nativeHeader+body>kRXAssemblyBytes)return false;
     for(UInt32 i=0;i<300;++i)out[i]=d[i];
@@ -146,19 +213,29 @@ inline bool appendRXBatch(ConnectionState &s,RXBatch &b,const UInt8 *d,UInt32 av
     if(b.failed)return false;
     auto fail=[&](ConnectionState::RxDrop reason){b.failed=true;rxDrop(s,reason);return false;};
     if(!d || available<300)return fail(ConnectionState::Length);
+    // TKIP cannot aggregate in this profile. Capture only a complete MPDU
+    // before rejecting it; never borrow FIRST-only fields from a continuation.
+    if(!b.count)b.micFailure=qualifyGroupTKIPMICFailure(s,d,available,status,peer,indicated);
     if(status!=1)return fail(ConnectionState::Status);
     const UInt32 attention=connLE32(d+4);
-    if(attention&((1u<<27)|(1u<<28)))return fail(ConnectionState::Length);
+    if(attention&(1u<<27))return fail(ConnectionState::Length);
     const UInt32 bad=(1u<<3)|(1u<<4)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<13)|
-        (1u<<16)|(1u<<17)|(1u<<24)|(1u<<29)|(1u<<30);
+        (1u<<16)|(1u<<17)|(1u<<24)|(1u<<28)|(1u<<29)|(1u<<30);
     if(!(attention&0x80000000u) || (attention&bad))return fail(ConnectionState::Integrity);
     if(!b.count){
         for(UInt32 i=0;i<300;++i)b.descriptor[i]=d[i];
-        b.peer=peer;
+        b.peer=peer;b.securityGeneration=s.securityGeneration;
         b.nativeHeaderValid=available>=324 && ((connLE32(d+32)>>8)&3)==1;
         for(UInt32 i=0;i<24;++i)b.nativeHeader[i]=b.nativeHeaderValid?d[300+i]:0;
         const UInt8 *h=d+236;b.sequence=static_cast<UInt16>(htcReadLE16(h+22)>>4);
         b.tid=(h[0]&0x80)?(h[24]&15):16;
+        // A-MSDU is not valid with a multicast MPDU receiver or pre-HT
+        // ciphers (WEP/TKIP). Do not let valid per-subframe DAs hide either.
+        // mac80211 ieee80211_rx_h_amsdu applies the same link-layer restriction.
+        const bool amsdu=(h[0]&0x80) && (h[24]&0x80);
+        const UInt32 securityInfo=connLE32(d+12);
+        if(amsdu && ((h[4]&1) || ((securityInfo&(1u<<13)) &&
+           (securityInfo>>28)!=6)))return fail(ConnectionState::Aggregate);
         if((h[0]&0x80) && (h[24]&0x80) && (connLE32(d+56)&0xc000u)!=0xc000u){
             if(!(connLE32(d+56)&0x4000u))return fail(ConnectionState::Aggregate);
             const UInt32 header=(htcReadLE16(h)&0x8000)?32:28;
@@ -167,6 +244,7 @@ inline bool appendRXBatch(ConnectionState &s,RXBatch &b,const UInt8 *d,UInt32 av
             if(header+crypto+6<=64 && sameMAC(h+header+crypto,rfc))return fail(ConnectionState::Aggregate);
         }
     }else {
+        if(b.securityGeneration!=s.securityGeneration)return fail(ConnectionState::Key);
         if(peer!=b.peer)return fail(ConnectionState::Peer);
         // A new FIRST is a different MPDU, not a continuation authorized by
         // this batch. serviceHTTRxOne collects exactly one MPDU through LAST.
@@ -192,7 +270,7 @@ inline bool appendRXBatch(ConnectionState &s,RXBatch &b,const UInt8 *d,UInt32 av
         if(!(frame[0]&1) && !sameMAC(frame,s.local))return fail(ConnectionState::Peer);
         if(frame[6]&1)return fail(ConnectionState::Aggregate);
         if(s.secure && !encrypted && !(frame[12]==0x88 && frame[13]==0x8e))return fail(ConnectionState::Plaintext);
-        if(s.secure && !s.portAuthorized && !(frame[12]==0x88 && frame[13]==0x8e))return fail(ConnectionState::Port);
+        if(((s.secure && !s.portAuthorized) || s.tkipDataBlocked) && !(frame[12]==0x88 && frame[13]==0x8e))return fail(ConnectionState::Port);
         if(b.count==kRXSubframes || bytes>kRXBatchBytes-b.used)return fail(ConnectionState::Aggregate);
         b.offsets[b.count]=static_cast<UInt16>(b.used);b.lengths[b.count++]=static_cast<UInt16>(bytes);
         for(UInt32 i=0;i<bytes;++i)b.data[b.used+i]=frame[i];
@@ -228,6 +306,7 @@ struct RXReorder {
     template<class Clone,class Release,class Destroy>
     void receive(ConnectionState &s,RXBatch &b,UInt64 now,Clone clone,Release release,Destroy destroy){
         if(b.failed || !b.count)return;
+        if(b.securityGeneration!=s.securityGeneration){rxDrop(s,ConnectionState::Key);return;}
         UInt32 index=64;
         if(!s.firmwareReorder && b.tid<16 && !b.fragment && !(b.descriptor[240]&1))
             for(UInt32 i=0;i<64;++i)if(s.ba[i].window && s.ba[i].peer==b.peer && s.ba[i].tid==b.tid){index=i;break;}

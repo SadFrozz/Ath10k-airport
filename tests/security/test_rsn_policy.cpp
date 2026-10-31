@@ -14,7 +14,86 @@ static std::vector<uint8_t> rsn(bool psk, bool sae, uint16_t caps = 0x80) {
     v[1] = uint8_t(v.size() - 2);
     return v;
 }
+static void wpa1SelectionTests(){
+    // AP offers both ciphers and both AKMs. Output must contain exactly the
+    // requested profile, preserving AP group cipher rather than choosing PSK.
+    uint8_t ap[]={221,30,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,
+        2,0,0,0x50,0xf2,2,0,0x50,0xf2,4,
+        2,0,0,0x50,0xf2,1,0,0x50,0xf2,2};
+    uint8_t out[25];size_t bytes=999;
+    for(uint8_t group:{2,4})for(uint8_t pair:{2,4})for(uint8_t akm:{1,2}){
+        ap[11]=group;memset(out,0xa5,sizeof(out));
+        assert(buildWPA1StationIE(ap,sizeof(ap),pair,akm,out,24,bytes));
+        assert(bytes==24 && out[24]==0xa5);WPAInfo selected{};
+        assert(parseWPA(out,bytes,selected));
+        assert(selected.group==group && selected.pairwise==(1u<<pair) && selected.akms==(1u<<akm));
+    }
+    memset(out,0xa5,sizeof(out));
+    for(size_t n=0;n<sizeof(ap);++n){
+        assert(!buildWPA1StationIE(ap,n,2,1,out,sizeof(out),bytes));assert(!bytes);
+    }
+    for(unsigned bad=0;bad<256;++bad){
+        if(bad!=2 && bad!=4)assert(!buildWPA1StationIE(ap,sizeof(ap),uint8_t(bad),1,out,sizeof(out),bytes));
+        if(bad!=1 && bad!=2)assert(!buildWPA1StationIE(ap,sizeof(ap),2,uint8_t(bad),out,sizeof(out),bytes));
+    }
+    assert(!buildWPA1StationIE(ap,sizeof(ap),2,1,out,23,bytes));
+    assert(!buildWPA1StationIE(ap,sizeof(ap),2,1,nullptr,24,bytes));
+    for(auto b:out)assert(b==0xa5);
+    // Single-suite Personal AP must not be silently used for Enterprise.
+    const uint8_t personal[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,
+        1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2};
+    assert(!buildWPA1StationIE(personal,sizeof(personal),2,1,out,24,bytes));
+    assert(!buildWPA1StationIE(personal,sizeof(personal),4,2,out,24,bytes));
+    assert(!buildWPA1StationIE(stationRSN,sizeof(stationRSN),2,2,out,24,bytes));
+    for(auto b:out)assert(b==0xa5);
+}
+static void selectedRSN(){
+    for(uint8_t group:{2,4})for(uint8_t pair:{2,4})for(uint8_t akm:{1,2,6}){
+        uint8_t out[23];memset(out,0xa5,sizeof(out));size_t bytes=99;
+        const bool allowed=akm!=6 || (group==4 && pair==4);
+        assert(buildSelectedStationRSN(group,pair,akm,out,22,bytes)==allowed);
+        if(allowed){RSNInfo parsed{};assert(bytes==22 && parseRSN(out,bytes,parsed));
+            assert(parsed.group==group && parsed.pairwise==(1u<<pair) && parsed.akms==(1u<<akm));assert(out[22]==0xa5);
+            assert(supportsSelectedRSN(out,bytes,akm,pair,true));
+            assert(!supportsSelectedRSN(out,bytes,akm,pair==2?4:2,true));
+            assert(!supportsSelectedRSN(out,bytes,akm==1?2:1,pair,true));
+            const bool defaultAllowed=pair==4 && (akm!=1 || group==4);
+            assert(supportsSelectedRSN(out,bytes,akm,pair)==defaultAllowed);
+            out[20]=0xc0;assert(!supportsSelectedRSN(out,bytes,akm,pair,true));out[20]=0;
+            out[21]=2;assert(!supportsSelectedRSN(out,bytes,akm,pair,true));out[21]=0;
+
+        }else {assert(!bytes);for(auto b:out)assert(b==0xa5);}
+    }
+    uint8_t out[22];memset(out,0xa5,sizeof(out));size_t bytes=99;
+    for(unsigned v=0;v<256;++v){
+        if(v!=2 && v!=4){assert(!buildSelectedStationRSN(v,4,2,out,22,bytes));assert(!buildSelectedStationRSN(4,v,2,out,22,bytes));}
+        if(v!=1 && v!=2 && v!=6)assert(!buildSelectedStationRSN(4,4,v,out,22,bytes));
+    }
+    for(size_t n=0;n<22;++n)assert(!buildSelectedStationRSN(4,4,2,out,n,bytes));
+    assert(!buildSelectedStationRSN(4,4,2,nullptr,22,bytes));
+    for(auto b:out)assert(b==0xa5);
+}
 int main() {
+    selectedRSN();
+    wpa1SelectionTests();
+    {const uint8_t raw[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2};
+     WPAInfo info{};assert(parseWPA(raw,sizeof(raw),info));
+     assert(info.group==2 && info.pairwise==4 && info.akms==4);
+     for(size_t n=0;n<sizeof(raw);++n)assert(!parseWPA(raw,n,info));
+     for(size_t n: {8u,12u,18u,24u}){std::vector<uint8_t> v(raw,raw+n);v[1]=uint8_t(n-2);
+       assert(parseWPA(v.data(),v.size(),info));assert(info.akms==(n==24?4u:2u));}
+     for(unsigned at: {0u,1u,2u,3u,4u,5u,6u,7u,12u,13u,18u,19u}){
+       std::vector<uint8_t> v(raw,raw+sizeof(raw));v[at]=255;
+       assert(!parseWPA(v.data(),v.size(),info));assert(!info.group && !info.akms && !info.pairwise);}
+     std::vector<uint8_t> v(raw,raw+sizeof(raw));v.insert(v.end(),{0x34,0x12});v[1]=24;
+     assert(parseWPA(v.data(),v.size(),info) && info.capabilities==0x1234);
+     v.push_back(0);v[1]++;assert(!parseWPA(v.data(),v.size(),info));
+     v.assign(raw,raw+sizeof(raw));v[15]=15;v[16]=172;
+     assert(parseWPA(v.data(),v.size(),info) && info.pairwise==0); // RSN OUI is not WPA.
+     RSNInfo rsnInfo{};assert(!parseRSN(raw,sizeof(raw),rsnInfo));
+     assert(!parseWPA(nullptr,24,info));
+    }
+
     {uint8_t ie[18]={244,1,0x20};assert(validRSNXE(ie,3) && rsnxeHasH2E(ie,3));
      for(size_t n=0;n<19;++n)if(n!=3)assert(!validRSNXE(ie,n));
      assert(!validRSNXE(nullptr,3));ie[0]=48;assert(!validRSNXE(ie,3));ie[0]=244;

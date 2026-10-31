@@ -3,7 +3,7 @@
 #include "../fixtures/sae_eapol_vectors.inc"
 #include "../fixtures/native_igtk_vectors.inc"
 #include "../fixtures/sha256_vectors.inc"
-using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
 static Ath10kPCIDevice *keyDevice(){
  auto d=new Ath10kPCIDevice;auto &s=d->_connection;s.stage=Ath10k::LinkStage::Connected;
  s.pmfRequired=s.secure=s.pmfQoSTransported=true;s.groupCipher=AthSecurity::cipherCCMP;
@@ -31,7 +31,57 @@ static void initial(Ath10kPCIDevice *d){
  for(auto b:sec->pendingManagement.key)assert(!b);
  clearReply(d);s.securityPhase=5;s.portAuthorized=true;
 }
+#include "native_initial_key_stage.inc"
 int main(){
+ {auto d=new Ath10kPCIDevice;auto sec=d->_nativeSecurity=new Ath10kPCIDevice::NativeSecurity;
+  auto &s=d->_connection;s.secure=s.wepSelected=true;s.stage=Ath10k::LinkStage::Connected;
+  s.pairCipher=s.groupCipher=1;s.securityPhase=3;memcpy(s.local,w_sta,6);memcpy(s.bssid,w_ap,6);
+  UInt8 key[5]{};nativeSAEClockMS=1;
+  assert(sec->eapOwner.beginStaticWEP(s.local,s.bssid,0,100,key,5,2));
+  assert(!d->nativePMFPortReady());
+  // Fixture supplies completed firmware programs; executor/service coverage
+  // verifies real receipt and fence progression separately.
+  while(sec->eapOwner.keyPending()){
+   const auto *k=sec->eapOwner.frontWEPKey(sec->eapOwner.generation(),s.local,s.bssid,1);assert(k);
+   assert(sec->eapOwner.finishWEPKey(sec->eapOwner.generation(),s.local,s.bssid,k->ticket,1));
+  }
+  assert(!d->nativePMFPortReady());s.wepTransmitValid=true;s.wepTransmitIndex=2;
+  s.wepInstalledLengths[0][2]=s.wepInstalledLengths[1][2]=5;assert(d->nativePMFPortReady());
+  s.wepTransmitIndex=1;assert(!d->nativePMFPortReady());s.wepTransmitIndex=2;
+  s.wepIOActive=true;assert(!d->nativePMFPortReady());s.wepIOActive=false;
+  s.groupCipher=5;assert(!d->nativePMFPortReady());s.groupCipher=1;
+  s.securityPhase=2;assert(!d->nativePMFPortReady());s.securityPhase=5;
+  nativeSAEClockMS=100;assert(!d->nativePMFPortReady());nativeSAEClockMS=1;
+  stop(d);
+ }
+
+ // Initial WPA1 results are exported by the separately tested supplicant.
+ // Inject those authenticated exports here to exercise native staging and its
+ // WMI/DMA barriers; this is not a claim of native WPA1 join admission.
+ {
+  auto d=keyDevice();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  s.pmfRequired=false;d->_wmiScan.completed=true;
+  sec->supplicant.outputLength=113;sec->supplicant.keys[48]=4;
+  sec->supplicant.keyChanges=S::PTKChanged;
+  assert(accept(d,S::InitialPairKeys));
+  s.txOwned=true;stageNativeKeys(*d,10);assert(sec->keysPending && !s.initialGroupPending);
+  s.txOwned=false;stageNativeKeys(*d,11);
+  assert(!sec->keysPending && s.securityPhase==1 && s.initialGroupPending && !s.rekeyKind);
+  assert(!s.authorizeRequested && !s.portAuthorized);
+  clearReply(d);s.pairInstalled=true;s.securityPhase=3;
+  sec->supplicant.outputLength=113;sec->supplicant.keyChanges=S::GTKChanged;
+  sec->supplicant.keys[48]=4;sec->supplicant.keys[49]=2;sec->supplicant.keys[50]=9;
+  assert(accept(d,S::InitialGroupKeys));
+  stageNativeKeys(*d,12);
+  assert(s.securityPhase==2 && s.initialGroupPending && s.initialGroupReply && s.groupIndex==2 && !s.rekeyKind);
+  assert(!s.authorizeRequested && !s.portAuthorized && s.groupPN[2][0]==9);
+  // Cancellation clears the pending first-GTK marker with installed secrets.
+  Ath10k::wipeConnectionSecrets(s);assert(!s.initialGroupPending && !s.initialGroupReply && !s.pairInstalled);
+  clearReply(d);sec->supplicant.outputLength=113;
+  assert(!accept(d,S::InitialGroupKeys));
+  stop(d);
+ }
+
  // Cancellation at every key-install barrier must erase staged secrets and
  // make delayed firmware acknowledgements unable to reopen the PMF port.
  for(unsigned phase: {0u,1u,2u,3u,5u}){

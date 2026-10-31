@@ -59,7 +59,7 @@ def main():
     flags += [f'-DATH10K_{k}={v}' for k, v in defines.items()]
     sources = ['native/Ath10kNative.cpp', 'native/Ath10kSAEWorker.cpp',
                'native/Ath10kSAESession.cpp', 'native/Ath10kNativeSAEPreparation.cpp',
-               'native/Ath10kNativePSKPreparation.cpp', 'native/Ath10kNativeSAEKernelBackend.cpp',
+               'native/Ath10kNativePSKPreparation.cpp', 'native/Ath10kNativeOWEJob.cpp', 'native/Ath10kNativeSAEKernelBackend.cpp',
                'native/Ath10kP256CheckJob.cpp', 'native/Ath10kPMFSession.cpp',
                'Ath10kUserClient.cpp', 'Ath10kNetwork.cpp',
                'Ath10kRuntime.cpp', 'Ath10kPower.cpp', 'Ath10kPowerNotifications.cpp', 'Ath10kRecovery.cpp', 'Ath10kPCIDevice.cpp', 'kmod_info.c']

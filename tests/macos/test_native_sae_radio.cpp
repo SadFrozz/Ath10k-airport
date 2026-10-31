@@ -195,6 +195,17 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
      assert(replacement?sec->eapOwner.replacementPending():sec->eapOwner.pending());
      sec->eapOwner.clear();
     }
+    // Queued dynamic-WEP keys have no EAP TX packet but must retain the
+    // old association until the key consumer or teardown resolves them.
+    {
+     auto &owner=sec->eapOwner;assert(owner.beginDynamicWEP(w_sta,oldLink.bssid,0,30000));
+     uint8_t key[148]{};key[0]=1;key[4]=5;key[8]=1;key[12]=5;key[16]=7;
+     const auto generation=owner.generation();
+     assert(owner.setWEPKey(generation,w_sta,oldLink.bssid,key,sizeof(key),0)==AthNative::EAPOwner::KeyResult::Accepted);
+     assert(d->nativeRoamRequest(wire.data())==kIOReturnBusy && !d->_nativeRoamPending);
+     assert(owner.generation()==generation && owner.keyPending() && s.portAuthorized);
+     owner.clear();
+    }
     assert(d->nativeRoamRequest(wire.data())==kIOReturnSuccess);
     assert(d->_nativeRoamPending && d->nativeRoamRequest(wire.data())==kIOReturnBusy);
     assert(d->nativeJoinRequest(input.data())==kIOReturnBusy);
@@ -290,7 +301,7 @@ static void passwordPreparationTests(const AthSecurity::P256FieldAPI &field){
    assert(AthSecurity::saeGroup19Confirm<HMAC>(peerKeys.kck,32,1,remote.commit,96,localCommit.commit,96,remoteConfirm.confirm+2,32));
    const auto confirmWire=apFrame(remoteConfirm);nativeSAEClockMS=5;assert(deliver(d,confirmWire.data(),confirmWire.size()));
    assert(!tick(d,5));run(latest);assert(!tick(d,6) && !sec->ready && !s.authReply);retired(d);
-   assert(!tick(d,7) && sec->ready && s.authReply);using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+   assert(!tick(d,7) && sec->ready && s.authReply);using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
    assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply);
    // The M2 MIC must use this freshly authenticated peer PMK, not the old fixture PMK.
    uint8_t context[76]{},ptk[48]{},mic[16]{};memcpy(context,w_sta,6);memcpy(context+6,w_ap,6);
@@ -346,9 +357,162 @@ static void pskPasswordAdmissionTests(){
   ownerGate=true;const bool ready=d->advanceSAEAuth(1);ownerGate=false;
   if(scenario){assert(!ready && s.cancelRequested && !sec->ready && !sec->pskPreparation.active());stop(d);continue;}
   assert(ready && sec->ready && !sec->pskPreparation.active() && !s.cancelRequested && nativeHMACCalls-before==8192);
-  using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+  using Supplicant=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
   assert(sec->supplicant.receive(s_m1,sizeof(s_m1))==Supplicant::Reply);
   assert(sec->supplicant.outputLength==sizeof(s_m2) && !memcmp(sec->supplicant.output,s_m2,sizeof(s_m2)));stop(d);
+ }
+}
+static void legacyPasswordOwnership(){
+ for(unsigned scenario=0;scenario<9;++scenario){
+  auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  sec->reset();assert(sec->prepareSAEWorker());
+  AirportWCL::JoinRequest j{};j.lowerAuth=1;j.upperAuth=2;j.keyCipher=10;j.keyLength=8;
+  memcpy(j.key,"password",8);j.ssidLength=4;memcpy(j.ssid,"IEEE",4);memcpy(j.bssid,s_ap,6);
+  s.ap.privacy=s.ap.wpaPresent=true;s.ap.ssidLength=4;memcpy(s.ap.ssid,j.ssid,4);memcpy(s.ap.bssid,s_ap,6);
+  UInt8 ie[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2,1,0,0,0x50,0xf2,2};
+  memcpy(s.ap.wpa,ie,sizeof(ie));s.ap.wpaLength=sizeof(ie);
+  s.stage=Ath10k::LinkStage::Auth;s.secure=s.wpa1Selected=true;s.pmfRequired=false;
+  s.securityAKM=2;s.pairCipher=s.groupCipher=2;memcpy(s.ssid,j.ssid,4);s.ssidLength=4;
+  memcpy(s.local,s_sta,6);memcpy(s.bssid,s_ap,6);
+  ownerGate=true;const auto before=nativeHMACCalls;
+  assert(!sec->pskPreparation.begin(sec->saeWorker,j,s.ap,s.local,1,0));
+  assert(sec->pskPreparation.begin(sec->saeWorker,j,s.ap,s.local,1,0,true));
+  assert(nativeHMACCalls==before);ownerGate=false;
+  if(scenario==1)s.wpa1Selected=false;
+  if(scenario==2)s.pairCipher=4;
+  if(scenario==3)s.groupCipher=4;
+  if(scenario==4)s.ap.wpa[11]=4;
+  if(scenario==5)s.cancelRequested=true;
+  if(scenario==6){auto call=latest;claim(call);sec->pskPreparation.cancel();invoke(call);finish(call);
+   auto retired=sec->pskPreparation.collect(s,1,1);assert(retired.state==Ath10kNativePSKPreparation::State::Idle);
+   for(auto c:retired.pmk)assert(!c);stop(d);continue;}
+  run(latest);ownerGate=true;
+  auto result=sec->pskPreparation.collect(s,scenario==7?2:1,scenario==8?5000:1);ownerGate=false;
+  using State=Ath10kNativePSKPreparation::State;
+  assert(result.state==(scenario==0?State::Ready:scenario==8?State::Expired:State::Changed));
+  assert(!sec->pskPreparation.active());
+  if(!scenario){assert(!memcmp(result.pmk,s_pmk,32));assert(nativeHMACCalls-before==8192);}
+  else for(auto c:result.pmk)assert(!c);
+  stop(d);
+ }
+}
+static void oweNativeAdmissionTests(){
+ auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+ auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+ s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+ memcpy(d->_nativeMACCurrent,s_sta,6);nativeSAEClockMS=0;
+ ap.ssidLength=4;memcpy(ap.ssid,"IEEE",4);ap.privacy=true;ap.capabilities|=0x10;
+ size_t bytes=0;assert(AthSecurity::buildOWEStationRSN(ap.rsn,sizeof(ap.rsn),bytes));
+ ap.rsnLength=bytes;ap.rsnPresent=true;ap.wpaPresent=false;ap.wpaLength=0;sec->candidates.add(ap,0);
+ AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuthExt=1;join.ssidLength=4;
+ memcpy(join.ssid,"IEEE",4);memcpy(join.bssid,ap.bssid,6);const auto original=join;
+ auto rejected=join;ownerGate=true;assert(d->nativeBeginJoin(rejected)==kIOReturnUnsupported);ownerGate=false;
+ d->experimentalOWE=true;ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnSuccess);ownerGate=false;
+ assert(s.secure && s.pmfRequired && s.securityAKM==18 && s.pairCipher==4 && s.groupCipher==4);
+ assert(!s.portAuthorized && !sec->ready && sec->pmfSession && !sec->oweJob);
+ assert(!sec->saePreparation.active() && !sec->pskPreparation.active());
+ AirportWCL::JoinRequest retained{};
+ assert(sec->profile.snapshot(sec->profile.generation(),s.local,original.ssid,4,NativeJoinAuth::OWE,retained));
+ assert(retained.upperAuthExt==1 && !retained.keyLength);for(auto byte:retained.key)assert(!byte);
+ stop(d);
+}
+static void eapSHA256NativeAdmissionTests(){
+ auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+ auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+ s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+ memcpy(d->_nativeMACCurrent,s_sta,6);nativeSAEClockMS=0;
+ ap.ssidLength=4;memcpy(ap.ssid,"IEEE",4);ap.privacy=true;ap.capabilities|=0x10;
+ size_t bytes=0;assert(AthSecurity::buildEAPSHA256StationRSN(ap.rsn,sizeof(ap.rsn),bytes));
+ ap.rsnLength=bytes;ap.rsnPresent=true;ap.wpaPresent=false;ap.wpaLength=0;sec->candidates.add(ap,0);
+ AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=2048;join.ssidLength=4;
+ join.transitionDisable=NativeTransitionDisable::Enterprise;
+ memcpy(join.ssid,"IEEE",4);memcpy(join.bssid,ap.bssid,6);
+ auto rejected=join;ownerGate=true;assert(d->nativeBeginJoin(rejected)==kIOReturnUnsupported);ownerGate=false;
+ d->experimentalEAP=true;ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnSuccess);ownerGate=false;
+ assert(s.secure && s.pmfRequired && s.securityAKM==5 && s.pairCipher==4 && s.groupCipher==4);
+ assert(!s.portAuthorized && !sec->ready && sec->pmfSession && sec->eapOwner.generation());
+ assert(!sec->saePreparation.active() && !sec->pskPreparation.active());
+ s.stage=Ath10k::LinkStage::Connected;
+ assert(sec->eapOwner.setMSK(sec->eapOwner.generation(),s.local,s.bssid,9,s_pmk,32,1)==AthNative::EAPOwner::KeyResult::Accepted);
+ ownerGate=true;d->serviceNativeEAP(1);ownerGate=false;
+ assert(sec->ready && !s.portAuthorized && !sec->pmfSession->portReady());
+ UInt8 encoded[64]{};size_t n=0;assert(sec->supplicant.copyAssociationRSN(encoded,sizeof(encoded),n));
+ assert(n==bytes && !memcmp(encoded,ap.rsn,n));
+ sec->reset();assert(!sec->ready && !sec->pmfSession && !sec->eapOwner.generation());
+ stop(d);
+}
+static void staticWEPNativeAdmissionTests(){
+ for(unsigned lower:{1u,2u})for(unsigned length:{5u,13u})for(unsigned index=0;index<4;++index){
+  auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+  s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,s_sta,6);nativeSAEClockMS=0;
+  ap.ssidLength=4;memcpy(ap.ssid,"IEEE",4);ap.privacy=true;ap.capabilities|=0x10;
+  ap.rsnPresent=ap.wpaPresent=false;ap.rsnLength=ap.wpaLength=0;sec->candidates.add(ap,0);
+  AirportWCL::JoinRequest join{};join.lowerAuth=lower;join.keyFlags=15;join.keyIndex=index;
+  join.keyLength=length;join.keyCipher=length==5?1:2;memset(join.key,0x37,length);
+  join.ssidLength=4;memcpy(join.ssid,"IEEE",4);memcpy(join.bssid,ap.bssid,6);
+  const auto original=join;auto rejected=join;
+  ownerGate=true;assert(d->nativeBeginJoin(rejected)==kIOReturnUnsupported);ownerGate=false;
+  for(auto byte:rejected.key)assert(!byte);
+  d->experimentalWEP=true;
+  ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnSuccess);ownerGate=false;
+  assert(s.secure && s.wepSelected && s.sharedKeyAuth==(lower==2) && s.pairCipher==(length==5?1:5) && s.groupCipher==s.pairCipher);
+  assert(!s.pmfRequired && !s.portAuthorized && !sec->ready && sec->eapOwner.staticWEP() && sec->eapOwner.keyPending());
+  for(auto byte:join.key)assert(!byte);for(auto byte:d->_nativeJoin.key)assert(!byte);
+  AirportWCL::JoinRequest retained{};const auto auth=lower==1?NativeJoinAuth::WEPOpen:NativeJoinAuth::WEPShared;
+  assert(sec->profile.snapshot(sec->profile.generation(),s.local,original.ssid,4,auth,retained));
+  assert(retained.keyLength==length && retained.keyIndex==index && !memcmp(retained.key,original.key,length));
+  s.stage=Ath10k::LinkStage::Auth;
+  if(lower==2){ownerGate=true;assert(!d->advanceSAEAuth(1));ownerGate=false;
+   assert(d->transmitted.size()==1 && d->transmitted[0][24]==1);
+  }else {UInt8 frame[320]{};assert(Ath10k::buildStationManagement(frame,sizeof(frame),s)==30 && !frame[24]);}
+  stop(d);
+ }
+ // Shared authentication cannot silently continue without a random IV.
+ auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;auto ap=s.ap;auto regulatory=s.regulatory;
+ sec->reset();Ath10k::resetDisconnected(s);d->_nativeJoinPending=false;d->_regulatory=regulatory;
+ memcpy(d->_nativeMACCurrent,s_sta,6);nativeSAEClockMS=0;d->experimentalWEP=true;
+ ap.rsnPresent=ap.wpaPresent=false;ap.rsnLength=ap.wpaLength=0;ap.privacy=true;sec->candidates.add(ap,0);
+ AirportWCL::JoinRequest join{};join.lowerAuth=2;join.keyFlags=15;join.keyLength=5;join.keyCipher=1;
+ join.ssidLength=ap.ssidLength;memcpy(join.ssid,ap.ssid,ap.ssidLength);memcpy(join.bssid,ap.bssid,6);
+ failNativeRandom=true;ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnNotReady);ownerGate=false;failNativeRandom=false;
+ assert(!sec->eapOwner.generation() && !sec->profile.generation() && !s.wepSelected);stop(d);
+}
+static void legacyNativeAdmissionTests(){
+ for(unsigned mode=0;mode<3;++mode)for(UInt8 pair:{UInt8(2),UInt8(4)})for(UInt8 group:{UInt8(2),UInt8(4)}){
+  auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+  s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,s_sta,6);nativeSAEClockMS=0;
+  ap.ssidLength=4;memcpy(ap.ssid,"IEEE",4);ap.privacy=ap.wpaPresent=true;
+  const UInt8 akm=mode==2?1:2;
+  UInt8 ie[]={221,22,0,0x50,0xf2,1,1,0,0,0x50,0xf2,group,1,0,0,0x50,0xf2,pair,1,0,0,0x50,0xf2,akm};
+  memcpy(ap.wpa,ie,sizeof(ie));ap.wpaLength=sizeof(ie);sec->candidates.add(ap,0);
+  AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=mode==2?1:2;
+  join.ssidLength=4;memcpy(join.ssid,"IEEE",4);memcpy(join.bssid,ap.bssid,6);
+  memcpy(join.rsn,ie,sizeof(ie));join.rsnLength=sizeof(ie);
+  if(mode==0){join.keyCipher=6;join.keyLength=32;memcpy(join.key,s_pmk,32);}
+  if(mode==1){join.keyCipher=10;join.keyLength=8;memcpy(join.key,"password",8);}
+  auto rejected=join;ownerGate=true;assert(d->nativeBeginJoin(rejected)==kIOReturnUnsupported);ownerGate=false;
+  assert(!sec->ready && !sec->profile.generation() && d->transmitted.empty());
+  d->experimentalLegacy=true;d->experimentalEAP=mode==2;
+  ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnSuccess);ownerGate=false;
+  assert(s.wpa1Selected && s.pairCipher==pair && s.groupCipher==group && s.securityAKM==akm && !s.pmfRequired);
+  assert(sec->profile.matchesSecurity(sec->profile.generation(),pair,true,true));
+  if(mode==1){s.stage=Ath10k::LinkStage::Auth;run(latest);ownerGate=true;
+   assert(d->advanceSAEAuth(1));ownerGate=false;
+  }
+  if(mode==2){
+   assert(!sec->ready && sec->eapOwner.generation());s.stage=Ath10k::LinkStage::Connected;
+   assert(sec->eapOwner.setMSK(sec->eapOwner.generation(),s.local,s.bssid,9,s_pmk,32,1)==AthNative::EAPOwner::KeyResult::Accepted);
+   ownerGate=true;d->serviceNativeEAP(1);ownerGate=false;
+  }
+  assert(sec->ready && sec->supplicant.awaitingInitialGroup() && !s.portAuthorized);
+  UInt8 encoded[32]{};size_t n=0;assert(sec->supplicant.copyAssociationRSN(encoded,sizeof(encoded),n));
+  assert(n==sizeof(ie) && !memcmp(encoded,ie,n));
+  for(auto c:join.key)assert(!c);for(auto c:d->_nativeJoin.key)assert(!c);
+  stop(d);
  }
 }
 int main(){
@@ -433,7 +597,7 @@ int main(){
   Ath10k::receiveStationManagement(sha,pskResponse.data(),pskResponse.size(),0,6);assert(!sha.assocReply);
   shaResponse.insert(shaResponse.end(),AthSecurity::stationRSNSHA256,AthSecurity::stationRSNSHA256+sizeof(AthSecurity::stationRSNSHA256));
   Ath10k::receiveStationManagement(sha,shaResponse.data(),shaResponse.size(),0,6);assert(sha.assocReply);
-  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
   assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply);
   assert(sec->supplicant.outputLength==157 && !memcmp(sec->supplicant.output+113,station,44));
   assert(sec->supplicant.receive(w_m3,sizeof(w_m3))==S::Keys && !memcmp(sec->supplicant.keys,w_ptk+32,16));stop(d);
@@ -460,7 +624,7 @@ int main(){
   retired(d);assert(!tick(d,5) && sec->ready && s.authReply);
   s.stage=Ath10k::LinkStage::Assoc;uint8_t assoc[256]{};const auto n=d->buildNativeSAEAssociation(assoc,sizeof(assoc));
   assert(n>3 && !memcmp(assoc+n-3,x_rsnxe,3));
-  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+  using S=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
   assert(sec->supplicant.receive(w_m1,sizeof(w_m1))==S::Reply && sec->supplicant.outputLength==160);
   assert(!memcmp(sec->supplicant.output,x_m2,sizeof(x_m2)));
   s.stage=Ath10k::LinkStage::Connected;ownerGate=true;assert(d->nativeAcceptSecurityResult(S::Reply));ownerGate=false;
@@ -476,6 +640,49 @@ int main(){
 #define FIELD(member,name) field.member=reinterpret_cast<decltype(field.member)>(dlsym(lib,name));assert(field.member)
  FIELD(units,"cczp_n");FIELD(prime,"cczp_prime");FIELD(multiply,"cczp_mul");FIELD(inverse,"cczp_inv");FIELD(add,"cczp_add");FIELD(subtract,"cczp_sub");
 #undef FIELD
+ // Explicit selected RSNE must agree with both the requested AKM and AP.
+ for(unsigned scenario=0;scenario<7;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+  s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,w_sta,6);
+  memcpy(ap.rsn,AthSecurity::stationRSN,sizeof(AthSecurity::stationRSN));ap.rsnLength=sizeof(AthSecurity::stationRSN);
+  sec->candidates.add(ap,0);nativeSAEClockMS=0;
+  AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=8;join.keyCipher=6;join.keyLength=32;join.ssidLength=ap.ssidLength;
+  memcpy(join.ssid,ap.ssid,ap.ssidLength);memcpy(join.bssid,ap.bssid,6);
+  memcpy(join.rsn,ap.rsn,ap.rsnLength);join.rsnLength=ap.rsnLength;
+  if(scenario==1)join.rsn[7]=2;
+  if(scenario==2)join.rsn[13]=2;
+  if(scenario==3)join.rsn[19]=1;
+  if(scenario==4)--join.rsnLength;
+  if(scenario==5)join.rsnLength=0;
+  failNativeRandom=scenario==6;
+  ownerGate=true;const auto result=d->nativeBeginJoin(join);ownerGate=false;failNativeRandom=false;
+  assert(result==((scenario==0 || scenario==5)?kIOReturnSuccess:kIOReturnUnsupported));
+  if(scenario && scenario!=5)assert(!d->_nativeJoinPending && !sec->profile.generation() && !sec->ready && d->transmitted.empty());
+  else assert(s.pairCipher==4 && !s.legacyRSNAllowed && sec->profile.matchesSecurity(sec->profile.generation(),4,false));
+  for(auto value:join.key)assert(!value);stop(d);
+ }
+ // Exclusion is evaluated after suite selection, before credentials/radio admission.
+ for(unsigned test=0;test<3;++test){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
+  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
+  s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,w_sta,6);
+  memcpy(ap.rsn,AthSecurity::stationRSN,sizeof(AthSecurity::stationRSN));ap.rsnLength=sizeof(AthSecurity::stationRSN);
+  if(test!=1)ap.rsn[7]=2; // Group TKIP, pairwise CCMP.
+  assert(sec->tkipMICOwner.begin(7,0));
+  assert(sec->tkipMICOwner.detect({7,1,1,0,16},1)==AthSecurity::TKIPMICOwner::Detection::Report);
+  assert(sec->tkipMICOwner.detect({7,1,2,0,16},2)==AthSecurity::TKIPMICOwner::Detection::Countermeasures);
+  sec->reset();sec->candidates.add(ap,test==2?60002:3);d->experimentalEAP=true;
+  nativeSAEClockMS=test==2?60002:3;
+  AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuth=8;join.keyCipher=6;join.keyLength=32;join.ssidLength=ap.ssidLength;
+  memcpy(join.ssid,ap.ssid,ap.ssidLength);memcpy(join.bssid,ap.bssid,6);
+  ownerGate=true;const auto result=d->nativeBeginJoin(join);ownerGate=false;
+  if(result!=(test==0?kIOReturnNotReady:kIOReturnSuccess))fprintf(stderr,"exclusion test=%u result=%d group=%u\n",test,result,s.groupCipher);
+  assert(result==(test==0?kIOReturnNotReady:kIOReturnSuccess));
+  if(test==0)assert(!d->_nativeJoinPending && !sec->profile.generation() && !sec->eapOwner.generation());
+  stop(d);
+ }
+ nativeSAEClockMS=0;
  for(unsigned scenario=0;scenario<6;++scenario){auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
   auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
   s.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
@@ -504,7 +711,7 @@ int main(){
    ownerGate=true;d->serviceNativeEAP(100);ownerGate=false;
    assert(d->_nativeEAPQueueRunning && d->outputQueue.starts==1 && !d->_networkLinkUp);
    assert(sec->ready && !s.portAuthorized && s.sinceMs==100);
-   using E=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true>;
+   using E=AthSecurity::Supplicant<Ath10kKernelCrypto,true,true,true,true,true,true>;
    assert(sec->supplicant.receive(e_m1,sizeof(e_m1))==E::Reply);
    assert(d->nativeAcceptSecurityResult(E::Reply));
    if(scenario==4){
@@ -539,6 +746,9 @@ int main(){
      key.key_len=32;memcpy(key.key,er_pmk,32);assert(d->nativeSetCipherKey(&key)==kIOReturnSuccess);
      ownerGate=true;d->serviceNativeEAP(111);ownerGate=false;
      nativePasswordRandom=[](uint8_t *out,size_t n){assert(n==32);memcpy(out,er_snonce,32);return true;};
+     sec->tkipMICInFlight=true;d->serviceEAPKeyFrames();
+     assert(s.eapolCount==1 && !sec->replyPending); // New M1 cannot replace the report's KCK.
+     sec->tkipMICInFlight=false;
      d->serviceEAPKeyFrames();nativePasswordRandom=nullptr;
      assert(s.eapolCount==0 && sec->replyPending);
      assert(sec->replyLength==sizeof(er_m2) && !memcmp(sec->reply,er_m2,sizeof(er_m2)));sec->replyPending=false;
@@ -559,7 +769,7 @@ int main(){
   stop(d);
  }
  passwordPreparationTests(field);
- pskPasswordAdmissionTests();
+ oweNativeAdmissionTests();eapSHA256NativeAdmissionTests();pskPasswordAdmissionTests();legacyPasswordOwnership();legacyNativeAdmissionTests();staticWEPNativeAdmissionTests();
  securitySnapshotTests();
  AthSecurity::wipe(&keys,sizeof(keys));dlclose(lib);
 }

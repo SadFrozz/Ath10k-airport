@@ -53,11 +53,11 @@ static void baEpochAndGroup(ConnectionState &s){
     auto secureRelease=[&](RXBatch &batch){if(acceptSecureRX(s,batch.descriptor,batch.data,batch.lengths[0]))delivered.push_back(batch.sequence);};
     b=rx86(s,101,false,11);q->receive(s,b,1,clone,secureRelease,destroy);
     b=rx86(s,1000,true,20);q->receive(s,b,2,clone,secureRelease,destroy);
-    q->receive(s,b,3,clone,secureRelease,destroy);assert(s.groupPN[0]==20 && !s.pairPN[0] && q->sessions[0].head==100 && q->held==1 && s.rxLastReason==ConnectionState::Replay);
+    q->receive(s,b,3,clone,secureRelease,destroy);assert(s.groupPN[s.groupIndex][0]==20 && !s.pairPN[0] && q->sessions[0].head==100 && q->held==1 && s.rxLastReason==ConnectionState::Replay);
     b=rx86(s,100,false,10);q->receive(s,b,4,clone,secureRelease,destroy);
     assert(delivered==std::vector<UInt16>({1000,100,101}) && s.pairPN[0]==11 && !q->held);
     // The original group receiver decides BA membership even if an inner A-MSDU destination is unicast.
-    b=rx86(s,1001,true,21);b.data[0]=s.local[0];q->receive(s,b,5,clone,secureRelease,destroy);assert(q->sessions[0].head==102 && s.groupPN[0]==21);
+    b=rx86(s,1001,true,21);b.data[0]=s.local[0];q->receive(s,b,5,clone,secureRelease,destroy);assert(q->sessions[0].head==102 && s.groupPN[s.groupIndex][0]==21);
     q->reset(destroy);delivered.clear();base(s);s.firmwareReorder=false;s.baSSNValid[0]=true;s.baSSN[0]=100;
     UInt8 message[12]{};message[8]=5;message[9]=64;htcWriteLE16(message+10,7<<4);commitConnectionHTT(s,message);
     assert(s.ba[0].startValid && !s.baSSNValid[0]);message[8]=6;commitConnectionHTT(s,message);

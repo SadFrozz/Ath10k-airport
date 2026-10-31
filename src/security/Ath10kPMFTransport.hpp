@@ -3,7 +3,7 @@
 namespace AthSecurity {
 // Explicit representation: hardware PMF carries plaintext plus an eight-byte
 // MIC slot, whereas software PMF already carries ciphertext and a valid tag.
-enum class ManagementTX : uint8_t {Plain,HardwareCCMP,SoftwareCCMP};
+enum class ManagementTX : uint8_t {Plain,HardwareCCMP,SoftwareCCMP,SoftwareWEPAuthentication};
 struct PMFHardwareCCMP {
 private:
  static bool overlap(const void *a,size_t n,const void *b,size_t m){
