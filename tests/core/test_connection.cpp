@@ -582,13 +582,13 @@ static void secureConnectionTests(bool separateInitialGroup=false){
     UInt8 event[36]{};event[8]=11;event[9]=0x86;event[10]=7;
     assert(!Ath10k::validateConnectionHTT(state,event,36));
     for(unsigned n=0;n<36;++n)assert(Ath10k::validateConnectionHTT(state,event,n));
-    event[10]=8;assert(Ath10k::validateConnectionHTT(state,event,36));event[10]=7;
-    event[9]=6;assert(Ath10k::validateConnectionHTT(state,event,36));
+    event[10]=8;assert(Ath10k::securityIndicationMismatch(state,event));event[10]=7;
+    event[9]=6;assert(Ath10k::securityIndicationMismatch(state,event));
     state.securityPhase=2;state.groupCipher=AthSecurity::cipherTKIP;event[9]=4;
     assert(!Ath10k::validateConnectionHTT(state,event,36));
     state.securityAck=false;Ath10k::commitConnectionHTT(state,event);
     assert(state.securityAck && state.securityInd.ack && state.securityInd.flags==4 && state.securityInd.received==1);
-    event[9]=6;assert(Ath10k::validateConnectionHTT(state,event,36));
+    event[9]=6;assert(Ath10k::securityIndicationMismatch(state,event));
     state.groupCipher=AthSecurity::cipherCCMP;event[9]=6;
     assert(!Ath10k::validateConnectionHTT(state,event,36));
     // Original header + descriptor PN is independent of the decapped Ethernet data.

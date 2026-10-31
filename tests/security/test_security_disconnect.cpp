@@ -214,7 +214,69 @@ static void retirementOwners(){
     d._wmiScan.completed=true;d._wmiScan.txOwned=true;
     assert(!d.serviceDisconnect(110) && s.disconnect==D::Drain && !s.submitted);
 }
+static void rejectedReceiptRecovery(){
+    ConnectionDriver d;d.connect();auto &s=d._connection;
+    auto association=d._regs.tx3Consume;
+    s.secure=true;s.securityPhase=1;s.submitted=true;s.pairInstalled=true;
+    s.temporalKey[0]=0x55;s.sinceMs=2000;
+    receive(d,sec(7,4)); // group TKIP is not this outstanding pair CCMP install
+    assert(s.securityReceiptRejected && s.cancelRequested && !s.portAuthorized && d._wmiLive.active);
+    d._regs.tx3Consume=[&](){
+        ++d.commands;
+        if(s.disconnect==D::ClearPair)receive(d,sec(7,0x80));
+        else if(s.disconnect==D::ClearGroup)receive(d,sec(7,0));
+        else if(s.disconnect==D::DeletePeer)receive(d,unmap(7));
+        else if(s.disconnect==D::Stop){d.deliver(2,stopped(true));return;}
+        else if(s.disconnect==D::Barrier){d.deliver(2,echoPacket(0xa7590001));return;}
+        else assert(s.disconnect==D::Down);
+        d.deliver(2,{0,2,8,0,8,0,0,0,1,4,0,0,2,1,0,0});
+    };
+    for(unsigned i=0;i<80 && s.stage!=LinkStage::Disabled;++i)d.tick(2010+i*10);
+    assert(s.stage==LinkStage::Disabled && s.disconnectCount==1 && !s.temporalKey[0]);
+    assert(d._wmiLive.active && d._rxSetup.ringOwned && !d._dmaQuarantine);
+    assert(s.securityInd.rejected==1 && !s.securityReceiptRejected);
+    s.secure=false;const auto &b=d._wmiBSS.entries[0];memcpy(s.bssid,b.bssid,6);
+    memcpy(s.ssid,b.ssid,b.ssidLength);s.ssidLength=b.ssidLength;s.stage=LinkStage::Scan;
+    d._regs.tx3Consume=association;
+    for(unsigned i=0;i<60 && !d.networkUp;++i)d.tick(4000+i*10);
+    assert(d.networkUp && d._wmiLive.active);d.releaseWMIRuntime();
+}
+static void rejectedReceiptTransport(){
+    for(D stage:{D::ClearPair,D::ClearGroup}){
+        Ath10k::ConnectionState s{};s.secure=true;s.disconnect=stage;s.submitted=true;
+        s.peerId=7;s.peerIDs[0]=1u<<7;s.securityPhase=5;
+        assert(!parse(s,sec(7,stage==D::ClearPair?0x80:0)) && s.securityAck);
+        assert(!parse(s,sec(7,0x86))); // late install, never a clear completion
+        assert(s.securityAck && !s.cancelRequested && s.disconnect==stage);
+        assert(s.securityInd.rejected==1 && !s.securityInd.ack);
+    }
+
+    for(bool wep:{false,true}){
+        Ath10k::ConnectionState s{};s.stage=LinkStage::Connected;s.secure=true;
+        s.peerId=7;s.peerCount=1;s.peerIDs[0]=1u<<7;s.portAuthorized=true;
+        s.wmiOwned=true;s.temporalKey[0]=0x55;
+        if(wep){s.securityAKM=1;s.pairCipher=1;assert(Ath10k::armWEPKeyReceipt(s,1,2,7,3));}
+        else {s.securityPhase=1;s.submitted=true;}
+        auto f=sec(8,wep?3:0x86);addPkgCredit(f);
+        Ath10k::HTCCreditState credits;assert(credits.initialize(2,256,2) && credits.reserve(36));
+        Ath10k::RxSetupState rx;rx.ringOwned=true;
+        // Invalid trailer must commit neither association failure nor credits.
+        auto malformed=f;malformed[malformed.size()-3]=2;
+        assert(Ath10k::parseHTTSetup(malformed.data(),malformed.size(),1,credits,rx,&s));
+        assert(!s.securityReceiptRejected && s.portAuthorized && credits.outstanding==1);
+        assert(!Ath10k::parseHTTSetup(f.data(),f.size(),1,credits,rx,&s));
+        assert(!credits.outstanding && credits.available==2);
+        assert(s.cancelRequested && s.securityReceiptRejected && !s.portAuthorized && !s.securityAck);
+        assert(s.wmiOwned && s.temporalKey[0]==0x55); // no speculative DMA/key retirement
+        assert(s.securityInd.firstRejectPeer==8 && s.securityInd.firstRejectExpectedPeer==7);
+        const auto flags=s.securityInd.firstRejectFlags;
+        assert(!parse(s,sec(7,0))); // subsequent NONE must not overwrite first failure
+        assert(s.securityInd.firstRejectPeer==8 && s.securityInd.firstRejectFlags==flags);
+        if(wep)assert(s.wepKeyReceipt.active && !s.wepKeyReceipt.received);
+        Ath10k::resetDisconnected(s);assert(!s.securityReceiptRejected && s.securityInd.rejected==1);
+    }
+}
 int main(){
-    parserCases();runtimeCases();retirementOwners();
+    parserCases();runtimeCases();retirementOwners();rejectedReceiptTransport();rejectedReceiptRecovery();
     puts("SECURITY_IND teardown regression passed: captured 36 bytes, early unmaps, partial/reused peers, NONE/install isolation, credit/STOP/ECHO gates and reconnect without runtime restart.");
 }

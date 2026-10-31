@@ -202,7 +202,97 @@ static void candidateTransaction(){
   AthSecurity::wipe(&next,sizeof(next));delete cache;
  }
 }
+static void optionalOpenPolicyRetention(){
+ const UInt8 station[6]={2,0,0,0,0,2};auto j=profile(0);
+ j.upperAuthExt=1;j.allowAuths=0x20000001;
+ Ath10k::WMIBSS ap{};ap.hidden=false;ap.ssidLength=j.ssidLength;
+ memcpy(ap.ssid,j.ssid,j.ssidLength);memcpy(ap.bssid,j.bssid,6);
+ assert(nativeJoinAuth(j,false,false,false,false,true,&ap)==NativeJoinAuth::Open);
+ NativeSelectedRSN selected{};assert(nativeSelectedRSN(j,NativeJoinAuth::Open,selected));
+ for(unsigned bad=0;bad<12;++bad){auto request=j;auto candidate=ap;
+  if(bad==0)candidate.privacy=true;if(bad==1)candidate.rsnPresent=true;
+  if(bad==2)candidate.rsnLength=1;if(bad==3)candidate.wpaPresent=true;
+  if(bad==4)candidate.wpaLength=1;if(bad==5)candidate.oweTransitionLength=1;
+  if(bad==6)candidate.bssid[5]^=1;if(bad==7)candidate.ssid[0]^=1;
+  if(bad==8)candidate.hidden=true;if(bad==9)request.allowAuths=0x40000;
+  if(bad==10)request.transitionDisable=NativeTransitionDisable::EnhancedOpen;
+  if(bad==11)request.rsnLength=1;
+  assert(nativeJoinAuth(request,false,false,false,false,true,&candidate)!=NativeJoinAuth::Open);
+ }
+ assert(!nativeOptionalOpenCandidate(j,nullptr));
+ AthNative::ProfileCredentials owner;
+ assert(owner.replace(j,station,false,false,4,false,false,false,true,&ap));
+ auto token=owner.generation();AirportWCL::JoinRequest snapshot{};
+ assert(owner.snapshot(token,station,j.ssid,j.ssidLength,NativeJoinAuth::Open,snapshot));
+ assert(snapshot.upperAuthExt==1 && snapshot.allowAuths==0x20000001);
+ assert(owner.restrictPolicy(token,NativeTransitionDisable::Personal));
+ token=owner.generation();
+ assert(!owner.restrictPolicy(token,NativeTransitionDisable::EnhancedOpen));
+ assert(!owner.generation()); // policy restriction invalidates retained Open
+ assert(!owner.snapshot(token,station,j.ssid,j.ssidLength,NativeJoinAuth::Open,snapshot));
+}
+static void protectedTransitionSelection(){
+ auto join=profile(0);join.upperAuthExt=1;join.allowAuths=0x20000001;
+ AthNative::CandidateCache cache;Ath10k::WMIBSS open{},peer{};
+ memcpy(open.bssid,join.bssid,6);memcpy(open.ssid,join.ssid,join.ssidLength);
+ open.ssidLength=join.ssidLength;open.hidden=false;open.rxChannel=1;
+ peer.bssid[0]=2;peer.bssid[5]=9;peer.hidden=true;peer.privacy=peer.rsnPresent=true;peer.rxChannel=36;
+ size_t bytes=0;assert(AthSecurity::buildOWEStationRSN(peer.rsn,sizeof(peer.rsn),bytes));peer.rsnLength=bytes;
+ auto transition=[](Ath10k::WMIBSS &ap,const UInt8 *bssid,const UInt8 *ssid,UInt8 n){
+  auto *ie=ap.oweTransition;ie[0]=221;ie[1]=11+n;ie[2]=0x50;ie[3]=0x6f;ie[4]=0x9a;ie[5]=0x1c;
+  memcpy(ie+6,bssid,6);ie[12]=n;memcpy(ie+13,ssid,n);ap.oweTransitionLength=13+n;
+ };
+ const UInt8 hiddenName[]={'s','e','c','u','r','e'};
+ transition(open,peer.bssid,hiddenName,sizeof(hiddenName));transition(peer,open.bssid,open.ssid,open.ssidLength);
+ cache.add(open,100);cache.add(peer,101);AthNative::OWETransitionTarget target{};
+ assert(!AthNative::selectOWETransitionTarget(join,cache,102,target));
+ assert(target.index==1 && target.observed==101 && target.ssidLength==6 && !memcmp(target.ssid,hiddenName,6));
+ AirportWCL::JoinRequest resolved{};UInt32 index=99;
+ assert(!AthNative::prepareOWETransitionJoin(join,cache,102,resolved,index));
+ assert(index==1 && !memcmp(resolved.bssid,peer.bssid,6));
+ assert(resolved.ssidLength==6 && !memcmp(resolved.ssid,hiddenName,6));
+ assert(resolved.upperAuthExt==join.upperAuthExt && resolved.allowAuths==join.allowAuths);
+ assert(nativeJoinAuth(resolved,false,false,false,false,true,&peer)==NativeJoinAuth::OWE);
+ const UInt8 station[6]={2,0,0,0,0,4};AthNative::ProfileCredentials retained;
+ assert(retained.replace(resolved,station,false,false,4,false,false,false,true,&peer));
+ const auto generation=retained.generation();
+ assert(retained.visibleSSID(generation,join.ssid,join.ssidLength));
+ assert(retained.permitsTransitionCandidate(generation,peer,cache,102));
+ assert(!retained.permitsTransitionCandidate(generation+1,peer,cache,102));
+ auto substituted=peer;substituted.oweTransition[13]^=1;
+ assert(!retained.permitsTransitionCandidate(generation,substituted,cache,102));
+ auto missingPair=cache;missingPair.bss.entries[0].oweTransition[6]^=2;
+ assert(!retained.permitsTransitionCandidate(generation,peer,missingPair,102));
+ assert(!retained.visibleSSID(generation+1,join.ssid,join.ssidLength));
+ retained.clear();assert(!retained.visibleSSID(generation,join.ssid,join.ssidLength));
+ assert(!memcmp(cache.bss.entries[1].bssid,peer.bssid,6) && cache.bss.entries[1].ssidLength==0);
+ auto failed=cache;failed.bss.count=1;auto before=resolved;
+ assert(AthNative::prepareOWETransitionJoin(join,failed,102,resolved,index));
+ assert(!memcmp(&before,&resolved,sizeof(before)) && index==1);
+ // EnhancedOpen forbids plaintext, not a validated protected transition.
+ auto restricted=join;restricted.transitionDisable=NativeTransitionDisable::EnhancedOpen;
+ assert(!AthNative::selectOWETransitionTarget(restricted,cache,102,target));
+ for(unsigned bad=0;bad<13;++bad){auto copy=cache;auto request=join;
+  if(bad==0)copy.bss.count=1;if(bad==1)copy.observed[1]=103;
+  if(bad==2)copy.observed[0]=103;if(bad==3)copy.bss.entries[1].privacy=false;
+  if(bad==4)copy.bss.entries[1].oweTransition[6]^=2;
+  if(bad==5)copy.bss.entries[1].oweTransition[13]^=1;
+  if(bad==6)copy.bss.entries[0].oweTransition[12]=33;
+  if(bad==7)copy.bss.entries[1].rsnLength=258;
+  if(bad==8)request.allowAuths=0x40000;
+  if(bad==9)copy.bss.entries[1].ssidLength=1;
+  if(bad==10)copy.bss.entries[1].wpaPresent=true;
+  if(bad==11)copy.bss.entries[0].oweTransitionLength=12;
+  if(bad==12)copy.bss.entries[1].rxChannel=255;
+  target.index=99;assert(AthNative::selectOWETransitionTarget(request,copy,102,target));assert(target.index==99);
+ }
+ assert(AthNative::selectOWETransitionTarget(join,cache,30102,target));
+ for(unsigned n=0;n<open.oweTransitionLength;++n){auto cut=open;cut.oweTransitionLength=n;
+  AthNative::OWETransitionView view{};assert(!AthNative::parseOWETransition(cut,view));}
+}
 int main(){
+ protectedTransitionSelection();
+ optionalOpenPolicyRetention();
  {const UInt8 local[6]={2,0,0,0,0,2};auto p=profile(0);p.upperAuthExt=1;
   AthNative::ProfileCredentials owner;assert(!owner.replace(p,local,false));
   assert(owner.replace(p,local,false,false,4,false,false,false,true));auto generation=owner.generation();

@@ -282,6 +282,14 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kSecurityIndRetired",_connection.securityInd.retired);
     setProperty("Ath10kSecurityIndAcknowledged",_connection.securityInd.ack);
     setProperty("Ath10kSecurityIndAction",_connection.securityInd.action);
+    setProperty("Ath10kSecurityIndRejected",_connection.securityInd.rejected,32);
+    setProperty("Ath10kSecurityIndFirstRejectPeer",_connection.securityInd.firstRejectPeer,32);
+    setProperty("Ath10kSecurityIndFirstRejectExpectedPeer",_connection.securityInd.firstRejectExpectedPeer,32);
+    setProperty("Ath10kSecurityIndFirstRejectFlags",_connection.securityInd.firstRejectFlags,32);
+    setProperty("Ath10kSecurityIndFirstRejectExpected",_connection.securityInd.firstRejectExpected,32);
+    setProperty("Ath10kSecurityIndFirstRejectPhase",_connection.securityInd.firstRejectPhase,32);
+    setProperty("Ath10kSecurityIndFirstRejectSubmitted",_connection.securityInd.firstRejectSubmitted);
+    setProperty("Ath10kSecurityIndFirstRejectWEP",_connection.securityInd.firstRejectWEP);
     setProperty("Ath10kConnectionCancelRequested",_connection.cancelRequested);
     setProperty("Ath10kConnectionVdevStarted",_connection.vdevStarted);
     setProperty("Ath10kConnectionVdevUp",_connection.vdevUp);
@@ -784,7 +792,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
     // Once teardown starts, submitted belongs to its DELETE/STOP/barrier command.
     // A repeated abort must not reinterpret that command as an INSTALL_KEY wait.
     if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.stage==LinkStage::Connected && s.secure && s.submitted &&
-       ((s.securityPhase<=2 && !s.securityAck) || (s.securityPhase==4 && !_connectionEcho.replyReceived)))
+       ((s.securityPhase<=2 && !s.securityAck && !s.securityReceiptRejected) || (s.securityPhase==4 && !_connectionEcho.replyReceived)))
         return nowMs-s.sinceMs>=5000?"cancel-security-response-timeout":nullptr;
     if(s.disconnect==Ath10k::DisconnectStage::None && s.cancelRequested && s.csa.submitted &&
        ((s.csa.phase==Ath10k::ChannelSwitchPhase::Restart && !s.csa.restartReply) ||

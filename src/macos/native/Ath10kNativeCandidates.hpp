@@ -27,6 +27,74 @@ struct CandidateCache {
         bss.entries[slot]=entry;observed[slot]=now;
     }
 };
+// Borrowed only during radio-gated candidate selection; never retain IE pointers.
+struct OWETransitionView {const UInt8 *bssid=nullptr,*ssid=nullptr;UInt8 ssidLength=0;};
+inline bool parseOWETransition(const Ath10k::WMIBSS &ap,OWETransitionView &out){
+    const auto *ie=ap.oweTransition;const UInt32 n=ap.oweTransitionLength;
+    if(n<13 || n>sizeof(ap.oweTransition) || ie[0]!=221 || UInt32(ie[1])+2!=n ||
+       ie[2]!=0x50 || ie[3]!=0x6f || ie[4]!=0x9a || ie[5]!=0x1c ||
+       !ie[12] || ie[12]>32 || UInt32(13+ie[12])>n || (ie[6]&1))return false;
+    bool nonzero=false;for(unsigned i=0;i<6;++i)nonzero|=ie[6+i]!=0;
+    if(!nonzero || !memcmp(ie+6,ap.bssid,6))return false;
+    out={ie+6,ie+13,ie[12]};return true;
+}
+struct OWETransitionTarget {
+    UInt32 index=0;UInt64 observed=0;
+    UInt8 ssid[32]{},ssidLength=0;
+};
+// A transition advertisement is an untrusted pointer to another BSS, not
+// permission to downgrade. Require fresh reciprocal identity and actual OWE.
+// No output changes on failure; caller must revalidate before firmware admission.
+inline const char *selectOWETransitionTarget(const AirportWCL::JoinRequest &join,
+    const CandidateCache &cache,UInt64 now,OWETransitionTarget &out){
+    if(!nativeOWEEnvelope(join) || join.allowAuths!=0x20000001u || join.rsnLength)
+        return "owe-transition-policy";
+    if(cache.bss.count>Ath10k::kWMIBSSMax)return "owe-transition-cache-bounds";
+    const Ath10k::WMIBSS *open=nullptr;UInt32 openIndex=0;
+    for(UInt32 i=0;i<cache.bss.count;++i)
+        if(!memcmp(cache.bss.entries[i].bssid,join.bssid,6)){open=&cache.bss.entries[i];openIndex=i;break;}
+    if(!open)return "owe-transition-open-missing";
+    auto fresh=[&](UInt32 i){return now>=cache.observed[i] && now-cache.observed[i]<=CandidateCache::maxAgeMs;};
+    if(!fresh(openIndex))return "owe-transition-open-stale";
+    if(open->hidden || open->ssidLength!=join.ssidLength || memcmp(open->ssid,join.ssid,join.ssidLength) ||
+       open->privacy || open->rsnPresent || open->rsnLength || open->wpaPresent || open->wpaLength)
+        return "owe-transition-open-identity";
+    OWETransitionView forward{};if(!parseOWETransition(*open,forward))return "owe-transition-open-ie";
+    for(UInt32 i=0;i<cache.bss.count;++i){const auto &peer=cache.bss.entries[i];
+        if(memcmp(peer.bssid,forward.bssid,6))continue;
+        if(!fresh(i))return "owe-transition-peer-stale";
+        if(!peer.privacy || !peer.rsnPresent || peer.wpaPresent || peer.wpaLength ||
+           peer.rsnLength>sizeof(peer.rsn) || !AthSecurity::validOWEPersonalRSN(peer.rsn,peer.rsnLength))return "owe-transition-peer-security";
+        // A hidden beacon can omit its SSID; the reciprocal pair supplies it.
+        if(!(peer.hidden && !peer.ssidLength) &&
+           (peer.ssidLength!=forward.ssidLength || memcmp(peer.ssid,forward.ssid,forward.ssidLength)))
+            return "owe-transition-peer-ssid";
+        OWETransitionView reverse{};
+        if(!parseOWETransition(peer,reverse) || memcmp(reverse.bssid,open->bssid,6) ||
+           reverse.ssidLength!=open->ssidLength || memcmp(reverse.ssid,open->ssid,open->ssidLength))
+            return "owe-transition-nonreciprocal";
+        const UInt32 channel=peer.advertisedChannel?peer.advertisedChannel:peer.rxChannel;
+        if(!Ath10k::wmiScanChannelAllowed(channel))return "owe-transition-peer-channel";
+        OWETransitionTarget selected{};selected.index=i;selected.observed=cache.observed[i];
+        selected.ssidLength=forward.ssidLength;memcpy(selected.ssid,forward.ssid,forward.ssidLength);
+        out=selected;return nullptr;
+    }
+    return "owe-transition-peer-missing";
+}
+// Build the radio request separately from the visible Open alias. The actual
+// protected beacon retains its reciprocal IE for IO80211's alias presentation.
+inline const char *prepareOWETransitionJoin(const AirportWCL::JoinRequest &request,
+    const CandidateCache &cache,UInt64 now,AirportWCL::JoinRequest &out,UInt32 &index){
+    OWETransitionTarget target{};
+    if(const char *error=selectOWETransitionTarget(request,cache,now,target))return error;
+    const auto &ap=cache.bss.entries[target.index];
+    AirportWCL::JoinRequest next=request;
+    memcpy(next.bssid,ap.bssid,6);memset(next.ssid,0,sizeof(next.ssid));
+    next.ssidLength=target.ssidLength;memcpy(next.ssid,target.ssid,target.ssidLength);
+    const UInt32 channel=ap.advertisedChannel?ap.advertisedChannel:ap.rxChannel;
+    next.channelSpec=UInt16(channel|(channel>14?0xd000:0x1000));
+    out=next;index=target.index;return nullptr;
+}
 // Pure eligibility/preparation only; no ranking, live-state change or firmware IO.
 inline const char *prepareRoamCandidate(const Ath10k::ConnectionState &live,
     const NativeReassocRequest &request,const Ath10k::WMIBSS &ap,

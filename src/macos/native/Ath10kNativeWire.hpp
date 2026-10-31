@@ -58,7 +58,21 @@ inline bool nativeOWEEnvelope(const AirportWCL::JoinRequest &join){
         join.ssidLength && join.ssidLength<=sizeof(join.ssid) && join.rsnLength<=sizeof(join.rsn) &&
         any && !(join.bssid[0]&1);
 }
-inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false,bool allowEAP=false,bool allowWPA1=false,bool allowWEP=false,bool allowOWE=false){
+// Stock capability96 may produce ext1/0x20000001 for plain Open.
+// The policy permits selection, not fallback from an OWE exchange. Require
+// an exact fresh candidate with no protected/transition advertisement.
+inline bool nativeOptionalOpenPolicy(const AirportWCL::JoinRequest &join){
+    return nativeOWEEnvelope(join) && join.allowAuths==0x20000001u &&
+        !join.rsnLength && !(join.transitionDisable&NativeTransitionDisable::EnhancedOpen);
+}
+inline bool nativeOptionalOpenCandidate(const AirportWCL::JoinRequest &join,const Ath10k::WMIBSS *ap){
+    return nativeOptionalOpenPolicy(join) && ap && !ap->hidden &&
+        ap->ssidLength==join.ssidLength && !memcmp(ap->ssid,join.ssid,join.ssidLength) &&
+        !memcmp(ap->bssid,join.bssid,6) && !ap->privacy && !ap->rsnPresent && !ap->rsnLength &&
+        !ap->wpaPresent && !ap->wpaLength && !ap->oweTransitionLength;
+}
+inline NativeJoinAuth nativeJoinAuth(const AirportWCL::JoinRequest &join,bool allowSAE=false,bool allowEAP=false,bool allowWPA1=false,bool allowWEP=false,bool allowOWE=false,const Ath10k::WMIBSS *candidate=nullptr){
+    if(nativeOptionalOpenCandidate(join,candidate))return NativeJoinAuth::Open;
     if(allowOWE && nativeOWEEnvelope(join))return NativeJoinAuth::OWE;
     NativeWEPJoinView wep{};
     if(allowWEP && nativeWEPJoinEnvelope(join,wep))return wep.shared?NativeJoinAuth::WEPShared:NativeJoinAuth::WEPOpen;
@@ -115,6 +129,7 @@ inline bool nativeSelectedRSN(const AirportWCL::JoinRequest &join,NativeJoinAuth
         }
         out=selected;return true;
     }
+    if(auth==NativeJoinAuth::Open && nativeOptionalOpenPolicy(join)){out={};return true;}
     if(join.lowerAuth!=1 || !nativeJoinPolicyKnown(join) || join.rsnLength>sizeof(join.rsn))return false;
     if(auth==NativeJoinAuth::WPA1PSK || auth==NativeJoinAuth::WPA1EAP){
         const bool eap=auth==NativeJoinAuth::WPA1EAP;

@@ -223,6 +223,8 @@ struct ConnectionState {
         UInt64 generation=0,ticket=0;
     } wepKeyReceipt{};
     bool wepIOActive=false,wepEchoPending=false;
+    bool securityReceiptRejected=false; // association failure, never a key ACK
+
     UInt8 wepTransmitIndex=0;bool wepTransmitValid=false;
     UInt8 wepInstalledLengths[2][4]{}; // confirmed pair/group slots; no secret bytes
     // Only protocol metadata; no key bytes or replay counters from SEC_IND.
@@ -231,6 +233,10 @@ struct ConnectionState {
         UInt16 peer=0xffff;UInt8 flags=0;
         bool mapped=false,retired=false,ack=false;
         const char *action="none";
+        UInt32 rejected=0,firstRejectPhase=0;
+        UInt16 firstRejectPeer=0xffff,firstRejectExpectedPeer=0xffff;
+        UInt8 firstRejectFlags=0,firstRejectExpected=0xff;
+        bool firstRejectSubmitted=false,firstRejectWEP=false;
     } securityInd{};
     UInt8 temporalKey[32]{},groupKey[32]{},groupIndex=0,pairCipher=AthSecurity::cipherCCMP,groupCipher=0,groupRSC[6]{};
     UInt16 pairSeq[17]{},groupSeq[17]{};
@@ -1657,11 +1663,32 @@ inline UInt8 expectedSecurityIndication(const ConnectionState &s){
     if(s.securityPhase!=1 && s.securityPhase!=2)return 0xff;
     const bool pair=s.securityPhase==1;
     const auto selected=pair?s.pairCipher:s.groupCipher;
-    // WEP's multi-slot transaction is not the RSN/WPA phase machine. Keep
-    // those receipts rejected here until its separate owner is integrated.
+    // WEP's multi-slot transaction has its own receipt owner; never map it
+    // into the RSN/WPA securityPhase acknowledgement.
     if(selected!=AthSecurity::cipherTKIP && selected!=AthSecurity::cipherCCMP)return 0xff;
     const auto cipher=firmwareKeyCipher(selected);
     return UInt8(cipher.htt|(pair?0x80:0));
+}
+// Called only after structural HTT/trailer validation. A wrong owner or
+// cipher is an association failure, not evidence of corrupted transport DMA.
+inline const char *securityIndicationMismatch(const ConnectionState &s,const UInt8 *f) {
+    // Linux consumes NONE indications even after the peer has disappeared.
+    // Whether this acknowledges our key-disable command is decided at commit;
+    // an unrelated/late NONE must neither stop the runtime nor install a key.
+    if(!(f[9]&0x7f))return nullptr;
+    if(s.wepKeyReceipt.active){
+        const auto &r=s.wepKeyReceipt;
+        const bool retiring=s.cancelRequested || s.disconnect!=DisconnectStage::None;
+        if(!s.secure || s.securityAKM!=1 || (s.pairCipher!=1 && s.pairCipher!=5) ||
+           (!retiring && (s.securityPhase || s.submitted)) ||
+           (!mappedPeer(s,htcReadLE16(f+10)) && !(retiring && retiredPeer(s,htcReadLE16(f+10)))) ||
+           htcReadLE16(f+10)!=r.peer || f[9]!=r.expected)return "wep-security-indication-unexpected";
+        return nullptr;
+    }
+    if(s.disconnect!=DisconnectStage::None || !s.secure || s.securityPhase<1 || s.securityPhase>2 ||
+       !s.submitted || !mappedPeer(s,htcReadLE16(f+10)) ||
+       f[9]!=expectedSecurityIndication(s))return "security-indication-unexpected";
+    return nullptr;
 }
 inline const char *validateConnectionHTT(const ConnectionState &s,const UInt8 *f,UInt32 end) {
     if(!f || end<9)return "htt-connection-short";
@@ -1676,22 +1703,7 @@ inline const char *validateConnectionHTT(const ConnectionState &s,const UInt8 *f
     case 0xb:
         if(end!=36)return "security-indication-length";
         if(htcReadLE16(f+10)>=2048 || (f[9]&0x7f)>=8)return "security-indication-fields";
-        // Linux consumes NONE indications even after the peer has disappeared.
-        // Whether this acknowledges our key-disable command is decided at commit;
-        // an unrelated/late NONE must neither stop the runtime nor install a key.
-        if(!(f[9]&0x7f))break;
-        if(s.wepKeyReceipt.active){
-            const auto &r=s.wepKeyReceipt;
-            const bool retiring=s.cancelRequested || s.disconnect!=DisconnectStage::None;
-            if(!s.secure || s.securityAKM!=1 || (s.pairCipher!=1 && s.pairCipher!=5) ||
-               (!retiring && (s.securityPhase || s.submitted)) ||
-               (!mappedPeer(s,htcReadLE16(f+10)) && !(retiring && retiredPeer(s,htcReadLE16(f+10)))) ||
-               htcReadLE16(f+10)!=r.peer || f[9]!=r.expected)return "wep-security-indication-unexpected";
-            break;
-        }
-        if(s.disconnect!=DisconnectStage::None || !s.secure || s.securityPhase<1 || s.securityPhase>2 ||
-           !s.submitted || !mappedPeer(s,htcReadLE16(f+10)) ||
-           f[9]!=expectedSecurityIndication(s))return "security-indication-unexpected";
+        // Semantic ownership is checked at commit, after trailer validation.
         break;
     case 7: {
         if(end<16 || !f[10] || f[10]>kDataTxSlots || 12u+2u*f[10]>end)return "data-completion-length";
@@ -1727,6 +1739,23 @@ inline void commitConnectionHTT(ConnectionState &s,const UInt8 *f) {
         auto &d=s.securityInd;++d.received;d.peer=htcReadLE16(f+10);d.flags=f[9];
         d.disconnect=static_cast<UInt32>(s.disconnect);
         d.mapped=mappedPeer(s,d.peer);d.retired=retiredPeer(s,d.peer);d.ack=false;
+        if(const char *reason=securityIndicationMismatch(s,f)){
+            if(!d.rejected){
+                d.firstRejectPeer=d.peer;d.firstRejectFlags=d.flags;
+                d.firstRejectExpectedPeer=s.wepKeyReceipt.active?s.wepKeyReceipt.peer:s.peerId;
+                d.firstRejectExpected=s.wepKeyReceipt.active?s.wepKeyReceipt.expected:expectedSecurityIndication(s);
+                d.firstRejectPhase=s.securityPhase;d.firstRejectSubmitted=s.submitted;
+                d.firstRejectWEP=s.wepKeyReceipt.active;
+            }
+            ++d.rejected;++d.ignored;d.action=reason;
+            // A late install indication cannot revoke a valid CLEAR receipt
+            // already owned by teardown. Nor can it acknowledge that command.
+            if(s.disconnect!=DisconnectStage::None)return;
+            s.securityReceiptRejected=true;s.portAuthorized=false;s.securityAck=false;
+            connectionFailure(s,reason);s.cancelRequested=true;
+            // Preserve CE, receipt and key owners until compensating teardown.
+            return;
+        }
         if((f[9]&0x7f) && s.wepKeyReceipt.active){
             if(s.cancelRequested || s.disconnect!=DisconnectStage::None || s.wepKeyReceipt.received){
                 ++d.ignored;d.action="wep-retired-or-duplicate";return;

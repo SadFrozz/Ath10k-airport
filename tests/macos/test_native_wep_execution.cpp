@@ -82,7 +82,11 @@ int main(){
    if(bad==1)copy.securityPhase=1;
    if(bad==2)copy.wepKeyReceipt.peer=8;
    if(bad==3)copy.pairCipher=4;
-   assert(Ath10k::validateConnectionHTT(copy,frame,sizeof(frame)));
+   assert(!Ath10k::validateConnectionHTT(copy,frame,sizeof(frame)));
+   Ath10k::commitConnectionHTT(copy,frame);
+   assert(copy.securityReceiptRejected && copy.cancelRequested && !copy.portAuthorized);
+   assert(!copy.wepKeyReceipt.received && !copy.securityAck && copy.wepKeyReceipt.active);
+   assert(copy.securityInd.rejected==1 && copy.securityInd.firstRejectPeer==7);
   }
   assert(!Ath10k::validateConnectionHTT(s,frame,sizeof(frame)));
   Ath10k::commitConnectionHTT(s,frame);
@@ -93,7 +97,8 @@ int main(){
   assert(!Ath10k::retireWEPKeyReceiptAfterFence(s,1,10));
   assert(Ath10k::retireWEPKeyReceiptAfterFence(s,1,9));
   assert(!s.wepKeyReceipt.active && !s.securityAck);
-  assert(Ath10k::validateConnectionHTT(s,frame,sizeof(frame)));
+  assert(!Ath10k::validateConnectionHTT(s,frame,sizeof(frame)));
+  Ath10k::commitConnectionHTT(s,frame);assert(s.securityReceiptRejected && !s.securityAck);
  }
 
  uint8_t station[6]{2,1,2,3,4,5},peer[6]{2,6,7,8,9,10};

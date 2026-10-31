@@ -1851,7 +1851,28 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
         NativeWEPJoinView wepEnvelope{};
         setProperty("Ath10kNativeWEPEnvelopeCandidate",nativeWEPJoinEnvelope(join,wepEnvelope));
         const bool legacy=nativeLegacyEnabled(),allowWEP=nativeWEPEnabled();
-        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady,nativeEAPEnabled(),legacy,allowWEP,nativeOWEEnabled() && backendReady);
+        _nativeSecurity->candidates.expire(Ath10k::uptimeNS()/1000000u);
+        const Ath10k::WMIBSS *authCandidate=nullptr;
+        for(UInt32 i=0;i<_nativeSecurity->candidates.bss.count;++i){
+            const auto &ap=_nativeSecurity->candidates.bss.entries[i];
+            if(!memcmp(ap.bssid,join.bssid,6)){authCandidate=&ap;break;}
+        }
+        // Resolve a validated transition pair before creating any key owner.
+        // Never retry the visible Open BSS after protected selection fails.
+        if(nativeOWEEnvelope(join) && authCandidate && !authCandidate->privacy && authCandidate->oweTransitionLength){
+            if(!nativeOWEEnabled() || !backendReady){
+                setProperty("Ath10kNativeJoinReason","owe-transition-backend-unavailable");
+                AthSecurity::wipe(&join,sizeof(join));return kIOReturnUnsupported;
+            }
+            UInt32 target=0;
+            if(const char *error=AthNative::prepareOWETransitionJoin(join,_nativeSecurity->candidates,
+                Ath10k::uptimeNS()/1000000u,join,target)){
+                setProperty("Ath10kNativeJoinReason",error);
+                AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;
+            }
+            authCandidate=&_nativeSecurity->candidates.bss.entries[target];
+        }
+        const auto auth=nativeJoinAuth(join,nativeSAEEnabled() && backendReady,nativeEAPEnabled(),legacy,allowWEP,nativeOWEEnabled() && backendReady,authCandidate);
         const bool sae=auth==NativeJoinAuth::SAE,eap=auth==NativeJoinAuth::EAP || auth==NativeJoinAuth::EAPSHA256 || auth==NativeJoinAuth::WPA1EAP;
         const bool eapSHA256=auth==NativeJoinAuth::EAPSHA256;
         const bool owe=auth==NativeJoinAuth::OWE;
@@ -1950,7 +1971,7 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
                 AthNative::beginMasterKey(_nativeSecurity->supplicant,s,join.key,nonce);
             AthSecurity::wipe(nonce,sizeof(nonce));if(!ok){_nativeSecurity->supplicant.reset();setProperty("Ath10kNativeJoinReason","supplicant-initialization-failed");AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnUnsupported;}
             _nativeSecurity->ready=true;}
-        if(!_nativeSecurity->profile.replace(join,s.local,sae,eap,s.pairCipher,s.legacyRSNAllowed,legacy,allowWEP,owe)){
+        if(!_nativeSecurity->profile.replace(join,s.local,sae,eap,s.pairCipher,s.legacyRSNAllowed,legacy,allowWEP,owe,&s.ap)){
             _nativeSecurity->reset();setProperty("Ath10kNativeJoinReason","profile-retention-failed");
             AthSecurity::wipe(&join,sizeof(join));Ath10k::resetDisconnected(s);return kIOReturnNotReady;
         }

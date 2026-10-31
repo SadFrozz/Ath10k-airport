@@ -6,6 +6,22 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.112 — 2026-10-31
+
+- Add experimental static WEP Open/Shared authentication, confirmed key-slot
+  programming and controlled-port completion, including cancellation and RX reassembly.
+- Integrate WPA1 and TKIP initial/group key exchanges, retained GTK replay state,
+  MIC reports and countermeasure ownership without implicit security downgrade.
+- Extend native Enterprise EAP/MSK handoff to SHA256/CCMP with required PMF;
+  preserve key ownership and replay state during same-association reauthentication.
+- Add experimental OWE group19 cryptography, asynchronous ownership, association
+  elements, native capability reporting and protected key exchange.
+- Preserve authenticated transition restrictions across SAE, OWE and Enterprise
+  SHA256, including notification retry, cancellation and profile invalidation.
+
+New compatibility modes remain disabled by default pending hardware validation.
+Dynamic-WEP session authorization, FT and Suite-B are not implemented.
+
 ## 1.0.111 — 2026-10-30
 
 - Preserve macOS packet traffic class through admission and radio TX descriptor

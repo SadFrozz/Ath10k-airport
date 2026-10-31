@@ -333,7 +333,7 @@
         "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
         "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
       },
-      "startup_evidence": "Installed airportd user-mode start→ack→associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
+      "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
       "next_group": {
         "name": "Address and traffic configuration callbacks",
         "status": "Host-cache batch published and 1.0.110 boot-verified; bounded native traffic passed. Radio offload, sleep hint and conditional traffic engineering remain separate unfinished work",
@@ -430,5 +430,35 @@
     "crypto_admission_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-crypto-gate",
     "native_startup_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-native-startup",
     "capability_library_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-capabilities-libraries"
+  },
+  "current_hardware_checkpoint": {
+    "version": "1.0.112",
+    "loaded_uuid": "34E6CBB8-CCDB-3825-882C-509BD00B301C",
+    "phase": "Runtime stopped after admitted WEP40 key indication; remaining radio tests unexecuted, grouped recovery audit active",
+    "evidence": "outputs/NATIVE-security-runtime-112-20261031",
+    "next": [
+      "WEP receipt semantics and failed-owner retirement",
+      "Recoverable semantic vs fatal transport error classification",
+      "Native radio restart/readiness contract",
+      "Open/OWE candidate-policy resolution",
+      "Complete remaining WEP/TKIP and Enterprise radio matrix after recovery"
+    ],
+    "owe_evidence": "AKM18, PMF-ready, DHCP and en1 HTTPS200 after correcting router reverse route"
+  },
+  "security_runtime_112_followup": {
+    "state": "unpublished integrated follow-up in progress",
+    "receipt_failure": "Locally separates structurally invalid HTT from valid but mismatched key receipt; closes port, retains DMA/key owners, drains and compensates without requiring impossible install ACK",
+    "evidence": "Targeted native_wep_execution, connection, native_wep_service, rx_pipeline, security_disconnect passed; production-method reject/cleanup/reconnect regression passed",
+    "remaining": [
+      "Open/OWE candidate and transition policy integration",
+      "Determine exact WEP firmware indication mismatch from preserved first-event metadata on hardware",
+      "Complete all remaining WEP/TKIP/Enterprise AP tests after runtime recovery",
+      "Final grouped full regression, build, publication, SD rollback and approved installation"
+    ],
+    "enterprise_profile": "User approved; installed user-scope EAP-TLS profile for six SSIDs; no hardware authentication yet",
+    "version": "Keep 1.0.112 until complete batch pushed and remote HEAD verified",
+    "optional_open": "Integrated exact-candidate Open admission for ext1/composite policy, retaining raw profile and revalidating roam; targeted local tests passed, no hardware evidence",
+    "protected_transition": "Cached reciprocal target integrated in native join; actual radio identity and visible profile alias retained; repeat pair validation for roam. Targeted tests passed. Missing-peer directed discovery/retry and hardware completion still pending.",
+    "acceptance": "Final full 87-test regression and native Release/Debug compile/symbol checks passed; installed112/config rollback and acceptance receipts verified on SD. Publication pending."
   }
 }

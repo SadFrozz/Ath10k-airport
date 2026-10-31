@@ -1,12 +1,25 @@
 # Implementation and verification map
 
-Updated 2026-10-30 after user resumed development. Requirements are in
+Updated 2026-10-31 during grouped security hardware acceptance. Requirements are in
 [Native contract](../contracts/NATIVE-CONTRACT.md), [WPA3 contract](../contracts/WPA3-CONTRACT.md)
 and [EAP contract](../contracts/NATIVE-EAP-CONTRACT.md). Historical checkpoints are
 preserved in [the previous map](../history/NATIVE-STATUS-through-1.0.106.md);
 its dated candidate/install statements are historical, not current state.
 
 ## Installed checkpoint
+
+Current: **1.0.112**, UUID **34E6CBB8-CCDB-3825-882C-509BD00B301C**, boot verified 2026-10-31. Published functional batch 14a7933; WEP/Legacy/EAP/OWE experimental gates enabled for grouped hardware acceptance. USB en0 remains the default route. Built-in runtime is stopped after WEP40 security-indication mismatch. This boot confirmed OWE and WPA1-CCMP DHCP/interface-bound HTTPS after router reverse-route repair; Open/transition failed, other WEP/TKIP and Enterprise cases remain incomplete. Installation receipt: work.noindex/security-package-112-installed.json.
+
+Unpublished follow-up: association-local handling of mismatched key receipts,
+retained DMA/clear ownership, optional-OWE plain Open admission and cached
+reciprocal protected transition selection/profile alias retention. Release/Debug
+compile and symbols passed. The final full 87-test regression passed, including the later CLEAR-ACK preservation fix. No new image
+installed. Missing-peer directed transition discovery and hardware interoperability
+remain open. Enterprise user EAP-TLS profile for six SSIDs is installed, not radio-tested.
+Current 1.0.112/config rollback verified at
+`/Volumes/SD_128G/NATIVE-security-followup-20261031/rollback-112`.
+
+Previous checkpoint (historical):
 
 Ath10kMac **1.0.110**, UUID **E39009FE-C6F8-385B-8B0C-B6DC48AED01A**,
 functional source **add6acf41627edc4d7158a31db7bec597c752d08**. Boot verified on
@@ -1470,3 +1483,50 @@ SAE/OWE/AKM5. Experimental compatibility gates remain off by default.
 Dynamic-WEP session provenance, FT/Suite-B, physical Enterprise/OWE/legacy
 interoperability and protected transition selection remain open. Source version
 is 1.0.111 until the grouped publication succeeds and remote HEAD is verified.
+
+### 2026-10-31 — Grouped publication boundary
+
+Published 14a7933cd2b6c0cad9940ffa746a15992e96fde8 in native-sequoia-development
+with one GitHub ref update. Remote tree6444e4c8a155c6e8b28f4e81c52f69d35124299f
+exactly matches the tested local tree. Terminal Git had no credentials; the
+connected GitHub API published the same tree. Only after remote verification,
+local version metadata/changelog advanced to1.0.112. No second publication or
+installation yet. Hardware candidate enables explicit experimental switches;
+unimplemented dynamic-WEP authorization/FT/Suite-B remain excluded.
+
+Hardware candidate1.0.112 UUID34E6CBB8-CCDB-3825-882C-509BD00B301C:
+Release/Debug compiled; candidate WEP/Legacy/EAP/OWE gates explicitly enabled
+for the grouped AP test, SAE preserved. Strict signature, exact-UUID offline
+inclusion and probe/candidate program-section equivalence verified. Candidate
+and evidence mirrored/verified on SD at candidate-1.0.112; installed1.0.110
+and unchanged EFI config rollback at pre-security-package-rollback. Installed after explicit user approval; reboot scheduled at 10 seconds and loaded UUID verified on 2026-10-31. EFI config unchanged.
+
+### 2026-10-31 — 1.0.112 initial grouped radio acceptance
+
+Exact loaded UUID verified. Native UI OWE association selected AKM18, reached security phase5/PMF port-ready and received DHCP172.29.77.160. Gateway probes0/3 and en1-bound HTTPS timed out: traffic acceptance remains open. UI incorrectly labels OWE insecure. Open and plaintext-transition UI attempts failed then returned to saved SAE; prior address is not test success. CoreWLAN helper has redacted identities/-3900 and was stopped; stock-system command matrix running. Router duplicate-subnet return paths/firewall require correlation before attributing data failure to driver. Evidence outputs/NATIVE-security-runtime-112-20261031. No new code changes or publication.
+
+OWE follow-up: runtime host route172.29.77.160/32 corrected to br-a10lab5 on router. Reassociation selected AKM18/PMF-ready; same native address obtained and en1-bound HTTPS returned200. Pure OWE radio+traffic observed on1.0.112; protected transition selection and macOS insecurity label remain open. Completed command inventory22 profiles: WPA1 TKIP/CCMP phase5 despite command timeout, WPA2CCMP/SAE command success, WEP/pure-mixedTKIP command discovery failures need UI verification; seven Enterprise not executed without system TLS profile. No broad compatibility certification.
+
+### 2026-10-31 — WEP40 admission reaches fatal runtime boundary
+
+After radio cycle, A10_WEP40_Open admitted valid cipher1/length5/flags15 envelope. Native runtime then stopped on wep-security-indication-unexpected; RuntimeActive/WMIRuntimeActive=false, rejected1. GUI/command radio toggle did not resume runtime. The later seven legacy attempts returned power-off and are NOT per-SSID authentication failures; their old state fields are inherited. Router hostapd WEP40/pure-TKIP remain ENABLED on2412/channel1. Continue grouped WEP receipt/retirement, recoverable-error and radio-readiness audit alongside Open/OWE policy. Remaining radio matrix requires restored runtime; no reboot authorized or scheduled. Enterprise profile installation still awaits user approval. Evidence outputs/NATIVE-security-runtime-112-20261031/wep-runtime-stop.json.
+
+### 2026-10-31 — Unpublished security receipt recovery group
+
+Structurally valid HTT key indications with mismatched peer/cipher/phase now fail the association at commit, after trailer validation, rather than aborting transport parsing. The controlled port closes; key ACK remains false and DMA/key owners remain until ordinary teardown. Rejected RSN install receipts no longer require the missing success ACK before compensation, but CE/credit drain and STOP/ECHO barriers remain mandatory. First rejected peer/flags/expected owner/phase survive subsequent NONE cleanup notifications. Malformed length/fields/trailers remain fatal and cannot mutate credits or association state.
+
+Targeted local ASan/UBSan tests passed: native_wep_execution, native_wep_service, connection, rx_pipeline and security_disconnect. New production-parser regression checks malformed-trailer atomicity and valid-trailer credit return; production-method regression checks rejected receipt, cleanup and reconnect without runtime restart. This does not identify the exact WEP hardware mismatch or prove hardware recovery. Open/OWE selection and remaining AP matrix are still pending in the same unpublished batch. No build/version increment, commit, push, installation or reboot.
+
+### 2026-10-31 — Optional-OWE Open admission integrated locally
+
+Native join admission now resolves stock ext1/allowAuths0x20000001 to Open only for an exact fresh BSSID/SSID candidate with no privacy, RSN, WPA or OWE transition advertisement. Pure OWE and EnhancedOpen restrictions never take that path. Original ext/mask remain in retained profile; policy tightening invalidates Open and prepared roam revalidates the next candidate. nativeSelectedRSN accepts the explicitly resolved Open policy without rewriting the OS envelope. Local native_wire/native_profile tests passed; added rejection cases for protected/transition/mismatched/hidden candidates and profile restriction retention. No hardware validation or native candidate build yet. Protected transition partner selection remains pending; no fallback through this plain-Open path. All changes remain in the same unpublished security batch.
+
+### 2026-10-31 — Protected transition pair selection, local foundation
+
+Added bounded transition IE parsing and fresh reciprocal Open/OWE pair selection in NativeCandidates. It rejects missing/stale targets, self/multicast/zero partner addresses, mismatched SSID/BSSID, malformed lengths, invalid channels and non-OWE protected partners. Hidden target SSID is taken from the validated forward advertisement without mutating the beacon cache. Outputs commit only on success. EnhancedOpen permits validated protected selection and never plaintext fallback. Native-profile ASan/UBSan test covers valid hidden pair, policy restriction, 13 negative cases, expiry and truncation. This helper is NOT yet called by nativeBeginJoin: original-profile alias, actual peer completion and directed discovery must be wired together before hardware claims. No publish/build increment/reboot.
+
+### 2026-10-31 — Cached protected OWE transition integrated
+
+The native join path now resolves a fresh reciprocal transition pair before key-owner creation and submits the protected peer's actual BSSID, advertised hidden SSID and channel. Original upper/ext/allowed-auth/transition-disable policy is retained. The protected beacon and reciprocal IE remain intact for stock host alias presentation; no plaintext retry follows selection failure. ProfileCredentials retains the visible alias, clears it on retirement and translates alias SSID for roam admission; a transition-profile candidate must again pass reciprocal pair validation, freshness and owner-generation checks. Pure-OWE policy does not enter transition resolution.
+
+Local native_wire/native_profile checks passed, including unchanged outputs on failed resolution, alias retention/retirement and substituted/absent pair rejection. Native compile/link/symbol check passed before the final roam-pair guard; full consolidated regression is running. Not installed. Physical transition association and macOS completion acceptance remain unverified. Missing protected cache entry currently returns NotReady; bounded directed discovery/retry remains unfinished. Do not describe that path as complete OWE Transition support.
