@@ -91,16 +91,16 @@ int main(){
   assert(!r.completionPending(g,sta,other,121,true));
   assert(r.completionPending(g,sta,ap,121,true));
   assert(r.completionPending(g,sta,ap,122,true)); // failed send retains ownership
-  assert(r.completionNotified(g,sta,ap,123,true));
+  assert(r.completionDispatched(g,sta,ap,123,true));
   assert(!r.completionPending(g,sta,ap,124,true));
   assert(r.beginReplacement(g,sta,ap,125,300));auto next=r.generation();
   assert(r.setMSK(next,sta,ap,9,key,32,130)==K::Accepted);
   assert(r.takePMK(next,sta,ap,131,output));
   assert(!r.completionPending(next,sta,ap,132,true));
   assert(r.finishReplacement(next,sta,ap,133));
-  assert(!r.completionNotified(g,sta,ap,134,true));
+  assert(!r.completionDispatched(g,sta,ap,134,true));
   assert(r.completionPending(next,sta,ap,134,true));
-  r.clear();assert(!r.completionNotified(next,sta,ap,135,true));
+  r.clear();assert(!r.completionDispatched(next,sta,ap,135,true));
  }
  // Failed delivery is bounded even when authorization later becomes unready.
  for(unsigned mode=0;mode<3;++mode){
@@ -114,7 +114,7 @@ int main(){
   const uint64_t expired=mode==2?99:first+5000;
   assert(r.completionExpired(g,sta,ap,expired));
   assert(!r.completionExpired(g,sta,other,expired));
-  assert(!r.completionNotified(g,sta,ap,expired,true));
+  assert(!r.completionDispatched(g,sta,ap,expired,true));
   assert(!r.beginCompletionAttempt(g,sta,ap,expired,true));
   r.clear();assert(!r.completionExpired(g,sta,ap,expired));
  }

@@ -254,14 +254,16 @@ public:
         replacement_=false;return true;
     }
     // Notification ownership is distinct from PMK consumption. The adapter
-    // supplies the completed firmware/port barrier; failed delivery is retryable.
+    // supplies the completed firmware/port barrier. Missing dispatch topology is
+    // retryable; a broadcast result is not a recipient-specific acknowledgement.
     bool completionPending(uint64_t generation,const uint8_t *station,const uint8_t *peer,
                            uint64_t now,bool authorized) const {
         return authorized && !wep() && current(generation,station,peer) &&
             consumed_ && !replacement_ && validAt(now) && notifiedGeneration_!=generation &&
             !completionExpired(generation,station,peer,now);
     }
-    // Same five-second delivery budget as the native pairwise-update event.
+    // Bound waiting for a dispatch target to five seconds. This is NOT a
+    // deadline for acknowledgement of a broadcast by every attached client.
     // Start at the first eligible delivery, never refresh on retry/readiness loss.
     bool completionExpired(uint64_t generation,const uint8_t *station,const uint8_t *peer,uint64_t now) const {
         return current(generation,station,peer) && completionStarted_ &&
@@ -273,7 +275,7 @@ public:
         if(!completionStarted_){completionSince_=now;completionStarted_=true;}
         return true;
     }
-    bool completionNotified(uint64_t generation,const uint8_t *station,const uint8_t *peer,
+    bool completionDispatched(uint64_t generation,const uint8_t *station,const uint8_t *peer,
                             uint64_t now,bool authorized){
         if(!completionPending(generation,station,peer,now,authorized))return false;
         notifiedGeneration_=generation;return true;

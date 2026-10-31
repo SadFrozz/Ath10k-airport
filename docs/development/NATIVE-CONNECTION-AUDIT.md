@@ -4561,3 +4561,108 @@ local-unpublished-security-validation. No hardware success inferred. Pending
 code-only changelog: bounded Enterprise completion delivery, WEP receipt aliases,
 selected association RSN, directed OWE scan and cancel/drain/continuation.
 Assign the next build only after successful remote publication.
+
+### 2026-10-31 — 1.0.114 EAP broadcast-return contract finding
+
+SDK IOService.h documents messageClients as the aggregate of all client return
+values, not an acknowledgement by one subscriber. Upstream XNU
+https://github.com/apple-oss-distributions/xnu/blob/main/iokit/Kernel/IOService.cpp
+(messageClientsApplier/messageClients) visits interested recipients and retains
+non-success replies. The native EAP bridge currently treats any such reply as
+failed delivery, retries and expires five seconds later. That interpretation is
+incorrect even if the EAP subscriber received its message. Repeated hardware EAP
+authentication/disassociation intervals match approximately five seconds, but
+the sampled aggregate result and driver timeout reason are not yet available;
+do not claim sole causality. Evidence: runtime114/eap-notification-contract-finding.json
+and eap-debug-event-timeline.json in outputs/NATIVE-security-runtime-114-20261031.
+Finish the whole AP pass and UI checks for command-only discovery failures before
+applying the next related security fixes. No new functional changes yet.
+
+## Local follow-up after 1.0.114 hardware matrix: EAP broadcast contract
+
+IOService::messageClients returns an aggregate error from all recipients, not an
+acknowledgement from eapolclient. The bridge now records dispatch when a valid
+subscription target exists, regardless of an unrelated recipient error. Missing
+topology retains the fixed five-second bound; authorization, firmware-key, PMF,
+cancellation and generation barriers remain. Ath10kNativeEAPBroadcastResult
+records the aggregate for diagnosis without using it to disconnect the link.
+
+Focused native_notifications and native_eap_owner tests passed with ASan/UBSan,
+including one broadcast for success/error results, no later spurious timeout,
+and bounded missing-target cancellation. This is a local uninstalled correction;
+the installed UUID remains 7AFED12B-0A8C-303A-A7E3-4C3BDFB41118 (1.0.114).
+The API defect is confirmed; its role in the observed Enterprise fallbacks still
+requires hardware verification. Keep this with the pending WEP/TKIP group; no
+publication, version increment or reboot performed.
+
+## 1.0.114 legacy discovery correlation
+
+Read-only hostapd status confirms the four selected WEP/TKIP interfaces ENABLED
+on 2412 MHz. Concurrent directed-scan/cache sampling observed test WEP104 Shared,
+WEP Mixed and TKIP beacons without claiming that all belonged to the same OS
+request: generations 620–627 occurred. The requested WEP40 Open remained absent.
+CoreWLAN redacts identities, so its single WPA2-TKIP result is not independently
+identity-verified. The earlier cached IORegistry indices beyond BSSCount were
+stale; the source now removes them and records scan type/requested plan mask
+without SSID or key data to make the next hardware pass attributable.
+
+Linux v6.12 wmi.h defines optional ADD_CCK/OFDM probe flags, but mac.c and
+wmi_start_scan_init do not set them in the standard path. No speculative rate
+flag change was made. Sources: torvalds/linux v6.12 ath10k wmi.h, wmi.c, mac.c,
+wmi-tlv.c; downloaded read-only under work.noindex.
+
+The local combined EAP/scan-diagnostic edits compiled successfully as a native
+kext with symbol validation. This is not a signed installation candidate or
+full-batch acceptance. Five new scan artifacts were hash-verified on SD.
+
+## 2026-11-01: WPA2-TKIP failure boundary
+
+A detailed 45-second retry returned network-not-found while sampled join auth,
+peer and phase remained on the previous WPA2-CCMP AP. No new TKIP handshake was
+observed. The earlier -528342014 value is 0xe0822402; local IO80211Family recovery
+locates it in WCLJoinCandidateSelector::getJoinCandidatesList (0xffffff8002133d61)
+and removeFullyLoadedAPs (0xffffff800213427e). It is not a firmware key-receipt
+code. These static sites do not uniquely identify the earlier runtime branch.
+Continue discovery/candidate publication diagnosis before altering cipher logic.
+Evidence: tkip-join-detailed.json and tkip-native-selector-finding.json in the
+1.0.114 runtime directory. No additional install, publication or reboot.
+
+## 2026-11-01: OS/firmware passive-channel mismatch
+
+Both native channel query paths still hard-coded passive=true for every channel,
+although buildWMIScanChannels already uses regulatoryActiveScanChannel. The WCL
+compact bit4 mapping is corroborated by pinned itlwm WCL.cpp; the native array
+offset0x7de is consumed by local IO80211Family ChanSpecIsPassiveChan. The source
+now uses the same initiation policy for both macOS layouts and firmware. Unknown
+firmware bounds, DFS, no-IR and board-country restrictions remain passive.
+Hardware impact on missing legacy APs is not yet established. This correction
+belongs to the current unpublished EAP/legacy discovery batch.
+
+Validation: native_wire/native_scan/regulatory passed ASan/UBSan, including
+comparison of both macOS layouts with the encoded WMI passive flag for each
+channel. Native compilation and symbol validation passed. The earlier test
+compile failure was a missing removeProperty mock for the diagnostic cache
+cleanup; the mock now supplies that existing IOService operation.
+
+## Grouped EAP/discovery package validation in progress
+
+Unpublished source at version1.0.114 compiled as Release/Debug, with signed
+bundles and checked symbols. Release UUID00832E5E-F37F-3568-A533-82ECA37BC901
+was included in an offline kernel collection with matching program sections;
+Debug UUID08953631-D29A-383C-AB6C-0BA9C1DE2EE3. Artifacts copied and hash-verified
+on SD under local-discovery-eap-validation. The full ASan/UBSan regression is
+still running; this is not final batch acceptance or installation authorization.
+
+## Grouped EAP/discovery final local validation — 2026-11-01
+
+The single full development run completed successfully: 87 C++ tests with
+ASan/UBSan, plus preparatory validation checks. Release/Debug signatures and
+symbol checks passed; Release exact-UUID kernel-collection inclusion and program
+section identity passed. Final regression log/summary copied and hash-verified
+on SD. No driver source changed after this run began.
+
+Pending code changelog for the next published build: retire Enterprise completion
+after broadcast dispatch instead of treating aggregate recipient errors as an
+EAP acknowledgement; align both macOS channel tables with firmware regulatory
+active/passive policy; retire stale scan diagnostics and expose requested channel
+mask/type. Hardware acceptance of these changes remains pending.

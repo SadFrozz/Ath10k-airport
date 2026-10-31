@@ -449,6 +449,32 @@ int main(){
   if(c.channel==149)seen149=true;if(c.channel==165)seen165=true;
  }
  assert(seen52 && seen149 && seen165);
+ // Both stock channel-query layouts must match the firmware initiation policy.
+ // Exercise unknown bounds, world no-IR, DFS and board-country intersection.
+ for(unsigned scenario=0;scenario<4;++scenario){
+  Ath10k::RegulatoryPolicy p;
+  if(scenario){assert(!Ath10k::configureRegulatory(p,0x6a,2312,2732,4920,6100));}
+  if(scenario==2){p.country=Ath10k::regulatoryCountry("US");p.stationDFS=true;}
+  if(scenario==3){p.country=Ath10k::regulatoryCountry("JP");p.boardCountry=Ath10k::regulatoryCountry("US");}
+  AirportWCL::ChannelInfo wcl{};AirportWCL::NativeChannelInfo system{};
+  assert(nativeWCLChannels(p,wcl) && nativeSystemChannels(p,system));
+  assert(wcl.count==system.count);
+  UInt8 firmware[Ath10k::kWMIScanChannelsFrameBytes]{};
+  assert(Ath10k::buildWMIScanChannels(firmware,sizeof(firmware),2,&p,true));
+  assert(Ath10k::wmiReadLE32(firmware+16)==wcl.count);
+  bool active=false;
+  for(unsigned i=0;i<wcl.count;++i){const auto ch=wcl.channels[i].channel;
+   assert(ch==system.channel[i]);
+   const bool passive=!Ath10k::regulatoryActiveScanChannel(p,ch);
+   assert(bool(wcl.channels[i].flags&4)==passive && bool(system.passive[i])==passive);
+   assert(bool(Ath10k::wmiReadLE32(firmware+24+28*i+16)&0x80)==passive);
+   assert(bool(wcl.channels[i].flags&2)==bool(system.dfs[i]));
+   if(Ath10k::channelNeedsDFS(ch))assert(passive);
+   if(!passive)active=true;
+   if(scenario==1 && ch==36)assert(passive);
+  }
+  assert(active==bool(scenario));
+ }
  policy.high5=5200;assert(nativeWCLChannels(policy,channels));
  for(unsigned i=0;i<channels.count;++i)assert(channels.channels[i].channel<=40);
 

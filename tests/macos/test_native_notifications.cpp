@@ -18,7 +18,6 @@
 using IOReturn=int;using SInt64=int64_t;
 constexpr IOReturn kIOReturnNotReady=5,kIOReturnBusy=6;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnError=1,kIOReturnAborted=2,kIOReturnNoMemory=3,kIOReturnBadArgument=4;
-constexpr IOReturn kIOReturnNotAttached=7;
 constexpr unsigned kIOMessageServicePropertyChange=0xe0000130;
 constexpr int gIOServicePlane=0;
 struct IOService {
@@ -362,17 +361,37 @@ static void eapCompletionRouting(){
     d->security.authorizePending=true;d->serviceNativeNotifications(130);assert(!d->registryAncestor.messages);
     d->security.authorizePending=false;d->registryAncestor.result=kIOReturnNoMemory;
     d->serviceNativeNotifications(140);assert(d->registryAncestor.messages==1);
-    assert(owner.completionPending(g,s.local,s.bssid,141,true));
+    assert(!owner.completionPending(g,s.local,s.bssid,141,true));
     d->registryAncestor.result=0;d->serviceNativeNotifications(150);
-    assert(d->registryAncestor.messages==2 && !owner.completionPending(g,s.local,s.bssid,151,true));
-    d->serviceNativeNotifications(160);assert(d->registryAncestor.messages==2);
+    assert(d->registryAncestor.messages==1 && !owner.completionPending(g,s.local,s.bssid,151,true));
+    d->serviceNativeNotifications(160);assert(d->registryAncestor.messages==1);
     assert(d->registryParent.references==1 && d->registryAncestor.references==1);
     assert(owner.beginReplacement(g,s.local,s.bssid,170,300));g=owner.generation();
     assert(owner.setMSK(g,s.local,s.bssid,9,key,32,180)==AthNative::EAPOwner::KeyResult::Accepted);
     assert(owner.takePMK(g,s.local,s.bssid,190,output));
-    d->serviceNativeNotifications(200);assert(d->registryAncestor.messages==2);
+    d->serviceNativeNotifications(200);assert(d->registryAncestor.messages==1);
     assert(owner.finishReplacement(g,s.local,s.bssid,210));
-    s.cancelRequested=true;d->serviceNativeNotifications(220);assert(d->registryAncestor.messages==2);
+    s.cancelRequested=true;d->serviceNativeNotifications(220);assert(d->registryAncestor.messages==1);
+}
+static void eapBroadcastIsNotAnAcknowledgement(){
+    for(IOReturn aggregate: {kIOReturnSuccess,kIOReturnNoMemory,kIOReturnError,kIOReturnNotReady}){
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &s=d->_connection;
+        const UInt8 sta[]={2,0,0,0,0,1};memcpy(s.local,sta,6);
+        s.secure=true;s.securityAKM=1;s.securityPhase=5;
+        d->_nativeLinkUpSent=d->_nativeBeaconSent=d->_nativeJoinBSSSent=true;
+        auto &owner=d->security.eapOwner;assert(owner.begin(s.local,s.bssid,100,10000));
+        const auto g=owner.generation();UInt8 key[32]{},output[32]{};
+        assert(owner.setMSK(g,s.local,s.bssid,9,key,32,110)==AthNative::EAPOwner::KeyResult::Accepted);
+        assert(owner.takePMK(g,s.local,s.bssid,120,output));
+        d->registryAncestor.result=aggregate;d->serviceNativeNotifications(140);
+        assert(d->registryAncestor.messages==1);
+        assert(d->properties["Ath10kNativeEAPBroadcastResult"]==UInt32(aggregate));
+        // An unrelated recipient's reply must neither duplicate the broadcast
+        // nor terminate the authenticated link after the former five seconds.
+        d->serviceNativeNotifications(5140);d->serviceNativeNotifications(20000);
+        assert(d->registryAncestor.messages==1 && !s.cancelRequested && s.portAuthorized);
+        assert(!owner.completionExpired(g,s.local,s.bssid,20000));
+    }
 }
 static void eapCompletionFailureBound(){
     for(unsigned mode=0;mode<4;++mode){
@@ -385,7 +404,10 @@ static void eapCompletionFailureBound(){
         assert(owner.setMSK(g,s.local,s.bssid,9,key,32,110)==AthNative::EAPOwner::KeyResult::Accepted);
         assert(owner.takePMK(g,s.local,s.bssid,120,output));
         d->registryAncestor.result=kIOReturnNoMemory;
+        // No eligible destination: exercise the bounded topology wait, not
+        // aggregate errors from unrelated recipients of a delivered broadcast.
         if(mode==1)d->_networkInterface=nullptr;
+        else d->registryParent.parent=nullptr;
         d->serviceNativeNotifications(140);
         if(mode==2)d->security.authorizePending=true;
         d->serviceNativeNotifications(mode==3?139:5139);
@@ -409,6 +431,7 @@ int main(){
      assert(d->events.empty() && d->_nativeScanPending && d->_nativeAbortRequested);
     }
 
+    eapBroadcastIsNotAnAcknowledgement();
     eapCompletionFailureBound();
     eapCompletionRouting();
  {auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &sec=d->security;

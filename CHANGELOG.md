@@ -6,6 +6,17 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.114 — 2026-10-31
+
+- Deliver Enterprise key completion to the system client's actual subscription
+  target, bound to the current authentication generation and a fixed timeout.
+- Accept WEP key receipts from AP peer aliases present before submission while
+  rejecting late mappings and reused peer IDs; preserve the mirrored-key anchor.
+- Report the exact selected association RSN instead of advertised alternatives.
+- Discover missing protected OWE transition peers with directed SSID/BSSID scans,
+  reciprocal validation, cancellation and transport retirement, without plaintext
+  fallback or extending the original connection deadline.
+
 ## 1.0.113 — 2026-10-31
 
 - Fail only the association on a well-formed mismatched key receipt, preserving

@@ -1,6 +1,6 @@
 # Implementation and verification map
 
-Updated 2026-10-31 during grouped security hardware acceptance. Requirements are in
+Updated 2026-11-01 during grouped security hardware acceptance. Requirements are in
 [Native contract](../contracts/NATIVE-CONTRACT.md), [WPA3 contract](../contracts/WPA3-CONTRACT.md)
 and [EAP contract](../contracts/NATIVE-EAP-CONTRACT.md). Historical checkpoints are
 preserved in [the previous map](../history/NATIVE-STATUS-through-1.0.106.md);
@@ -8,21 +8,42 @@ its dated candidate/install statements are historical, not current state.
 
 ## Installed checkpoint
 
-Current: **1.0.113**, UUID **60E0FEA5-5B74-39A7-AAD2-958B4F50B991**, boot verified 2026-10-31. Functional batch 05af0f3. USB en0 remains the default route. Installation and reboot are complete; newer local edits are not installed.
+Current: **1.0.114**, UUID **7AFED12B-0A8C-303A-A7E3-4C3BDFB41118**, boot verified 2026-10-31 23:33:23. Functional batch 9a90bab. USB en0 remains the default route. Grouped security hardware pass is in progress; 1.0.113 observations below are historical.
 
-Grouped hardware results (bounded observations, not long-duration certification):
+Grouped hardware results on 1.0.114 (bounded observations, not long-duration certification):
 
-- **Open accepted:** System Settings association, DHCP and en1 HTTPS200 with the same BSSID before/after; 45-second observation retained the link. The earlier command-line failure is superseded by this direct evidence.
-- **OWE Transition protected traffic observed:** AKM18/phase5, protected BSSID 02:a1:0a:01:00:06, DHCP 172.29.77.141 and en1 HTTPS200 with unchanged identity. DHCP failure was reproduced at the router with requests but no replies and empty test firewall chains; restoring the previously authorized isolated rules immediately restored replies and traffic. Incorrect insecure UI label and missing-peer directed discovery remain open.
-- **Pure OWE and WPA1-CCMP:** earlier interface-bound HTTPS observed; final identity-correlated acceptance remains to reconcile.
-- **WPA2-EAP:** system EAP-TLS client, AKM1/phase5, DHCP and identity-correlated HTTPS confirmed; subsequent LinkDown means stability failed. Other five configured Enterprise profiles were attempted through the UI; four reached authorization including WPA2-EAP, WPA1-TKIP did not, and no broad Enterprise acceptance is claimed. See per-profile evidence for exact results.
-- **WEP:** rejected firmware key receipts no longer stop the runtime; current versus retired peer ownership remains unresolved. Other short/failed command attempts are not evidence of successful authentication or DHCP timeout.
+- Previously accepted Open remains accepted; no redundant rerun.
+- Pure OWE and the protected OWE Transition peer: identity-correlated HTTPS200,
+  AKM18/phase5. Incorrect insecure UI label remains; missing-peer discovery was
+  not deliberately forced on hardware.
+- WPA1-CCMP, WPA2 TKIP+CCMP mixed and WPA3-SAE: identity-correlated HTTPS200.
+  The mixed-mode observation does not establish pure TKIP operation.
+- WPA2-PSK: DHCP succeeded but traffic initially failed because the router's
+  return route selected the wrong test bridge. A temporary /32 route corrected
+  that, followed by three identity-correlated HTTPS200 transfers.
+- All six configured Enterprise profiles attempted through System Settings.
+  Five reached authorization then fell back; WPA1-EAP/TKIP failed immediately.
+  No stable Enterprise acceptance. A local correction now treats messageClients
+  as broadcast dispatch rather than an eapolclient acknowledgement; focused
+  sanitized tests passed, hardware causality remains unverified.
+- WEP and WPA1-TKIP command attempts returned network-not-found, so those attempts
+  did not test firmware keys. WPA2-TKIP returned a system join error. Directed
+  scans returned no WEP40 Open/WEP104 Shared, one identity-redacted WPA2-TKIP
+  result, and a CoreWLAN error for WPA1-TKIP. A concurrent driver-cache observation
+  nevertheless received WEP104 Shared, WEP Mixed and TKIP test beacons; WEP40 Open
+  was absent in that interval. Multiple OS scan generations occurred, so this is
+  not proof that a specific request included channel 1 or emitted those entries.
 
-Evidence: `outputs/NATIVE-security-runtime-113-20261031`; installed receipt: `work.noindex/security-package-113-installed.json`. Local generation-bound Enterprise notification routing and bounded retry changes have focused tests; they require final grouped regression and hardware confirmation. No new publication, version increment, installation or reboot.
+Evidence: `outputs/NATIVE-security-runtime-114-20261031`; installed receipt:
+`work.noindex/security-package-114-installed.json`. Current local follow-up edits
+are uninstalled and unpublished. Both macOS channel-query layouts now share the
+firmware active/passive regulatory policy. The full 87-test ASan/UBSan suite,
+Release/Debug signatures and Release exact-UUID offline dependency validation
+passed; radio impact remains unverified. Older 1.0.113 results below are historical.
 
-## Unpublished grouped security follow-up
+## Published grouped security follow-up — 9a90bab
 
-The local batch combines generation-bound EAP completion delivery and its bounded
+Published functional commit 9a90bab combines generation-bound EAP completion delivery and its bounded
 failure handling; WEP receipt ownership across preexisting AP peer aliases;
 selected association RSN publication; and directed OWE transition discovery with
 cancellation, transport retirement and the original join deadline. Focused
@@ -1613,3 +1634,27 @@ ASan/UBSan (build/security-followup-owe-integrated-sanitizers.log); native build
 and symbol validation passed (build/security-followup-owe-integration-native.log).
 No publication, installation or hardware acceptance. Final grouped regression,
 Debug/offline candidate checks and hardware confirmation remain.
+
+Version 1.0.114 assigned after verifying remote 9a90bab. Candidate 1.0.114 Release UUID 7AFED12B-0A8C-303A-A7E3-4C3BDFB41118 and Debug UUID 6E78845F-F1AE-376D-91BA-91902BB29E6A passed signature/symbol checks; Release passed exact-UUID offline dependency validation. Candidate and installed113/config rollback are hash-verified on SD (candidate-114 and rollback-113). Awaiting explicit installation/reboot approval; installed 1.0.113 unchanged. Metadata remains local until the next grouped publication.
+
+### 1.0.114 hardware pass in progress
+
+OWE Transition booted into AKM18/phase5, DHCP .141 and identity-correlated
+en1 HTTPS200, disconnect counter0. Pure OWE (BSSID ...01:00:04) passed three
+identity-correlated HTTPS requests during 12.5 seconds without a new disconnect.
+Settings still labels OWE insecure. All six Enterprise profiles were attempted
+through System Settings: WPA2, WPA3, WPA23 mixed, WPA1 CCMP and WPA12 mixed
+returned to OWE; WPA1 TKIP displayed immediate connection failure. EAP-TLS
+authentication events are present, but no Enterprise traffic/stability acceptance.
+The personal WEP/WPA/TKIP/SAE matrix is running; collect its full outcome before
+new code fixes. Evidence: outputs/NATIVE-security-runtime-114-20261031.
+
+The 1.0.114 automated personal matrix finished all 11 entries. WPA1 CCMP,
+mixed WPA2 TKIP+CCMP and SAE passed identity-correlated en1 HTTPS. WPA2 CCMP
+initially received DHCP .189 but all three HTTPS attempts timed out: the router
+used br-a10lab instead of br-a10lab5 for return traffic. Correcting the temporary
+/32 route restored three HTTPS200 results without a kext change. All five WEP
+variants and WPA1 TKIP returned command-only network-not-found; WPA2 TKIP
+returned system join error. Router iw dev confirms all test AP interfaces and
+SSIDs exist. These discovery/admission failures still need targeted diagnosis;
+no WEP key-exchange acceptance is claimed. No runtime stop occurred in the pass.

@@ -97,3 +97,14 @@ ownership until completion, CE/credit and RX retirement. Do not emit public scan
 results or ScanDone for this internal scan, or acknowledge abort ahead of its
 retirement. Resume normal protected admission only after revalidating the pair;
 never restart discovery or renew the deadline on continuation.
+
+## Consistent scan initiation policy
+
+WCL_CHANNELS_INFO, CHANNELS_INFO and COUNTRY_CHANNELS_INFO must report the same
+per-channel active/passive and DFS restrictions as the WMI channel list. Active
+permission requires validated firmware bounds and the intersection of host and
+board regulatory domains; DFS and no-IR remain passive even when infrastructure
+association is allowed. An unconfigured policy must not advertise active scans.
+Do not report every channel passive after enabling policy-gated active probes in
+the firmware path. Keep requested scan mode/channel filtering and cancellation
+semantics unchanged. Verify both macOS layouts against the encoded WMI table.

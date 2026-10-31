@@ -333,7 +333,7 @@
         "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
         "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
       },
-      "startup_evidence": "Installed airportd user-mode start→ack→associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
+      "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
       "next_group": {
         "name": "Address and traffic configuration callbacks",
         "status": "Host-cache batch published and 1.0.110 boot-verified; bounded native traffic passed. Radio offload, sleep hint and conditional traffic engineering remain separate unfinished work",
@@ -432,22 +432,23 @@
     "capability_library_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-capabilities-libraries"
   },
   "current_hardware_checkpoint": {
-    "version": "1.0.113",
-    "loaded_uuid": "60E0FEA5-5B74-39A7-AAD2-958B4F50B991",
-    "phase": "Installed and boot verified; grouped security hardware acceptance incomplete",
-    "evidence": "outputs/NATIVE-security-runtime-113-20261031",
+    "version": "1.0.114",
+    "loaded_uuid": "7AFED12B-0A8C-303A-A7E3-4C3BDFB41118",
+    "phase": "Boot verified; initial grouped AP matrix complete; unresolved WEP/TKIP and Enterprise follow-up",
+    "evidence": "outputs/NATIVE-security-runtime-114-20261031",
     "accepted": [
-      "Open stock UI association, DHCP and identity-correlated HTTPS; bounded 45-second connection observation"
+      "Previous Open acceptance preserved; not rerun",
+      "Pure OWE: three identity-correlated HTTPS200 requests, 12.5-second bounded observation"
     ],
     "observed": [
-      "OWE Transition protected AKM18 and identity-correlated HTTPS after restoring router test firewall",
-      "WPA2 EAP-TLS authorization and identity-correlated HTTPS followed by LinkDown",
-      "Other Enterprise variants attempted via UI; per-profile limits recorded"
+      "OWE Transition autojoin AKM18/phase5, DHCP and identity-correlated HTTPS200",
+      "All six Enterprise profiles attempted via System Settings; no stable connection accepted",
+      "WEP/WPA personal matrix running; command-line discovery errors need separate UI verification, not firmware-failure claims"
     ],
     "next": [
-      "Complete grouped EAP completion routing/timeout and cancellation repair",
-      "Resolve WEP firmware receipt peer ownership without weakening validation",
-      "Resolve OWE UI security presentation and missing-peer discovery"
+      "Diagnose WEP/TKIP directed discovery and system admission against router-confirmed AP inventory",
+      "Repair EAP broadcast-return interpretation with lifecycle regression, retaining true authorization barriers",
+      "Reconcile remaining OWE UI and absent-peer hardware evidence; publish related corrections together"
     ]
   },
   "security_runtime_112_followup": {
@@ -466,7 +467,7 @@
     "acceptance": "87-test preinstallation regression, Release/Debug, signature and exact-UUID checks passed; rollback verified; current hardware evidence in current_hardware_checkpoint"
   },
   "security_runtime_113_followup": {
-    "state": "local integrated changes; no publication or version increment",
+    "state": "9a90bab published; 1.0.114 installed and boot verified; grouped hardware pass running",
     "scope": [
       "EAP completion target and authorization ordering",
       "WEP current versus retired peer receipt ownership",
@@ -481,8 +482,7 @@
     ],
     "validation": "All 87 consolidated C++ tests passed with ASan/UBSan; preparatory checks passed. Release/Debug compiled and passed symbols/signature checks. Release UUID D5B77751-03F7-39CB-83DA-ACDDDC694B43 included in offline kernel collection. No hardware acceptance of this batch yet.",
     "remaining": [
-      "Publish reviewed functional batch once; verify remote head before version increment",
-      "Prepare versioned candidate and verified SD rollback; request installation/reboot approval",
+      "Explicit installation/reboot approval, then exact loaded-UUID verification",
       "Hardware pass across Open/OWE, WEP/WPA1 and Enterprise; retain explicit unsupported/untested limits"
     ],
     "owe_reporting": "Native authType ext1 confirmed; public CoreWLAN legacy fallback ignores extended auth. Preserve truthful OWE reporting; Settings warning source still untraced, do not fake WPA2 or patch OS.",
@@ -494,6 +494,32 @@
         "Hardware acceptance of absent-peer discovery, cancellation and protected reconnect"
       ],
       "firmware_selector": "Native scan plan now carries the requested BSSID into the WMI fixed-struct address TLV; zero/broadcast remain wildcard and multicast is rejected before output mutation. Local native_scan/native_profile/wmi_scan and native build passed; discovery lifecycle integration remains pending."
+    },
+    "functional_commit": "9a90babd552664748fac1ea7c50c23b95351b08e",
+    "candidate": {
+      "version": "1.0.114",
+      "release_uuid": "7AFED12B-0A8C-303A-A7E3-4C3BDFB41118",
+      "debug_uuid": "6E78845F-F1AE-376D-91BA-91902BB29E6A",
+      "verified": "work.noindex/security114-validation/verified.json",
+      "installed": true
+    }
+  },
+  "security_runtime_114_findings": {
+    "state": "Automated personal matrix and six Enterprise UI profiles completed; WEP/TKIP discovery/admission still need targeted UI/scan diagnosis",
+    "enterprise": "Six UI profiles attempted; five show authorization then fallback, WPA1 TKIP shows immediate UI failure. No stable traffic acceptance.",
+    "eap_contract": "messageClients aggregate return is not recipient-specific acknowledgement; current success-only retirement may cancel an already delivered notification after five seconds. SDK documentation and upstream XNU confirm API semantics; correlate runtime path before claiming sole cause.",
+    "personal": "WPA1 CCMP, mixed WPA2 TKIP+CCMP and SAE passed identity-correlated traffic. WPA2 CCMP initially timed out despite DHCP; router returned .189 via wrong test bridge. Corrected temporary host route, then three HTTPS200 passes. All five WEP and WPA1 TKIP returned command-only network-not-found; WPA2 TKIP returned system join error. No radio stop observed.",
+    "owe": "Pure and transition protected traffic observed; incorrect UI label remains. Missing-peer discovery is locally tested but not deliberately forced on hardware.",
+    "eap_local_correction": "Valid-target broadcast is recorded as dispatched regardless of aggregate recipient errors; missing-target timeout and authorization/generation barriers retained. Focused native_notifications/native_eap_owner ASan/UBSan tests passed. Uninstalled; hardware causality remains unverified.",
+    "tkip_followup": "Detailed retry returned network-not-found without observed new join. Earlier 0xe0822402 exists in stock WCL candidate selection/filtering, not a firmware key error. Discovery/candidate publication remains the next diagnostic boundary.",
+    "channel_policy_local_correction": "Both macOS channel layouts now match WMI regulatoryActiveScanChannel instead of advertising all channels passive. Cross-layout/WMI fixtures cover unknown bounds, world no-IR, DFS and host/board country intersection; native_wire/native_scan/regulatory ASan/UBSan and native build/symbol validation passed. Uninstalled; hardware effect remains unverified.",
+    "batch_validation": {
+      "state": "full local validation passed; pending grouped publication and hardware approval",
+      "cpp_tests": 87,
+      "sanitizers": "ASan/UBSan",
+      "release_uuid": "00832E5E-F37F-3568-A533-82ECA37BC901",
+      "debug_uuid": "08953631-D29A-383C-AB6C-0BA9C1DE2EE3",
+      "artifacts": "work.noindex/security-discovery-eap-local-validation"
     }
   }
 }

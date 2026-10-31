@@ -300,7 +300,22 @@ inline bool nativeWCLChannels(const Ath10k::RegulatoryPolicy &policy,AirportWCL:
         if(!Ath10k::regulatoryPower(policy,ch,ch,20,false))continue;
         auto &entry=out.channels[out.count++];
         entry.channel=ch;entry.channelSpec=uint16_t(ch|(ch>14?0xd000:0x1000));
-        entry.flags=4|((ch>=52 && ch<=144)?2:0); // All scans are passive.
+        entry.flags=(Ath10k::regulatoryActiveScanChannel(policy,ch)?0:4)|
+            (Ath10k::channelNeedsDFS(ch)?2:0);
+    }
+    return out.count!=0;
+}
+
+// CHANNELS_INFO uses separate arrays; keep it consistent with WCL and the
+// firmware channel list. Unknown firmware bounds never permit active probes.
+inline bool nativeSystemChannels(const Ath10k::RegulatoryPolicy &policy,AirportWCL::NativeChannelInfo &out){
+    memset(&out,0,sizeof(out));
+    if(policy.country)memcpy(out.country,policy.country->alpha2,2);
+    for(const auto &physical:Ath10k::kWMIScanPlan){
+        const unsigned ch=physical.channel;
+        if(!Ath10k::regulatoryPower(policy,ch,ch,20,false))continue;
+        if(!AirportWCL::appendChannel(out,ch,ch>14,Ath10k::channelNeedsDFS(ch),
+            !Ath10k::regulatoryActiveScanChannel(policy,ch),false,false))return false;
     }
     return out.count!=0;
 }

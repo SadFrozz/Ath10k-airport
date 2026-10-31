@@ -237,6 +237,7 @@ public:
     void restorePCIeBringupParity(){}
     void publishDiagnosticProperties(){++published;}
     template<class... T> void setProperty(T...){}
+    void removeProperty(const char *){}
 #endif
     bool htcRepostRuntimeReceive();
     bool htcSubmitControlFrame(const UInt8 *, UInt32, bool, UInt16, UInt8 *, UInt32 &);

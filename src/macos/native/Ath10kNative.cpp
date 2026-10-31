@@ -2151,12 +2151,9 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         bool ok=nativeWCLChannels(_regulatory,channels);
         setProperty("Ath10kNativeWCLChannelCount",UInt64(channels.count),32);
         return ok?kIOReturnSuccess:kIOReturnNotReady;}
-    case N::getCHANNELS_INFO:case N::getCOUNTRY_CHANNELS_INFO:{auto d=static_cast<AirportWCL::NativeChannelInfo *>(data);bzero(d,sizeof(*d));
-        if(_regulatory.country)bcopy(_regulatory.country->alpha2,d->country,2);
-        for(const auto &physical:Ath10k::kWMIScanPlan){const unsigned ch=physical.channel;
-            if(!Ath10k::regulatoryPower(_regulatory,ch,ch,20,false))continue;
-            AirportWCL::appendChannel(*d,ch,ch>14,ch>=52 && ch<=144,true,false,false);
-        }return kIOReturnSuccess;}
+    case N::getCHANNELS_INFO:case N::getCOUNTRY_CHANNELS_INFO:{
+        auto &channels=*static_cast<AirportWCL::NativeChannelInfo *>(data);
+        return nativeSystemChannels(_regulatory,channels)?kIOReturnSuccess:kIOReturnNotReady;}
     case N::getWCL_TRAFFIC_COUNTERS:{AirportWCL::TrafficCounters counters{};counters.infraTx=s.txPackets;counters.infraRx=s.rxPackets;counters.timestampNanoseconds=Ath10k::uptimeNS();bcopy(&counters,data,sizeof(counters));return kIOReturnSuccess;}
     case N::getWCL_BSS_INFO:case N::getBEACON_INFO:case N::getWCL_EXTENDED_BSS_INFO:
         return nativeCurrentAPInfo(op,data);
@@ -2188,6 +2185,8 @@ IOReturn Ath10kPCIDevice::nativeRequestGated(AthNativeOp op,void *data) {
         const UInt64 requested=Ath10k::wmiRequestedScanMask(scan.channelCount?scan.channels:nullptr,sizeof(scan.channels));
         const UInt32 channelCount=Ath10k::regulatoryScanCount(&_regulatory,requested);
         setProperty("Ath10kNativeScanRequestedChannelCount",UInt64(channelCount),32);
+        setProperty("Ath10kNativeScanRequestedPlanMask",UInt64(requested),64);
+        setProperty("Ath10kNativeScanRequestType",UInt64(scan.type),32);
         if(!channelCount)return kIOReturnUnsupported;
         // Restrict the firmware scan itself as well as delivered results.
         // DFS remains passive and every channel still intersects the domain.
@@ -2769,11 +2768,18 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             auto parent=_networkInterface?_networkInterface->copyParentEntry(gIOServicePlane):nullptr;
             auto ancestor=parent?parent->copyParentEntry(gIOServicePlane):nullptr;
             auto target=OSDynamicCast(IOService,ancestor);
-            // A topology that already delivers stock key-done needs no bridge.
-            const IOReturn result=!target?kIOReturnNotAttached:target==_nativeInterface?
-                kIOReturnSuccess:target->messageClients(kIOMessageServicePropertyChange);
-            if(result==kIOReturnSuccess)
-                sec->eapOwner.completionNotified(generation,s.local,s.bssid,now,authorized);
+            // messageClients broadcasts to all clients and interest notifiers.
+            // Its aggregate return is NOT an acknowledgement from eapolclient:
+            // an unrelated IOService may reject a message already delivered to
+            // the EAP subscription. Never turn that reply into a disconnect.
+            if(target){
+                const IOReturn result=target==_nativeInterface?kIOReturnSuccess:
+                    target->messageClients(kIOMessageServicePropertyChange);
+                setProperty("Ath10kNativeEAPBroadcastResult",UInt64(UInt32(result)),32);
+                // A topology using the native interface already gets key-done.
+                // Record dispatch, not proof of user-space consumption.
+                sec->eapOwner.completionDispatched(generation,s.local,s.bssid,now,authorized);
+            }
             if(ancestor)ancestor->release();
             if(parent)parent->release();
         }

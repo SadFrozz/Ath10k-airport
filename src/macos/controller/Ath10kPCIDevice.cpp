@@ -1505,6 +1505,11 @@ void Ath10kPCIDevice::publishWMIRuntimeProperties()
                  entry.privacy,entry.rsnPresent,entry.wpaPresent,entry.seen);
         setProperty(key,value);
     }
+    // The cache is reset for each scan. Do not leave entries from a longer
+    // previous scan visible as if they belonged to the current generation.
+    for(UInt32 i=_wmiBSS.count;i<Ath10k::kWMIBSSMax;++i){
+        char key[24]{};snprintf(key,sizeof(key),"Ath10kBSS%u",i);removeProperty(key);
+    }
 
     setProperty("Ath10kWMIEchoAttempted",_wmiEcho.attempted);
     setProperty("Ath10kWMIEchoSubmitted",_wmiEcho.submitted);
