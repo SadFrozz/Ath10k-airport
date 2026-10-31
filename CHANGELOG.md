@@ -6,6 +6,20 @@ The imported history starts at 0.0.91; 0.0.90 is mentioned only in the original
 README, so its exact changes cannot be reconstructed from this repository.
 Versions skipped by the recorded source history are not invented here.
 
+## 1.0.113 — 2026-10-31
+
+- Fail only the association on a well-formed mismatched key receipt, preserving
+  transport ownership and compensating cleanup instead of stopping the radio.
+- Preserve key-clear acknowledgements against late install indications and
+  retain the first rejected receipt metadata without key material.
+- Resolve stock optional-OWE requests for plain Open candidates while retaining
+  profile restrictions and preventing protected-to-plaintext fallback.
+- Select fresh reciprocal cached OWE transition peers, retain the visible
+  profile alias and revalidate the pair for a prepared roam.
+
+Protected transition discovery when the peer is absent from cache remains
+unfinished; hardware interoperability of these changes is not yet verified.
+
 ## 1.0.112 — 2026-10-31
 
 - Add experimental static WEP Open/Shared authentication, confirmed key-slot

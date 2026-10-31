@@ -18,6 +18,16 @@
 using IOReturn=int;using SInt64=int64_t;
 constexpr IOReturn kIOReturnNotReady=5,kIOReturnBusy=6;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnError=1,kIOReturnAborted=2,kIOReturnNoMemory=3,kIOReturnBadArgument=4;
+constexpr IOReturn kIOReturnNotAttached=7;
+constexpr unsigned kIOMessageServicePropertyChange=0xe0000130;
+constexpr int gIOServicePlane=0;
+struct IOService {
+    IOService *parent=nullptr;unsigned references=1,messages=0;IOReturn result=0;
+    IOService *copyParentEntry(int){if(parent)++parent->references;return parent;}
+    void release(){assert(references>1);--references;}
+    IOReturn messageClients(unsigned type){assert(type==kIOMessageServicePropertyChange);++messages;return result;}
+};
+#define OSDynamicCast(type,object) static_cast<type *>(object)
 enum class N {setWCL_JOIN_ABORT,setWCL_LEAVE_NETWORK,PowerSet};
 class Ath10kPCIDevice {
 public:
@@ -52,8 +62,12 @@ public:
     } security;
     Security *_nativeSecurity=&security;
     void *_nativeInterface=this;
+    IOService registryAncestor{},registryParent{&registryAncestor},registryBSD{&registryParent};
+    IOService *_networkInterface=&registryBSD;
     bool _nativeStarted=true,_nativeStopping=false,_nativeMACActive=false,_nativeMACWaiting=false;
     bool _nativeReadyRequested=false,_nativeReadyPublished=true,_nativeReadyResetSent=false;
+    bool _nativeOWEDiscoveryScan=false;
+    void serviceNativeOWEDiscovery(UInt64){} // Lifecycle executes in native_sae_radio fixture.
     bool _nativeAbortRequested=false,_nativeScanPending=false,_nativeJoinPending=false;
     bool _nativeAssocSent=false,_nativeBeaconSent=false,_nativeJoinBSSSent=false;
     bool _nativeLinkUpSent=false,_nativeWasUp=false,_nativeDeauthSent=false,_nativeJoinFailed=false;
@@ -336,7 +350,67 @@ static void pairwiseNotifications(){
         for(const auto &e:d->events)assert(e.id!=AirportWCL::SupplicantEvent);
     }
 }
+static void eapCompletionRouting(){
+    auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &s=d->_connection;
+    const UInt8 sta[]={2,0,0,0,0,1};memcpy(s.local,sta,6);
+    s.secure=true;s.securityAKM=1;s.securityPhase=5;
+    d->_nativeLinkUpSent=d->_nativeBeaconSent=d->_nativeJoinBSSSent=true;
+    auto &owner=d->security.eapOwner;assert(owner.begin(s.local,s.bssid,100,300));
+    auto g=owner.generation();UInt8 key[32]{},output[32]{};
+    assert(owner.setMSK(g,s.local,s.bssid,9,key,32,110)==AthNative::EAPOwner::KeyResult::Accepted);
+    assert(owner.takePMK(g,s.local,s.bssid,120,output));
+    d->security.authorizePending=true;d->serviceNativeNotifications(130);assert(!d->registryAncestor.messages);
+    d->security.authorizePending=false;d->registryAncestor.result=kIOReturnNoMemory;
+    d->serviceNativeNotifications(140);assert(d->registryAncestor.messages==1);
+    assert(owner.completionPending(g,s.local,s.bssid,141,true));
+    d->registryAncestor.result=0;d->serviceNativeNotifications(150);
+    assert(d->registryAncestor.messages==2 && !owner.completionPending(g,s.local,s.bssid,151,true));
+    d->serviceNativeNotifications(160);assert(d->registryAncestor.messages==2);
+    assert(d->registryParent.references==1 && d->registryAncestor.references==1);
+    assert(owner.beginReplacement(g,s.local,s.bssid,170,300));g=owner.generation();
+    assert(owner.setMSK(g,s.local,s.bssid,9,key,32,180)==AthNative::EAPOwner::KeyResult::Accepted);
+    assert(owner.takePMK(g,s.local,s.bssid,190,output));
+    d->serviceNativeNotifications(200);assert(d->registryAncestor.messages==2);
+    assert(owner.finishReplacement(g,s.local,s.bssid,210));
+    s.cancelRequested=true;d->serviceNativeNotifications(220);assert(d->registryAncestor.messages==2);
+}
+static void eapCompletionFailureBound(){
+    for(unsigned mode=0;mode<4;++mode){
+        auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &s=d->_connection;
+        const UInt8 sta[]={2,0,0,0,0,1};memcpy(s.local,sta,6);
+        s.secure=true;s.securityAKM=1;s.securityPhase=5;
+        d->_nativeLinkUpSent=d->_nativeBeaconSent=d->_nativeJoinBSSSent=true;
+        auto &owner=d->security.eapOwner;assert(owner.begin(s.local,s.bssid,100,10000));
+        auto g=owner.generation();UInt8 key[32]{},output[32]{};
+        assert(owner.setMSK(g,s.local,s.bssid,9,key,32,110)==AthNative::EAPOwner::KeyResult::Accepted);
+        assert(owner.takePMK(g,s.local,s.bssid,120,output));
+        d->registryAncestor.result=kIOReturnNoMemory;
+        if(mode==1)d->_networkInterface=nullptr;
+        d->serviceNativeNotifications(140);
+        if(mode==2)d->security.authorizePending=true;
+        d->serviceNativeNotifications(mode==3?139:5139);
+        if(mode!=3){assert(!s.cancelRequested);d->serviceNativeNotifications(5140);}
+        assert(s.cancelRequested && !s.portAuthorized);
+        assert(!strcmp(s.error,"native-eap-completion-timeout"));
+        const auto sent=d->registryAncestor.messages;
+        d->registryAncestor.result=0;d->serviceNativeNotifications(5141);
+        assert(d->registryAncestor.messages==sent);
+        assert(d->registryParent.references==1 && d->registryAncestor.references==1);
+    }
+}
 int main(){
+    {auto d=std::make_unique<Ath10kPCIDevice>();
+     d->_nativeOWEDiscoveryScan=true;d->_nativeScanPending=true;
+     d->_nativeJoinPending=true;d->_nativeJoinFailed=true;d->_nativeAbortRequested=true;
+     d->_wmiScan.completed=true;d->_wmiBSS.count=1;
+     d->serviceNativeNotifications(20000);
+     // The lifecycle helper (tested using its production body separately)
+     // still owns the transport: no public scan/join/abort completion escapes.
+     assert(d->events.empty() && d->_nativeScanPending && d->_nativeAbortRequested);
+    }
+
+    eapCompletionFailureBound();
+    eapCompletionRouting();
  {auto d=std::make_unique<Ath10kPCIDevice>();connected(*d);auto &sec=d->security;
   sec.tkipMICNotices=2;sec.tkipMICNoticeKinds[0]=5;sec.tkipMICNoticeKinds[1]=6;sec.tkipMICNoticeGeneration=d->_connection.securityGeneration;
   memcpy(sec.tkipMICNoticeBSSID,d->_connection.bssid,6);d->failAt=1;

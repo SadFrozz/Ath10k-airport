@@ -1,11 +1,38 @@
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <initializer_list>
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../../src/core/Ath10kConnection.hpp"
 #include "../../src/macos/native/Ath10kNativeWire.hpp"
+static void associationSnapshot(){
+ for(unsigned akm:{1u,2u,5u,6u,8u,18u}){
+  auto p=new Ath10k::ConnectionState;auto &s=*p;
+  s.stage=Ath10k::LinkStage::Assoc;s.secure=true;s.securityAKM=akm;
+  s.pairCipher=s.groupCipher=4;s.pmfRequired=akm==5 || akm==8 || akm==18;
+  s.local[0]=s.bssid[0]=2;s.local[5]=1;s.bssid[5]=2;
+  UInt8 frame[128]{};memcpy(frame+4,s.bssid,6);memcpy(frame+10,s.local,6);memcpy(frame+16,s.bssid,6);
+  size_t n=0;UInt8 id[16]{};
+  if(akm==8)assert(AthSecurity::buildSAEStationRSN(id,sizeof(id),frame+28,100,n));
+  else if(akm==18)assert(AthSecurity::buildOWEStationRSN(frame+28,100,n));
+  else if(akm==5)assert(AthSecurity::buildEAPSHA256StationRSN(frame+28,100,n));
+  else assert(AthSecurity::buildSelectedStationRSN(4,4,akm,frame+28,100,n));
+  assert(Ath10k::retainAssociationRSN(s,frame,28+n));
+  assert(s.associationRSNValid && s.associationRSNLength==n && !memcmp(s.associationRSN,frame+28,n));
+  UInt8 previous[257];memcpy(previous,s.associationRSN,257);
+  frame[28+n]=48;frame[29+n]=0;assert(!Ath10k::retainAssociationRSN(s,frame,30+n));
+  assert(!memcmp(previous,s.associationRSN,257));
+  assert(!Ath10k::retainAssociationRSN(s,frame,27+n));
+  frame[4]^=2;assert(!Ath10k::retainAssociationRSN(s,frame,28+n));frame[4]^=2;
+  s.securityAKM=31;assert(!Ath10k::retainAssociationRSN(s,frame,28+n));s.securityAKM=akm;
+  s.cancelRequested=true;assert(!Ath10k::retainAssociationRSN(s,frame,28+n));
+  Ath10k::resetDisconnected(s);assert(!s.associationRSNValid && !s.associationRSNLength);
+  for(auto b:s.associationRSN)assert(!b);delete p;
+ }
+}
 int main(){
+ associationSnapshot();
     {auto station=new Ath10k::ConnectionState;
      station->stage=Ath10k::LinkStage::Assoc;station->secure=true;station->securityAKM=6;
      station->groupCipher=4;station->nss=1;station->ssidLength=1;station->ssid[0]='x';

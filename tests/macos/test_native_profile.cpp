@@ -9,6 +9,7 @@
 #define __MAC_15_2 150200
 #define __IO80211_TARGET __MAC_15_2
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
+#include "../../src/macos/native/Ath10kNativeOWEDiscovery.hpp"
 static AirportWCL::JoinRequest profile(unsigned auth){
  AirportWCL::JoinRequest p{};p.lowerAuth=1;p.upperAuth=auth;
  p.ssidLength=4;memcpy(p.ssid,"test",4);p.bssid[0]=2;p.bssid[5]=1;
@@ -244,7 +245,43 @@ static void protectedTransitionSelection(){
  };
  const UInt8 hiddenName[]={'s','e','c','u','r','e'};
  transition(open,peer.bssid,hiddenName,sizeof(hiddenName));transition(peer,open.bssid,open.ssid,open.ssidLength);
+ // One directed discovery, bound to station, generation and original deadline.
+ for(unsigned mode=0;mode<8;++mode){
+  AthNative::CandidateCache discoveryCache;discoveryCache.add(open,100);
+  AthNative::OWEDiscovery owner;const UInt8 sta[]={2,0,0,0,0,4};
+  assert(owner.begin(join,discoveryCache,sta,101,1000));const auto g=owner.generation();
+  assert(!owner.begin(join,discoveryCache,sta,102,1001));
+  AirportWCL::ScanRequest scan{};assert(owner.prepareScan(g,sta,102,scan));
+  assert(scan.type==1 && !scan.channelCount && scan.ssidLength==sizeof(hiddenName));
+  assert(!memcmp(scan.ssid,hiddenName,sizeof(hiddenName)) && !memcmp(scan.bssid,peer.bssid,6));
+  assert(!owner.bindScan(g,sta,102,0));assert(owner.bindScan(g,sta,102,7));
+  assert(!owner.bindScan(g,sta,103,8));assert(!owner.prepareScan(g,sta,103,scan));
+  auto partner=peer;if(mode==4)partner.oweTransition[13]^=1;
+  discoveryCache.add(partner,104);
+  AirportWCL::JoinRequest resumed{};resumed.ssidLength=99;
+  assert(!owner.finish(g,sta,105,8,true,false,discoveryCache,resumed) && owner.active());
+  assert(!owner.finish(g,sta,105,7,false,false,discoveryCache,resumed) && owner.active());
+  UInt8 changed[6];memcpy(changed,sta,6);changed[5]^=1;
+  if(mode==6)owner.clear();
+  if(mode==7){discoveryCache.bss.entries[0].oweTransition[6]^=2;}
+  const bool ok=owner.finish(g,mode==3?changed:sta,mode==1?1000:mode==2?100:106,7,true,mode==5,discoveryCache,resumed);
+  assert(ok==(mode==0));assert(!owner.active());
+  if(ok){assert(resumed.ssidLength==join.ssidLength && !memcmp(resumed.bssid,join.bssid,6));
+   for(auto key:resumed.key)assert(!key);}
+  else assert(resumed.ssidLength==99);
+  assert(!owner.finish(g,sta,107,7,true,false,discoveryCache,resumed));
+ }
+ AthNative::OWEDiscovery noDiscovery;const UInt8 sta[]={2,0,0,0,0,4};
  cache.add(open,100);cache.add(peer,101);AthNative::OWETransitionTarget target{};
+ assert(!noDiscovery.begin(join,cache,sta,102,1000)); // cache already resolves
+ auto badCache=cache;badCache.bss.entries[1].privacy=false;
+ assert(!noDiscovery.begin(join,badCache,sta,102,1000)); // cannot retry a downgrade
+ auto absent=cache;absent.bss.count=1;
+ assert(!noDiscovery.begin(join,absent,sta,102,102));
+ assert(!noDiscovery.begin(join,absent,sta,102,30103));
+ assert(noDiscovery.begin(join,absent,sta,102,1000));auto old=noDiscovery.generation();noDiscovery.clear();
+ assert(noDiscovery.begin(join,absent,sta,103,1000) && noDiscovery.generation()>old);
+
  assert(!AthNative::selectOWETransitionTarget(join,cache,102,target));
  assert(target.index==1 && target.observed==101 && target.ssidLength==6 && !memcmp(target.ssid,hiddenName,6));
  AirportWCL::JoinRequest resolved{};UInt32 index=99;

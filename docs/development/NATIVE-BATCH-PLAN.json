@@ -333,7 +333,7 @@
         "hardware": "Loaded exact UUID; 45/45 en1 gateway replies, no counter growth; max 242.158 ms, no physical roam proof",
         "evidence": "outputs/NATIVE-enterprise-roam-contract-20261030"
       },
-      "startup_evidence": "Installed airportd user-mode start\u2192ack\u2192associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
+      "startup_evidence": "Installed airportd user-mode start→ack→associate recovered; CoreWLAN stop/restart polling recovered; no live Enterprise test",
       "next_group": {
         "name": "Address and traffic configuration callbacks",
         "status": "Host-cache batch published and 1.0.110 boot-verified; bounded native traffic passed. Radio offload, sleep hint and conditional traffic engineering remain separate unfinished work",
@@ -432,33 +432,68 @@
     "capability_library_evidence": "outputs/NATIVE-security-compatibility-20261030/legacy-capabilities-libraries"
   },
   "current_hardware_checkpoint": {
-    "version": "1.0.112",
-    "loaded_uuid": "34E6CBB8-CCDB-3825-882C-509BD00B301C",
-    "phase": "Runtime stopped after admitted WEP40 key indication; remaining radio tests unexecuted, grouped recovery audit active",
-    "evidence": "outputs/NATIVE-security-runtime-112-20261031",
-    "next": [
-      "WEP receipt semantics and failed-owner retirement",
-      "Recoverable semantic vs fatal transport error classification",
-      "Native radio restart/readiness contract",
-      "Open/OWE candidate-policy resolution",
-      "Complete remaining WEP/TKIP and Enterprise radio matrix after recovery"
+    "version": "1.0.113",
+    "loaded_uuid": "60E0FEA5-5B74-39A7-AAD2-958B4F50B991",
+    "phase": "Installed and boot verified; grouped security hardware acceptance incomplete",
+    "evidence": "outputs/NATIVE-security-runtime-113-20261031",
+    "accepted": [
+      "Open stock UI association, DHCP and identity-correlated HTTPS; bounded 45-second connection observation"
     ],
-    "owe_evidence": "AKM18, PMF-ready, DHCP and en1 HTTPS200 after correcting router reverse route"
+    "observed": [
+      "OWE Transition protected AKM18 and identity-correlated HTTPS after restoring router test firewall",
+      "WPA2 EAP-TLS authorization and identity-correlated HTTPS followed by LinkDown",
+      "Other Enterprise variants attempted via UI; per-profile limits recorded"
+    ],
+    "next": [
+      "Complete grouped EAP completion routing/timeout and cancellation repair",
+      "Resolve WEP firmware receipt peer ownership without weakening validation",
+      "Resolve OWE UI security presentation and missing-peer discovery"
+    ]
   },
   "security_runtime_112_followup": {
-    "state": "unpublished integrated follow-up in progress",
+    "state": "Published 05af0f3; candidate1.0.113 installed and boot verified",
     "receipt_failure": "Locally separates structurally invalid HTT from valid but mismatched key receipt; closes port, retains DMA/key owners, drains and compensates without requiring impossible install ACK",
     "evidence": "Targeted native_wep_execution, connection, native_wep_service, rx_pipeline, security_disconnect passed; production-method reject/cleanup/reconnect regression passed",
     "remaining": [
-      "Open/OWE candidate and transition policy integration",
+      "Missing-peer protected OWE transition directed discovery/retry",
       "Determine exact WEP firmware indication mismatch from preserved first-event metadata on hardware",
-      "Complete all remaining WEP/TKIP/Enterprise AP tests after runtime recovery",
-      "Final grouped full regression, build, publication, SD rollback and approved installation"
+      "Complete remaining passwordless, WEP/TKIP/Enterprise AP matrix after approved installation"
     ],
-    "enterprise_profile": "User approved; installed user-scope EAP-TLS profile for six SSIDs; no hardware authentication yet",
-    "version": "Keep 1.0.112 until complete batch pushed and remote HEAD verified",
-    "optional_open": "Integrated exact-candidate Open admission for ext1/composite policy, retaining raw profile and revalidating roam; targeted local tests passed, no hardware evidence",
-    "protected_transition": "Cached reciprocal target integrated in native join; actual radio identity and visible profile alias retained; repeat pair validation for roam. Targeted tests passed. Missing-peer directed discovery/retry and hardware completion still pending.",
-    "acceptance": "Final full 87-test regression and native Release/Debug compile/symbol checks passed; installed112/config rollback and acceptance receipts verified on SD. Publication pending."
+    "enterprise_profile": "Installed with explicit approval; six profiles attempted through System Settings, hardware stability incomplete",
+    "version": "1.0.113 assigned after verified remote publication",
+    "optional_open": "Stock UI Open association, DHCP and identity-correlated HTTPS passed; previous command-only failure superseded",
+    "protected_transition": "Cached protected peer selection and identity-correlated traffic observed; missing-peer directed discovery and incorrect insecure UI label remain open",
+    "acceptance": "87-test preinstallation regression, Release/Debug, signature and exact-UUID checks passed; rollback verified; current hardware evidence in current_hardware_checkpoint"
+  },
+  "security_runtime_113_followup": {
+    "state": "local integrated changes; no publication or version increment",
+    "scope": [
+      "EAP completion target and authorization ordering",
+      "WEP current versus retired peer receipt ownership",
+      "Open/OWE and protected transition admission/discovery"
+    ],
+    "implemented_local": [
+      "generation-bound EAP notification to actual two-parent subscription target",
+      "first rejected WEP peer mapping/retirement metadata",
+      "Fixed five-second EAP completion delivery budget, including missing topology, readiness loss and clock rollback; failure cancels association without authorizing a stale owner",
+      "WEP submitted AP-alias snapshot, map-reuse invalidation and stable mirrored-program anchor",
+      "Exact locally transmitted association RSN retained and published in extended-BSS; advertised AP alternatives remain scan-only"
+    ],
+    "validation": "All 87 consolidated C++ tests passed with ASan/UBSan; preparatory checks passed. Release/Debug compiled and passed symbols/signature checks. Release UUID D5B77751-03F7-39CB-83DA-ACDDDC694B43 included in offline kernel collection. No hardware acceptance of this batch yet.",
+    "remaining": [
+      "Publish reviewed functional batch once; verify remote head before version increment",
+      "Prepare versioned candidate and verified SD rollback; request installation/reboot approval",
+      "Hardware pass across Open/OWE, WEP/WPA1 and Enterprise; retain explicit unsupported/untested limits"
+    ],
+    "owe_reporting": "Native authType ext1 confirmed; public CoreWLAN legacy fallback ignores extended auth. Preserve truthful OWE reporting; Settings warning source still untraced, do not fake WPA2 or patch OS.",
+    "owe_discovery": {
+      "state": "Locally integrated with native join, firmware scan and notification dispatcher; not installed",
+      "validated": "Production native_sae_radio, native_notifications, native_security_lifecycle, native_profile and native_scan passed with ASan/UBSan; native compilation and symbol check passed. Hardware remains untested.",
+      "remaining": [
+        "Finish grouped regression and Release/Debug/offline validation",
+        "Hardware acceptance of absent-peer discovery, cancellation and protected reconnect"
+      ],
+      "firmware_selector": "Native scan plan now carries the requested BSSID into the WMI fixed-struct address TLV; zero/broadcast remain wildcard and multicast is rejected before output mutation. Local native_scan/native_profile/wmi_scan and native build passed; discovery lifecycle integration remains pending."
+    }
   }
 }

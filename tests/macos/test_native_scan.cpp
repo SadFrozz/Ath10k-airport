@@ -25,6 +25,34 @@ public:
 int main(){
     using namespace Ath10k;
     {
+        // Directed OWE discovery must preserve both SSID and peer address all
+        // the way to the firmware TLV, including wildcard and rejection cases.
+        for(unsigned mode=0;mode<4;++mode){
+            AirportWCL::ScanRequest request{};request.type=1;
+            request.ssidLength=6;memcpy(request.ssid,"secure",6);
+            if(mode==1)memset(request.bssid,255,6);
+            if(mode>=2){request.bssid[0]=mode==2?2:1;request.bssid[5]=9;}
+            NativeScanPlan plan{};plan.count=99;
+            if(mode==3){assert(!nativeScanPlan(request,plan));assert(plan.count==99);}
+            else {
+                assert(nativeScanPlan(request,plan));
+                UInt8 frame[1024]{};
+                assert(buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,1,
+                    plan.ssids,plan.count,plan.active,plan.bssid));
+                const unsigned tail=120+4+4+36;
+                assert(wmiReadLE32(frame+84)==1 && wmiReadLE32(frame+88)==1);
+                assert(!memcmp(frame+132,"secure",6));
+                for(unsigned i=0;i<6;++i)assert(frame[tail+4+i]==(mode==2?request.bssid[i]:255));
+                assert(frame[tail+10]==0 && frame[tail+11]==0);
+            }
+            if(mode==3){
+                UInt8 frame[1024];memset(frame,0xa5,sizeof(frame));
+                assert(!buildWMIScan(frame,sizeof(frame),2,0xa123,false,nullptr,110,1,nullptr,0,true,request.bssid));
+                for(auto byte:frame)assert(byte==0xa5);
+            }
+        }
+    }
+    {
         // Stock serializer fixture: two names followed by its zero entry.
         // User count/entries 0x1314/0x1318 become driver 0x1318/0x131c.
         UInt8 request[0x1550]{};

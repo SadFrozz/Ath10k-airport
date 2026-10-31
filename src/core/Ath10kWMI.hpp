@@ -394,9 +394,18 @@ struct WMIScanSSID {
     UInt8 bytes[32]{};
 };
 static constexpr UInt32 kWMIScanMaxSSIDs=16;
-inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs,UInt64 requested=~UInt64(0),const WMIScanSSID *ssids=nullptr,UInt32 ssidCount=0,bool active=false) {
+inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWMIScanId,bool connected=false,const RegulatoryPolicy *policy=nullptr,UInt32 passiveDwellMs=kWMIScanDwellMs,UInt64 requested=~UInt64(0),const WMIScanSSID *ssids=nullptr,UInt32 ssidCount=0,bool active=false,const UInt8 *bssid=nullptr) {
     if(ssidCount>kWMIScanMaxSSIDs || (ssidCount && !ssids))return false;
     for(UInt32 i=0;i<ssidCount;++i)if(ssids[i].length>sizeof(ssids[i].bytes))return false;
+    // Zero and broadcast are wildcard selectors; all other selectors must be
+    // unicast. Reject before touching the caller's command buffer.
+    bool wildcard=true;
+    if(bssid){
+        bool zero=true,broadcast=true;
+        for(UInt32 i=0;i<6;++i){zero=zero && bssid[i]==0;broadcast=broadcast && bssid[i]==255;}
+        wildcard=zero || broadcast;
+        if(!wildcard && (bssid[0]&1))return false;
+    }
     const UInt32 count=regulatoryScanCount(policy,requested),ssidBytes=36*ssidCount,frameBytes=140+4*count+ssidBytes;
     if (!f || !count || capacity<frameBytes || !endpoint || endpoint==255 || passiveDwellMs<1 || passiveDwellMs>kWMIScanDwellMs) return false;
     htcZero(f,frameBytes);
@@ -408,7 +417,7 @@ inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWM
     const UInt32 common[15]={id,kWMIScanRequestId,0,1,0x1ff,50,connected?(passiveDwellMs<100?passiveDwellMs:100u):passiveDwellMs,connected?150u:50u,500,0,0,0,kWMIScanFirmwareMs,5,active?0x30u:0x31u};
     for(UInt32 i=0;i<15;++i)htcWriteLE32(f+16+4*i,common[i]);
     htcWriteLE32(f+80,count); // num_channels; burst_duration at 76 remains zero.
-    htcWriteLE32(f+84,1); // num_bssids; broadcast filter
+    htcWriteLE32(f+84,1); // num_bssids; one explicit or wildcard selector
     htcWriteLE32(f+88,ssidCount);
     htcWriteLE32(f+96,active?3u:0u); // num_probes; channel table enforces passive/DFS.
     htcWriteLE16(f+116,4*count);htcWriteLE16(f+118,16);
@@ -422,7 +431,7 @@ inline bool buildWMIScan(UInt8 *f, UInt32 capacity, UInt8 endpoint,UInt32 id=kWM
     }
     const UInt32 bssidTail=tail+4+ssidBytes;
     htcWriteLE16(f+bssidTail,8);htcWriteLE16(f+bssidTail+2,19);
-    for(UInt32 i=0;i<6;++i)f[bssidTail+4+i]=255;
+    for(UInt32 i=0;i<6;++i)f[bssidTail+4+i]=wildcard?255:bssid[i];
     htcWriteLE16(f+bssidTail+14,17); // empty IE ARRAY_BYTE
     return true;
 }

@@ -8,7 +8,9 @@ namespace AthNative {
 // not advertise enterprise capability or authorize the controlled port.
 // All methods require the radio owner; no allocation, waits or logging.
 class EAPOwner {
-    uint64_t sequence_=0,generation_=0,started_=0,deadline_=0;
+    uint64_t sequence_=0,generation_=0,started_=0,deadline_=0,notifiedGeneration_=0;
+    uint64_t completionSince_=0;
+    bool completionStarted_=false;
     uint8_t station_[6]{},peer_[6]{},pmk_[32]{};
     bool ready_=false,consumed_=false,replacement_=false;
     AthSecurity::EAPOLKeyProtocol protocol_=AthSecurity::EAPOLKeyProtocol::RSN;
@@ -42,7 +44,8 @@ public:
     EAPOwner &operator=(const EAPOwner &)=delete;
     ~EAPOwner(){clear();}
     void clear(){
-        generation_=started_=deadline_=0;ready_=consumed_=replacement_=false;
+        generation_=started_=deadline_=notifiedGeneration_=0;ready_=consumed_=replacement_=false;
+        completionSince_=0;completionStarted_=false;
         protocol_=AthSecurity::EAPOLKeyProtocol::RSN;
         AthSecurity::wipe(tx_,sizeof(tx_));read_=count_=0;
         AthSecurity::wipe(wep_,sizeof(wep_));wepRead_=wepCount_=0;
@@ -236,6 +239,7 @@ public:
            !validAt(now) || deadline<=now || sequence_==~uint64_t(0))return false;
         AthSecurity::wipe(pmk_,sizeof(pmk_));ready_=consumed_=false;
         generation_=++sequence_;started_=now;deadline_=deadline;
+        completionSince_=0;completionStarted_=false;
         replacement_=true;return true;
     }
     bool replacementPending() const {return replacement_;}
@@ -248,6 +252,31 @@ public:
     bool finishReplacement(uint64_t generation,const uint8_t *station,const uint8_t *peer,uint64_t now){
         if(!current(generation,station,peer) || !replacement_ || !consumed_ || !validAt(now))return false;
         replacement_=false;return true;
+    }
+    // Notification ownership is distinct from PMK consumption. The adapter
+    // supplies the completed firmware/port barrier; failed delivery is retryable.
+    bool completionPending(uint64_t generation,const uint8_t *station,const uint8_t *peer,
+                           uint64_t now,bool authorized) const {
+        return authorized && !wep() && current(generation,station,peer) &&
+            consumed_ && !replacement_ && validAt(now) && notifiedGeneration_!=generation &&
+            !completionExpired(generation,station,peer,now);
+    }
+    // Same five-second delivery budget as the native pairwise-update event.
+    // Start at the first eligible delivery, never refresh on retry/readiness loss.
+    bool completionExpired(uint64_t generation,const uint8_t *station,const uint8_t *peer,uint64_t now) const {
+        return current(generation,station,peer) && completionStarted_ &&
+            notifiedGeneration_!=generation && (now<completionSince_ || now-completionSince_>=5000);
+    }
+    bool beginCompletionAttempt(uint64_t generation,const uint8_t *station,const uint8_t *peer,
+                                uint64_t now,bool authorized){
+        if(!completionPending(generation,station,peer,now,authorized))return false;
+        if(!completionStarted_){completionSince_=now;completionStarted_=true;}
+        return true;
+    }
+    bool completionNotified(uint64_t generation,const uint8_t *station,const uint8_t *peer,
+                            uint64_t now,bool authorized){
+        if(!completionPending(generation,station,peer,now,authorized))return false;
+        notifiedGeneration_=generation;return true;
     }
     // Admission checks must use the same clock as service expiry: packet or
     // key callbacks can arrive before a delayed workloop processes its timer.

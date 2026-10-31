@@ -396,6 +396,54 @@ static void legacyPasswordOwnership(){
   stop(d);
  }
 }
+static void oweDiscoveryLifecycleTests(){
+ for(unsigned scenario=0;scenario<9;++scenario){
+  auto d=device();auto sec=d->_nativeSecurity;auto &state=d->_connection;
+  auto peer=state.ap;auto regulatory=state.regulatory;sec->reset();Ath10k::resetDisconnected(state);
+  state.stage=Ath10k::LinkStage::Disabled;d->_nativeJoinPending=false;d->_regulatory=regulatory;
+  memcpy(d->_nativeMACCurrent,s_sta,6);d->experimentalOWE=true;nativeSAEClockMS=100;
+  peer.ssidLength=6;memcpy(peer.ssid,"secure",6);peer.hidden=false;
+  size_t length=0;assert(AthSecurity::buildOWEStationRSN(peer.rsn,sizeof(peer.rsn),length));
+  peer.rsnLength=length;peer.rsnPresent=peer.privacy=true;
+  auto open=peer;open.bssid[5]^=1;open.privacy=open.rsnPresent=false;open.rsnLength=0;
+  open.ssidLength=4;memcpy(open.ssid,"open",4);
+  auto pair=[](Ath10k::WMIBSS &a,const Ath10k::WMIBSS &b){auto ie=a.oweTransition;
+   ie[0]=221;ie[1]=11+b.ssidLength;ie[2]=0x50;ie[3]=0x6f;ie[4]=0x9a;ie[5]=0x1c;
+   memcpy(ie+6,b.bssid,6);ie[12]=b.ssidLength;memcpy(ie+13,b.ssid,b.ssidLength);a.oweTransitionLength=13+b.ssidLength;};
+  pair(open,peer);pair(peer,open);sec->candidates.add(open,100);
+  AirportWCL::JoinRequest join{};join.lowerAuth=1;join.upperAuthExt=1;join.allowAuths=0x20000001;
+  join.ssidLength=open.ssidLength;memcpy(join.ssid,open.ssid,open.ssidLength);memcpy(join.bssid,open.bssid,6);
+  ownerGate=true;assert(d->nativeBeginJoin(join)==kIOReturnSuccess);ownerGate=false;
+  assert(d->_nativeOWEDiscoveryScan && d->_nativeScanPending && d->_nativeJoinPending);
+  assert(!memcmp(d->_nativeScan.bssid,peer.bssid,6) && d->_nativeJoinDeadline==30100);
+  const auto generation=d->_wmiScan.generation;
+  if(scenario!=1)sec->candidates.add(peer,101);
+  if(scenario==2){sec->reset();d->_nativeJoinPending=false;d->_nativeAbortRequested=true;}
+  if(scenario==3)d->_nativeRadioOn=false;
+  if(scenario==4)d->_nativeMACCurrent[5]^=1;
+  if(scenario==5)d->_wmiScan.cancelRequested=true;
+  if(scenario==6)d->_wmiScan.failed=true;
+  if(scenario==7){sec->reset();d->_nativeJoinFailed=true;}
+  const UInt64 now=scenario==8?30100:200;
+  ownerGate=true;d->serviceNativeOWEDiscovery(now);ownerGate=false;
+  assert(d->_nativeOWEDiscoveryScan); // Even cancellation waits for completion.
+  d->_wmiScan.completed=true;d->_wmiScan.txOwned=true;
+  ownerGate=true;d->serviceNativeOWEDiscovery(now);ownerGate=false;assert(d->_nativeOWEDiscoveryScan);
+  d->_wmiScan.txOwned=false;d->_wmi.credits.outstanding=1;
+  ownerGate=true;d->serviceNativeOWEDiscovery(now);ownerGate=false;assert(d->_nativeOWEDiscoveryScan);
+  d->_wmi.credits.outstanding=0;d->_rxSetup.pendingMPDUs=1;
+  ownerGate=true;d->serviceNativeOWEDiscovery(now);ownerGate=false;assert(d->_nativeOWEDiscoveryScan);
+  d->_rxSetup.pendingMPDUs=0;nativeSAEClockMS=now;
+  ownerGate=true;d->serviceNativeOWEDiscovery(now);ownerGate=false;
+  assert(!d->_nativeOWEDiscoveryScan && !d->_nativeScanPending && !sec->oweDiscovery.active());
+  assert(d->_nativeJoinDeadline==30100 && d->_wmiScan.generation==generation);
+  if(!scenario){assert(!d->_nativeJoinFailed && state.securityAKM==18 && state.stage==Ath10k::LinkStage::Scan);
+   assert(!memcmp(state.bssid,peer.bssid,6));}
+  else if(scenario==2)assert(!d->_nativeJoinPending && !state.portAuthorized);
+  else assert(d->_nativeJoinFailed && !state.portAuthorized && !sec->oweJob);
+  stop(d);
+ }
+}
 static void oweNativeAdmissionTests(){
  auto d=device();auto sec=d->_nativeSecurity;auto &s=d->_connection;
  auto ap=s.ap;auto regulatory=s.regulatory;sec->reset();Ath10k::resetDisconnected(s);
@@ -769,7 +817,7 @@ int main(){
   stop(d);
  }
  passwordPreparationTests(field);
- oweNativeAdmissionTests();eapSHA256NativeAdmissionTests();pskPasswordAdmissionTests();legacyPasswordOwnership();legacyNativeAdmissionTests();staticWEPNativeAdmissionTests();
+ oweDiscoveryLifecycleTests();oweNativeAdmissionTests();eapSHA256NativeAdmissionTests();pskPasswordAdmissionTests();legacyPasswordOwnership();legacyNativeAdmissionTests();staticWEPNativeAdmissionTests();
  securitySnapshotTests();
  AthSecurity::wipe(&keys,sizeof(keys));dlclose(lib);
 }

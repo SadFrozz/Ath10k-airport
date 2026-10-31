@@ -81,5 +81,42 @@ int main(){
   if(complete){assert(r.finishReplacement(next,sta,ap,299));assert(!r.replacementPending() && !r.expire(300));}
   else {assert(!r.finishReplacement(next,sta,ap,300));assert(r.expire(300) && !r.generation());}
  }
+ // Completion cannot precede firmware authorization or cross EAP generations.
+ {
+  Owner r;assert(r.begin(sta,ap,100,200));auto g=r.generation();
+  assert(!r.completionPending(g,sta,ap,110,true));
+  assert(r.setMSK(g,sta,ap,9,key,32,110)==K::Accepted);
+  assert(r.takePMK(g,sta,ap,120,output));
+  assert(!r.completionPending(g,sta,ap,121,false));
+  assert(!r.completionPending(g,sta,other,121,true));
+  assert(r.completionPending(g,sta,ap,121,true));
+  assert(r.completionPending(g,sta,ap,122,true)); // failed send retains ownership
+  assert(r.completionNotified(g,sta,ap,123,true));
+  assert(!r.completionPending(g,sta,ap,124,true));
+  assert(r.beginReplacement(g,sta,ap,125,300));auto next=r.generation();
+  assert(r.setMSK(next,sta,ap,9,key,32,130)==K::Accepted);
+  assert(r.takePMK(next,sta,ap,131,output));
+  assert(!r.completionPending(next,sta,ap,132,true));
+  assert(r.finishReplacement(next,sta,ap,133));
+  assert(!r.completionNotified(g,sta,ap,134,true));
+  assert(r.completionPending(next,sta,ap,134,true));
+  r.clear();assert(!r.completionNotified(next,sta,ap,135,true));
+ }
+ // Failed delivery is bounded even when authorization later becomes unready.
+ for(unsigned mode=0;mode<3;++mode){
+  Owner r;assert(r.begin(sta,ap,0,10000));auto g=r.generation();
+  assert(r.setMSK(g,sta,ap,9,key,32,0)==K::Accepted);
+  assert(r.takePMK(g,sta,ap,0,output));
+  const uint64_t first=mode==2?100:0;
+  assert(r.beginCompletionAttempt(g,sta,ap,first,true));
+  assert(r.beginCompletionAttempt(g,sta,ap,first+4999,true));
+  assert(!r.beginCompletionAttempt(g,sta,ap,first+4999,false));
+  const uint64_t expired=mode==2?99:first+5000;
+  assert(r.completionExpired(g,sta,ap,expired));
+  assert(!r.completionExpired(g,sta,other,expired));
+  assert(!r.completionNotified(g,sta,ap,expired,true));
+  assert(!r.beginCompletionAttempt(g,sta,ap,expired,true));
+  r.clear();assert(!r.completionExpired(g,sta,ap,expired));
+ }
  AthSecurity::wipe(output,sizeof(output));AthSecurity::wipe(key,sizeof(key));
 }

@@ -8,14 +8,46 @@ its dated candidate/install statements are historical, not current state.
 
 ## Installed checkpoint
 
-Current: **1.0.112**, UUID **34E6CBB8-CCDB-3825-882C-509BD00B301C**, boot verified 2026-10-31. Published functional batch 14a7933; WEP/Legacy/EAP/OWE experimental gates enabled for grouped hardware acceptance. USB en0 remains the default route. Built-in runtime is stopped after WEP40 security-indication mismatch. This boot confirmed OWE and WPA1-CCMP DHCP/interface-bound HTTPS after router reverse-route repair; Open/transition failed, other WEP/TKIP and Enterprise cases remain incomplete. Installation receipt: work.noindex/security-package-112-installed.json.
+Current: **1.0.113**, UUID **60E0FEA5-5B74-39A7-AAD2-958B4F50B991**, boot verified 2026-10-31. Functional batch 05af0f3. USB en0 remains the default route. Installation and reboot are complete; newer local edits are not installed.
 
-Unpublished follow-up: association-local handling of mismatched key receipts,
+Grouped hardware results (bounded observations, not long-duration certification):
+
+- **Open accepted:** System Settings association, DHCP and en1 HTTPS200 with the same BSSID before/after; 45-second observation retained the link. The earlier command-line failure is superseded by this direct evidence.
+- **OWE Transition protected traffic observed:** AKM18/phase5, protected BSSID 02:a1:0a:01:00:06, DHCP 172.29.77.141 and en1 HTTPS200 with unchanged identity. DHCP failure was reproduced at the router with requests but no replies and empty test firewall chains; restoring the previously authorized isolated rules immediately restored replies and traffic. Incorrect insecure UI label and missing-peer directed discovery remain open.
+- **Pure OWE and WPA1-CCMP:** earlier interface-bound HTTPS observed; final identity-correlated acceptance remains to reconcile.
+- **WPA2-EAP:** system EAP-TLS client, AKM1/phase5, DHCP and identity-correlated HTTPS confirmed; subsequent LinkDown means stability failed. Other five configured Enterprise profiles were attempted through the UI; four reached authorization including WPA2-EAP, WPA1-TKIP did not, and no broad Enterprise acceptance is claimed. See per-profile evidence for exact results.
+- **WEP:** rejected firmware key receipts no longer stop the runtime; current versus retired peer ownership remains unresolved. Other short/failed command attempts are not evidence of successful authentication or DHCP timeout.
+
+Evidence: `outputs/NATIVE-security-runtime-113-20261031`; installed receipt: `work.noindex/security-package-113-installed.json`. Local generation-bound Enterprise notification routing and bounded retry changes have focused tests; they require final grouped regression and hardware confirmation. No new publication, version increment, installation or reboot.
+
+## Unpublished grouped security follow-up
+
+The local batch combines generation-bound EAP completion delivery and its bounded
+failure handling; WEP receipt ownership across preexisting AP peer aliases;
+selected association RSN publication; and directed OWE transition discovery with
+cancellation, transport retirement and the original join deadline. Focused
+production-path tests passed. Release/Debug compiled and passed symbol checks;
+both validation bundles passed signature verification. Release UUID
+D5B77751-03F7-39CB-83DA-ACDDDC694B43 passed exact-UUID offline kernel-collection
+inclusion. The consolidated ASan/UBSan regression passed all 87 selected C++ tests,
+plus the runner’s preparatory Python and policy checks. These are local validation artifacts at version
+1.0.113, not the installed or published 1.0.113 binary. Do not install them under
+that version or count local validation as radio interoperability.
+
+Native OWE authType already reports extended authentication correctly on the
+installed driver. The recovered CoreWLAN legacy fallback ignores that field;
+its public security enum is not proof of plaintext. The Settings warning's
+producer remains untraced. No fabricated WPA2 identity or OS patch is included.
+Hardware acceptance still needs the combined security AP pass. Dynamic WEP,
+FT/Suite-B, OS 11–26 coverage and AWDL/AirDrop remain separate unfinished work.
+
+Previous installed checkpoint: 1.0.112, UUID 34E6CBB8-CCDB-3825-882C-509BD00B301C, stopped the runtime after WEP40; preserved in the verified SD rollback.
+
+Published follow-up **05af0f3**, candidate **1.0.113**: association-local handling of mismatched key receipts,
 retained DMA/clear ownership, optional-OWE plain Open admission and cached
 reciprocal protected transition selection/profile alias retention. Release/Debug
-compile and symbols passed. The final full 87-test regression passed, including the later CLEAR-ACK preservation fix. No new image
-installed. Missing-peer directed transition discovery and hardware interoperability
-remain open. Enterprise user EAP-TLS profile for six SSIDs is installed, not radio-tested.
+compile and symbols passed. The final full 87-test regression passed, including the later CLEAR-ACK preservation fix. Candidate UUID **60E0FEA5-5B74-39A7-AAD2-958B4F50B991** passed signature and exact-UUID offline dependency checks; candidate and installed112 rollback are verified on SD. Installed and loaded UUID verified; grouped hardware acceptance remains incomplete. Missing-peer directed transition discovery and hardware interoperability
+remain open. Enterprise user EAP-TLS profile for six SSIDs is installed and UI-tested as summarized above; stability remains unaccepted.
 Current 1.0.112/config rollback verified at
 `/Volumes/SD_128G/NATIVE-security-followup-20261031/rollback-112`.
 
@@ -57,7 +89,9 @@ Earlier startup interval remains recorded; prolonged stability is not certified.
 | macOS 11–14, 15.0–15.1, 26 | Separate adapters unfinished | ABI recovery, implementation and per-OS verification |
 | AWDL/AirDrop | Not implemented | Separate protocol/interface/channel integration stage |
 
-## Published and local checkpoints
+## Historical published and local checkpoints
+
+The following dated implementation notes describe earlier checkpoints. The installed checkpoint above is authoritative for current hardware state.
 
 Uncontrolled EAP port lifecycle was published as
 862ed1f0bba3df83732eb68860ad95edcd72ce69. Its 68-test sanitized regression and
@@ -1530,3 +1564,52 @@ Added bounded transition IE parsing and fresh reciprocal Open/OWE pair selection
 The native join path now resolves a fresh reciprocal transition pair before key-owner creation and submits the protected peer's actual BSSID, advertised hidden SSID and channel. Original upper/ext/allowed-auth/transition-disable policy is retained. The protected beacon and reciprocal IE remain intact for stock host alias presentation; no plaintext retry follows selection failure. ProfileCredentials retains the visible alias, clears it on retirement and translates alias SSID for roam admission; a transition-profile candidate must again pass reciprocal pair validation, freshness and owner-generation checks. Pure-OWE policy does not enter transition resolution.
 
 Local native_wire/native_profile checks passed, including unchanged outputs on failed resolution, alias retention/retirement and substituted/absent pair rejection. Native compile/link/symbol check passed before the final roam-pair guard; full consolidated regression is running. Not installed. Physical transition association and macOS completion acceptance remain unverified. Missing protected cache entry currently returns NotReady; bounded directed discovery/retry remains unfinished. Do not describe that path as complete OWE Transition support.
+
+
+## Unpublished113 follow-up: WEP receipt ownership
+
+Local WEP receipts now bind to the AP alias set present at command submission; later mapping/reuse invalidates the relevant ID. Mirrored key operations retain a stable program anchor. Focused production-path fixtures passed, including new/foreign/reused IDs, cancellation and fences. This is a contract repair and remains unverified on hardware; first-rejection map diagnostics must confirm the installed peer4/20 failure attribution. No new image is installed. Enterprise routing/deadline fixes, WEP ownership and remaining OWE presentation/discovery belong to one unpublished package.
+
+
+### OWE reporting evidence correction
+
+On installed113 the system authType record is[1,1,0,1], correctly retaining OWE extended-auth1. Public CoreWLAN returnsNone through its installed legacy fallback, which reads lower/upper but ignores extended auth. This supersedes attributing publicNone directly to the kext. CoreWiFi raw768 is observed but not semantically decoded. Settings warning behavior remains untraced; preserve actual OWE and never relabel it WPA2. Missing protected-peer discovery remains pending. See owe-stock-api-reporting-boundary.json.
+
+
+### Local selected-authentication snapshot
+
+Extended-BSS associated-auth data now comes from the exact outgoing association RSN retained by the common TX path, not AP beacon alternatives. Focused host tests passed for selection, bounds, identity, retirement and the production getter. Local only; final package and hardware acceptance pending. This does not change the separately documented CoreWLAN OWE fallback limitation.
+
+### 2026-10-31 — Directed scan selector in the security follow-up (local)
+
+The OWE discovery request already selected a protected BSSID, but nativeScanPlan
+dropped it and buildWMIScan always serialized FF:FF:FF:FF:FF:FF. Preserve the
+selector through the native firmware submission. The local Linux ath10k
+wmi-tlv.c start-scan generator confirms the existing eight-byte address element
+in ARRAY_FIXED_STRUCT; six address bytes are copied and padding remains zero.
+Zero/broadcast requests retain wildcard behavior. Multicast selectors fail
+before mutating either plan or command. Focused native_scan/native_profile/
+wmi_scan sanitizer tests and native compilation/symbol validation passed.
+Logs: build/security-followup-directed-bssid.log and
+build/security-followup-directed-bssid-native.log. No hardware claim: the OWE
+discovery owner still needs join/scan completion, cancellation/drain and original
+deadline integration. This stays in the same unpublished security batch.
+
+### 2026-10-31 — OWE discovery integrated with native lifecycle (local)
+
+Missing/aged transition peers now start one internal directed scan under the
+join owner. NativeSecurity reset cancels the logical owner; a separate controller
+flag retains physical scan ownership until completion, CE/credit and RX drain.
+The notification dispatcher withholds public scan/join/abort completion during
+that drain. Normal protected join admission resumes only after reciprocal pair
+revalidation, with the original deadline restored and recursive discovery
+disallowed. Aborted requests do not resume; errors never fall back to plaintext.
+Production-body tests cover successful continuation, missing peer, abort, radio
+off, station change, scan cancellation/error, leave/reset and deadline; each
+waits through incomplete scan, TX, credits and RX. The dispatcher suppression
+fixture tests its production body with a still-pending helper; helper behavior
+is separately exercised by native_sae_radio. Five focused fixtures passed with
+ASan/UBSan (build/security-followup-owe-integrated-sanitizers.log); native build
+and symbol validation passed (build/security-followup-owe-integration-native.log).
+No publication, installation or hardware acceptance. Final grouped regression,
+Debug/offline candidate checks and hardware confirmation remain.

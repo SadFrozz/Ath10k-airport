@@ -2818,7 +2818,7 @@ const char *Ath10kPCIDevice::serviceWMIScan(UInt64 nowMs)
 #ifdef ATH10K_NATIVE
             _nativeScanDwellMs,
             Ath10k::wmiRequestedScanMask(_nativeScanPending && _nativeScan.channelCount?_nativeScan.channels:nullptr,sizeof(_nativeScan.channels)),
-            nativePlan.ssids,nativePlan.count,nativePlan.active
+            nativePlan.ssids,nativePlan.count,nativePlan.active,nativePlan.bssid
 #else
             Ath10k::kWMIScanDwellMs
 #endif

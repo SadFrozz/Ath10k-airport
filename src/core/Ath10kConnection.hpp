@@ -213,6 +213,8 @@ struct ConnectionState {
     int32_t signalDbm=INT32_MIN;
     UInt8 installedPair[32]{},installedGroups[4][32]{};bool pairInstalled=false,groupInstalled[4]{};
     UInt64 groupKeySerial=0,groupKeyEpoch[4]{},pairKeySerial=0,pairKeyEpoch=0;
+    UInt8 associationRSN[257]{};UInt16 associationRSNLength=0;
+    bool associationRSNValid=false; // Exact locally transmitted association IE, not AP alternatives.
     UInt32 securityPhase=0; // 0 EAPOL, 1 PTK, 2 GTK, 3 authorize, 4 barrier, 5 ready
     // Separate receipt owner for serialized WEP writes. Never interpret its
     // HTT indication as an RSN/WPA securityPhase acknowledgement. Retain it
@@ -221,6 +223,7 @@ struct ConnectionState {
         bool active=false,received=false;
         UInt16 peer=0xffff;UInt8 expected=0xff;
         UInt64 generation=0,ticket=0;
+        UInt32 peers[64]{}; // AP aliases present before this command; never add later maps.
     } wepKeyReceipt{};
     bool wepIOActive=false,wepEchoPending=false;
     bool securityReceiptRejected=false; // association failure, never a key ACK
@@ -233,10 +236,11 @@ struct ConnectionState {
         UInt16 peer=0xffff;UInt8 flags=0;
         bool mapped=false,retired=false,ack=false;
         const char *action="none";
-        UInt32 rejected=0,firstRejectPhase=0;
+        UInt32 rejected=0,firstRejectPhase=0,firstRejectPeerCount=0;
         UInt16 firstRejectPeer=0xffff,firstRejectExpectedPeer=0xffff;
         UInt8 firstRejectFlags=0,firstRejectExpected=0xff;
         bool firstRejectSubmitted=false,firstRejectWEP=false;
+        bool firstRejectMapped=false,firstRejectRetired=false;
     } securityInd{};
     UInt8 temporalKey[32]{},groupKey[32]{},groupIndex=0,pairCipher=AthSecurity::cipherCCMP,groupCipher=0,groupRSC[6]{};
     UInt16 pairSeq[17]{},groupSeq[17]{};
@@ -1082,6 +1086,34 @@ inline UInt32 buildSecurityWMI(UInt8 *f,UInt32 capacity,UInt8 endpoint,const Con
     f[0]=endpoint;f[1]=1;f[5]=s.wmiSequence;htcWriteLE16(f+2,static_cast<UInt16>(bytes-8));htcWriteLE32(f+8,cmd);
     return bytes;
 }
+// Retain only the selected RSN from our own fully built association request.
+// Called before submission; publication still requires an associated live owner.
+// Invalid frames cannot partially replace the prior snapshot.
+inline bool retainAssociationRSN(ConnectionState &s,const UInt8 *frame,UInt32 bytes){
+    if(!frame || bytes<28 || bytes>512 || s.stage!=LinkStage::Assoc ||
+       s.cancelRequested || s.disconnect!=DisconnectStage::None || frame[0]!=0 ||
+       !sameMAC(frame+4,s.bssid) || !sameMAC(frame+10,s.local) || !sameMAC(frame+16,s.bssid))return false;
+    const UInt8 *selected=nullptr;UInt16 length=0;
+    for(UInt32 at=28;at<bytes;){
+        if(bytes-at<2 || UInt32(frame[at+1])+2>bytes-at)return false;
+        const UInt16 n=UInt16(frame[at+1])+2;
+        if(frame[at]==48){
+            if(selected)return false;
+            AthSecurity::RSNInfo info{};
+            if(!AthSecurity::parseRSN(frame+at,n,info) || !s.secure || s.wepSelected || s.wpa1Selected ||
+               s.securityAKM>=32 || s.pairCipher>=32 || info.akms!=(1u<<s.securityAKM) ||
+               info.pairwise!=(1u<<s.pairCipher) || info.group!=s.groupCipher ||
+               (s.pmfRequired && (!info.mfpc() || !info.mfpr())))return false;
+            selected=frame+at;length=n;
+        }
+        at+=n;
+    }
+    if(s.secure && !s.wepSelected && !s.wpa1Selected && !selected)return false;
+    htcZero(s.associationRSN,sizeof(s.associationRSN));
+    if(length)for(UInt16 i=0;i<length;++i)s.associationRSN[i]=selected[i];
+    s.associationRSNLength=length;s.associationRSNValid=true;return true;
+}
+
 inline UInt32 buildStationManagement(UInt8 *f,UInt32 capacity,const ConnectionState &s,
     const UInt8 *saeRSN=nullptr,size_t saeRSNBytes=0) {
     if(legacyPairwiseCipher(s.pairCipher) && (s.htEnabled || s.vhtEnabled || s.width!=20))return 0;
@@ -1650,7 +1682,9 @@ inline bool armWEPKeyReceipt(ConnectionState &s,UInt64 generation,UInt64 ticket,
        (s.pairCipher!=1 && s.pairCipher!=5) || s.stage!=LinkStage::Connected ||
        s.disconnect!=DisconnectStage::None || s.cancelRequested || s.submitted || s.securityPhase ||
        !mappedPeer(s,peer) || ((expected&0x7f)!=2 && (expected&0x7f)!=3))return false;
-    s.wepKeyReceipt={true,false,peer,expected,generation,ticket};return true;
+    s.wepKeyReceipt={true,false,peer,expected,generation,ticket};
+    for(unsigned i=0;i<64;++i)s.wepKeyReceipt.peers[i]=s.peerIDs[i];
+    return true;
 }
 // Called only after the consumer's ordered ECHO and RX retirement. Merely
 // seeing the key indication is not permission to arm another same-cast slot.
@@ -1682,7 +1716,10 @@ inline const char *securityIndicationMismatch(const ConnectionState &s,const UIn
         if(!s.secure || s.securityAKM!=1 || (s.pairCipher!=1 && s.pairCipher!=5) ||
            (!retiring && (s.securityPhase || s.submitted)) ||
            (!mappedPeer(s,htcReadLE16(f+10)) && !(retiring && retiredPeer(s,htcReadLE16(f+10)))) ||
-           htcReadLE16(f+10)!=r.peer || f[9]!=r.expected)return "wep-security-indication-unexpected";
+           r.peer>=2048 || !(r.peers[r.peer/32]&(1u<<(r.peer%32))) ||
+           htcReadLE16(f+10)>=2048 ||
+           !(r.peers[htcReadLE16(f+10)/32]&(1u<<(htcReadLE16(f+10)%32))) ||
+           f[9]!=r.expected)return "wep-security-indication-unexpected";
         return nullptr;
     }
     if(s.disconnect!=DisconnectStage::None || !s.secure || s.securityPhase<1 || s.securityPhase>2 ||
@@ -1746,6 +1783,8 @@ inline void commitConnectionHTT(ConnectionState &s,const UInt8 *f) {
                 d.firstRejectExpected=s.wepKeyReceipt.active?s.wepKeyReceipt.expected:expectedSecurityIndication(s);
                 d.firstRejectPhase=s.securityPhase;d.firstRejectSubmitted=s.submitted;
                 d.firstRejectWEP=s.wepKeyReceipt.active;
+                d.firstRejectMapped=d.mapped;d.firstRejectRetired=d.retired;
+                d.firstRejectPeerCount=s.peerCount;
             }
             ++d.rejected;++d.ignored;d.action=reason;
             // A late install indication cannot revoke a valid CLEAR receipt
@@ -1800,6 +1839,9 @@ inline void commitConnectionHTT(ConnectionState &s,const UInt8 *f) {
         // Never attribute a late clear to an ID that firmware reused, including
         // a new mapping for a MAC other than the configured AP.
         const UInt16 id=htcReadLE16(f+10);s.retiredPeerIDs[id/32]&=~(1u<<(id%32));
+        // Reusing a wire ID cannot inherit a prior key command's ownership,
+        // even when the new map has the same MAC. Only a later arm can add it.
+        s.wepKeyReceipt.peers[id/32]&=~(1u<<(id%32));
         auto &d=s.diagnostics;++d.maps;d.peer=id;d.vdev=f[9];d.peerBefore=s.peerCount;
         d.own=f[9]==0 && sameMAC(f+12,s.bssid);
         for(UInt32 i=0;i<6;++i)d.peerMAC[i]=f[12+i];

@@ -45,12 +45,18 @@ public:
 };
 #include "native_wep_service.inc"
 int main(){
- {Ath10kPCIDevice d;d.setup();auto &s=d._connection;auto &owner=d.security.eapOwner;
+ for(bool aliases:{false,true}){Ath10kPCIDevice d;d.setup();auto &s=d._connection;auto &owner=d.security.eapOwner;
+  if(aliases){s.peerId=20;s.peerIDs[0]|=1u<<20;s.peerCount=2;}
   UInt8 key[13]{};assert(owner.beginStaticWEP(s.local,s.bssid,0,1000,key,13,2));
   s.pairCipher=s.groupCipher=5;s.wepSelected=true;
   for(UInt64 now=2;now<100 && s.securityPhase!=3;++now){
    d.serviceNativeWEP(now);
-   assert(!s.portAuthorized);
+   if(aliases && now==2){
+    UInt8 map[20]{};map[8]=3;map[10]=21;memcpy(map+12,s.bssid,6);
+    assert(!Ath10k::validateConnectionHTT(s,map,sizeof(map)));Ath10k::commitConnectionHTT(s,map);
+    assert(s.peerId==21 && d.security.wepExecution.peerID()==20);
+   }
+   assert(!s.portAuthorized && !s.cancelRequested);
    if(s.wmiOwned)d.retireCE();
    if(s.wepKeyReceipt.active && !s.wepKeyReceipt.received)d.ack();
    if(s.wepEchoPending)d._connectionEcho.replyReceived=true;

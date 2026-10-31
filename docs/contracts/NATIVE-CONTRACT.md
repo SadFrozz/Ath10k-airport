@@ -79,3 +79,21 @@ Extended authentication1 is not sufficient to infer an unconditional pure-OWE re
 ### Key indication failure boundary
 
 Validate HTT envelope, lengths, fields and the complete credit trailer before mutation. A well-formed key indication that cannot acknowledge the current security owner must never authorize traffic or release DMA ownership. Close the controlled port, retain the first rejection metadata without secret bytes, and use compensating association teardown after command/credit drain. Do not wait for a successful install acknowledgement after its semantic rejection. DELETE/STOP/ECHO and RX retirement remain required before reuse. Malformed transport input retains the existing fatal handling. Verify credit atomicity, key-owner retention, teardown and subsequent association through production paths.
+
+
+## Negotiated authentication reporting
+
+The extended-BSS RSN field consumed by WCLNetManager::setCurrentBSS is associated authentication, not AP-advertised alternatives. Preserve the exact RSN IE from the locally encoded association request, including selected AKM/pair/group/PMF and SAE PMKID when present. Only publish under the current associated owner; missing snapshots fail without altering the output. Malformed/duplicate/mismatched RSN must not replace a valid snapshot. Retirement clears the snapshot. Open, WEP and WPA1 must not acquire a fabricated RSN from an AP advertisement. Ordinary scan/beacon reporting continues to describe the AP's actual advertised capabilities. This is distinct from the installed CoreWLAN fallback that ignores OWE extended authentication.
+
+## Protected OWE transition discovery lifecycle
+
+A missing or aged protected peer may trigger one directed scan under the original
+join owner. Malformed, foreign, nonreciprocal or insecure peers are terminal
+failures, never permission to use plaintext. Preserve the visible profile and
+protected BSSID/SSID, current station address, scan generation and original
+30-second join deadline. Admit discovery only after prior radio owners retire.
+Cancel on abort, leave, power loss, station change or expiry; retain internal scan
+ownership until completion, CE/credit and RX retirement. Do not emit public scan
+results or ScanDone for this internal scan, or acknowledge abort ahead of its
+retirement. Resume normal protected admission only after revalidating the pair;
+never restart discovery or renew the deadline on continuation.

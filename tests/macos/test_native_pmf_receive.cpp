@@ -10,6 +10,7 @@
 #include "../../src/security/Ath10kSupplicant.hpp"
 #include "../../src/macos/native/Ath10kNativeKeyStart.hpp"
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
+#include "../../src/macos/native/Ath10kNativeOWEDiscovery.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 #include "../../src/macos/native/Ath10kNativeWEPExecution.hpp"
@@ -64,9 +65,10 @@ namespace Ath10k {inline uint64_t uptimeNS(){return nativeSAEClockMS*1000000u;}}
 
 class Ath10kPCIDevice {
 public:
+ Ath10kPCIDevice(){_wmiScan.completed=true;}
  class NativeSecurity;NativeSecurity *_nativeSecurity=nullptr;Ath10k::ConnectionState _connection;
  static bool nativePMFManagement(void *,const UInt8 *,UInt32,UInt32,UInt32,UInt32);
- struct {bool completed=true,txOwned=false,cancelRequested=false;} _wmiScan;
+ Ath10k::WMIScanState _wmiScan{};
  struct {unsigned pendingMPDUs=0;} _rxSetup;
  struct {struct {unsigned outstanding=0;} credits;UInt32 htCapability=0,vhtCapability=0;} _wmi;
  struct {bool active=true;} _wmiLive;
@@ -79,6 +81,9 @@ public:
  unsigned pmfProbeAnnouncements=0;
  bool nativePMFStartupQueryEnabled() const{return startupProbeOption;}
 #ifdef ATH10K_NATIVE_REAL_SAE
+ bool _nativeOWEDiscoveryScan=false,_nativeOWEDiscoveryResuming=false;
+ AirportWCL::ScanRequest _nativeScan{};Ath10k::WMIBSSCache _wmiBSS{};
+ UInt32 _nativeScanResultIndex=0,_nativeScanResultsEmitted=0,_nativeBSSBytes=0;bool _nativeScanStreamed=false;
  bool experimentalSAE=true,_nativeScanPending=false,_nativeAbortRequested=false;
  bool _nativeWasUp=false,_nativeLinkUpSent=false,_nativeAssocSent=false,_nativeBeaconSent=false,_nativeJoinBSSSent=false,_nativeJoinFailed=false;
  struct {bool rfKill=false;} _wmiEvents;
@@ -112,6 +117,8 @@ public:
   void start(){++starts;}void stop(){++stops;}void flush(){++flushes;}} outputQueue;
  OutputQueue *getOutputQueue(){return &outputQueue;}
  int nativeBeginJoin(AirportWCL::JoinRequest &);
+ int nativeBeginOWEDiscovery(AirportWCL::JoinRequest &,UInt64);
+ void serviceNativeOWEDiscovery(UInt64);
     bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
     int nativeContinueRoam(UInt64);
     int nativeDisconnectForRoam(UInt64);

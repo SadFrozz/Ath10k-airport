@@ -290,6 +290,9 @@ void Ath10kPCIDevice::publishConnection()
     setProperty("Ath10kSecurityIndFirstRejectPhase",_connection.securityInd.firstRejectPhase,32);
     setProperty("Ath10kSecurityIndFirstRejectSubmitted",_connection.securityInd.firstRejectSubmitted);
     setProperty("Ath10kSecurityIndFirstRejectWEP",_connection.securityInd.firstRejectWEP);
+    setProperty("Ath10kSecurityIndFirstRejectMapped",_connection.securityInd.firstRejectMapped);
+    setProperty("Ath10kSecurityIndFirstRejectRetired",_connection.securityInd.firstRejectRetired);
+    setProperty("Ath10kSecurityIndFirstRejectPeerCount",_connection.securityInd.firstRejectPeerCount);
     setProperty("Ath10kConnectionCancelRequested",_connection.cancelRequested);
     setProperty("Ath10kConnectionVdevStarted",_connection.vdevStarted);
     setProperty("Ath10kConnectionVdevUp",_connection.vdevUp);
@@ -996,6 +999,7 @@ const char *Ath10kPCIDevice::serviceConnection(UInt64 nowMs)
 #endif
             length=Ath10k::buildStationManagement(frame,sizeof(frame),s);
             if(!length)return "management-build";
+            if(s.stage==LinkStage::Assoc && !Ath10k::retainAssociationRSN(s,frame,length))return "association-rsn-snapshot";
             s.submitted=true;
             const char *error=submitNetworkPacket(frame,length,true,nowMs);if(error)return error;
             ++s.managementAttempts;s.managementRetryMs=nowMs+1000;

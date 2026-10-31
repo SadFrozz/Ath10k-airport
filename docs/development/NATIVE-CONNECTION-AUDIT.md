@@ -4456,3 +4456,108 @@ Local native_wire/native_profile checks passed, including unchanged outputs on f
 Follow-up review: semantic rejection during active teardown now preserves an already acknowledged CLEAR command; late INSTALL cannot revoke that receipt or restart cancellation. Added both pair/group clear regression cases. The in-flight full regression predates this final delta and is not final batch acceptance; affected tests and final consolidated run remain required.
 
 Final local acceptance for the unpublished follow-up: all87 tests passed after the late-clear fix; Release/Debug compile/link/symbol checks passed; source hashes matched. Exact installed112 kext/config rollback and non-secret acceptance evidence copied and hash-verified on SD. Pending code changelog: recover association on mismatched key receipt without stopping radio; preserve clear acknowledgement and first failure metadata; resolve optional-OWE plain Open and fresh reciprocal cached protected transition, with retained profile alias and roam policy checks. Hardware acceptance, missing-peer directed discovery and exact WEP firmware mismatch remain open.
+
+
+### Enterprise initial completion ordering requires correction/audit — 2026-10-31
+
+Installed 1.0.113 reached WPA2-EAP AKM1 authorization and interface-bound HTTPS with the same BSSID before and after the probe. The system EAP client scheduled its four-way handshake interest at 16:30:37.033372, but no completion callback log appeared before unscheduling at 16:30:46.404045 following driver LINK_CHANGED. Earlier static Up=2/handleKeyDone reachability does not prove notification timing: native preauthorization LinkStatus and the subsequent initial-key completion must be correlated. Do not add an unconditional property-change message or reuse pairwise-rekey semantics without recovering the initial producer ordering. Runtime evidence: outputs/NATIVE-security-runtime-113-20261031/enterprise-wpa2-acceptance.json. Enterprise stability remains unaccepted.
+
+Enterprise interest routing: Apple InterestNotification.c uses IOBSDNameMatching followed by two real IOService-plane parent traversals. Live 1.0.113 en1 ancestry is Ath10kBSDInterface -> Ath10kPCIDevice -> PCI DEV0; Ath10kNativeInterface is a sibling, not an ancestor. Native getProvider() override does not establish registry ancestry. Stock handleKeyDone emits on the native interface. This is a concrete source/runtime topology mismatch; installed eapolclient parent traversal still needs confirmation before choosing a structural or forwarding repair. Evidence: outputs/NATIVE-security-runtime-113-20261031/eap-interest-topology.json.
+
+Installed x86_64 eapolclient UUID FAC5670D-77C2-3A38-9DE9-37B8A150A96B confirms that same ancestry: IORegistryEntryGetParentEntry at 0x10000ee8c and 0x10000ef6b, then IOServiceAddInterestNotification at 0x10000f00c on the resulting object. This closes the installed-consumer uncertainty; lifecycle-safe routing/timing repair and hardware validation remain pending.
+
+Local integrated EAP completion bridge (unpublished): the EAP owner tracks successful notification by its monotonically changing generation; PMK consumption alone is insufficient. Native notifications require authorized phase5, completed join/link/beacon, no pending key/reply/rekey work, valid PMF when required, and no cancellation. The bridge retains the two actual IOService parents temporarily and sends the property-change notification to the installed consumer target only when distinct from the native interface. Initial and completed EAP replacement generations are separate; GTK-only changes do not create an EAP generation. Owner, EAP service, disconnect and extracted production notification tests passed, including failed delivery retry, duplicate suppression, cancellation and parent reference balancing. Native Release compilation/link passed; full batch regression and hardware evidence remain pending. This fixes a verified notification routing mismatch, not yet a proven sole cause of the LinkDown.
+
+Open admission hardware accepted on installed 1.0.113 through System Settings: A10_Open, BSSID 02:a1:0a:00:00:01, connected-open/AKM0, DHCP 172.29.77.173, en1-bound HTTPS200 with same BSSID before/after. The 45-second observation retained the connection; no long-duration claim. Earlier networksetup failure is not evidence that the optional-OWE Open implementation failed. Do not reopen Open admission or repeat its accepted benchmark without a relevant regression. Evidence: outputs/NATIVE-security-runtime-113-20261031/open-ui-traffic.json.
+
+
+### 2026-10-31 — OWE Transition DHCP isolated to router; EAP retry bound
+
+Unfiltered br-a10lab5 capture showed DHCP requests from the current OWE protected association and no replies. Router a10lab5_input/forward chains were empty and input lacked its jump. The saved runtime-v5/firewall.nft passed nft dry validation; restored within prior user authorization, preserving final test-interface drops and WAN-only forwarding. Router capture then showed replies; the same protected BSSID/AKM18 obtained172.29.77.141 and en1 HTTPS200, with disconnect counter37 unchanged before/after. Evidence: owe-transition-firewall-recovery.json. This closes that DHCP failure attribution, not the insecure UI label, absent-peer discovery or long-duration stability. Firewall persistence/reload cause has not been established.
+
+Local EAP completion retries now have a fixed five-second budget from first eligible delivery. Missing BSD/ancestor target, readiness loss and repeated failure cannot extend it; rollback/expiry closes the port and requests normal cancellation. Reset/replacement retires timing with its EAP generation. Focused owner and extracted production notification fixtures passed, covering clock-zero start, deadline boundary, identity mismatch, missing interface, blocked authorization, reference balance and no post-timeout delivery. Native compilation and final grouped acceptance are separate gates. Version remains1.0.113; no publication/install/reboot.
+
+
+### 2026-10-31 — WEP AP alias ownership, unpublished
+
+Reference ath10k mac.c sends install-key using the peer MAC; htt_rx.c resolves security indications using peer_find_by_id. Our own AP map stores multiple IDs but overwrites s.peerId for each map. The previous WEP receipt policy required only the last ID, unlike the common RSN map-membership policy. Installed113 showed matching WEP cipher/cast with receipt4 versus retained20; whether4 belonged to that particular submission remains unproven without the new first-rejection mapping diagnostics.
+
+Local repair snapshots current AP IDs when arming each WEP write. Receipt must match that immutable submitted set and a currently mapped AP (retired mapping allowed only for cancellation consumption), exact cipher/cast and active operation. Any subsequent MAP invalidates that ID in the submitted set, even for the same MAC, preventing reuse from inheriting receipt authority. New aliases cannot acknowledge an already submitted write. The whole mirrored-write program retains its initial anchor ID rather than substituting a changing last mapped ID between commands. Existing ticket/generation, CE retirement and ECHO/RX fence requirements remain intact; receipt alone cannot open the port.
+
+Affected sanitized native_wep_execution/native_wep_service/connection/security_disconnect tests passed. Production service fixture exercises multiple aliases, a later map between mirrored operations, full static key programming and port authorization separation. Negative receipt fixtures cover absent/new/unmapped/reused/foreign IDs and stale fence ticket. Hardware resolution of the observed WEP failure remains unverified. No publication, version increase, installation or reboot.
+
+
+### 2026-10-31 — OWE stock security reporting audit
+
+Identity-correlated read-only CoreWLAN query on en1 returned public security0 (None), while the same protected BSSID retained AKM18/phase5 before and after. SDK values14/15 identify OWE/OWETransition. The installed CWInterface.security conversion includes both OWE cases; absence of public enum support is not the explanation. Its securityType input/cache path still needs tracing.
+
+Recovered WCLNetManager::setCurrentBSS copies257 bytes from extended-BSS offset0xdd into the BSS manager associated-auth IE at0xffffff8002126511..652f. Adjacent0xdc is consumed as a Boolean at0xffffff8002126380, not an RSN length: do not write a guessed length there. getAssociatedAuthType clears output extended-auth then derives OWE ext1 from that stored RSN. Current driver exports AP-advertised RSN in this field; selected-association RSN and CoreWLAN cache ownership must be correlated before a repair. Evidence: owe-corewlan-security-mismatch.json, stock-owe-associated-auth.asm and local CWInterface-security/securityType/conversion disassemblies. This establishes an observable reporting mismatch, not yet its sole cause or a fixed UI warning. Missing-peer directed discovery remains incomplete. No new installation or publication.
+
+
+### 2026-10-31 — Corrected OWE reporting attribution
+
+Read-only CWInterface.corewifi inspection returned authType words[1,1,0,1] (version/lower/upper/extended) and CoreWiFi security raw768 while public CoreWLAN remained0. Thus the native getAuthType path already reports OWE ext1. Installed CWInterface.securityType's legacy fallback extracts only authType offsets4 and8, ignores extended offset12, and lower1/upper0 reaches internalOpen2; the public conversion then returnsNone0. Its separate public converter supports internal0x4000/0x4002 as OWE14/Transition15, but this fallback never synthesizes them. Do not treat the earlier publicNone result alone as a proved kext defect, and do not fabricate WPA2 upper-auth or patch the OS to hide it. The Settings warning producer remains separately untraced. CoreWiFi raw768 is recorded without an invented enum meaning. Evidence: owe-stock-api-reporting-boundary.json and annotated CWInterface-securityType.asm. Missing protected-peer discovery is still genuine unfinished driver work.
+
+
+### 2026-10-31 — Exact selected association RSN reporting, local
+
+The common management-submission path now retains the RSN from the exact locally built association frame (including SAE PMKID), validated against the current station/AP, selected AKM/ciphers, required PMF, frame bounds and one IE. Invalid frames preserve the prior snapshot but fail submission; cancellation/unassociated states cannot publish it. The normal reset wipes it. Native extended-BSS now exports this selected snapshot rather than the AP's advertised alternative suites. Open/WEP/WPA1 export no fabricated RSN; raw AP beacon/scan serialization stays unchanged.
+
+Focused native_status/native_link_state production fixtures passed after the final tests, covering AKM1/2/5/6/8/18, duplicate/truncated/wrong-peer/selected-mode mismatch, reset and no-output mutation on unavailable/stale owner. The production query fixture deliberately makes advertised PSK differ from retained SHA256 to prove which source the OS receives. Earlier connection fixture passed after the production change. Native compilation is a separate check. This repairs mixed-profile reporting; it does not solve CoreWLAN's legacy extended-auth fallback. OWE missing-peer discovery remains unfinished. No publication/version increase/install/reboot.
+
+
+### 2026-10-31 — OWE discovery request owner, local prerequisite
+
+Added OWEDiscovery ownership for a single directed protected-peer scan. Admission uses the existing reciprocal selector and permits only missing/stale protected peers, preserving the original visible profile and wiping unused key bytes. The scan names the advertised protected SSID/BSSID; it does not assume that the partner shares the Open AP channel. Firmware must still intersect channels with the regulatory domain and retain passive DFS behavior.
+
+The owner binds station, nonreused request generation, scan generation and an original deadline of at most30seconds. Retries cannot rebind/extend it. Finish requires the matching completed/retired scan, fresh reciprocal pair and the same advertised target/SSID; missing or substituted peers, timeout, rollback, cancellation and MAC change never return a plaintext request. A stale completion cannot consume another owner; unsuccessful finish leaves caller output unchanged. The adapter must still drain scan/CE/RX ownership before calling finish.
+
+Sanitized native_profile fixtures passed for directed request, one scan binding, cache-hit/malformed-candidate rejection, cancellation, identity, clock rollback/deadline, missing retirement, mismatched scan generation and unchanged outputs. This header is not yet wired into the native dispatcher/firmware queue. Integration, unsolicited ScanDone suppression, cancellation/drain and overall join-deadline continuity are required before claiming missing-peer discovery. No new firmware action, publication, version change or reboot.
+
+### 2026-10-31 — Directed scan selector in the security follow-up (local)
+
+The OWE discovery request already selected a protected BSSID, but nativeScanPlan
+dropped it and buildWMIScan always serialized FF:FF:FF:FF:FF:FF. Preserve the
+selector through the native firmware submission. The local Linux ath10k
+wmi-tlv.c start-scan generator confirms the existing eight-byte address element
+in ARRAY_FIXED_STRUCT; six address bytes are copied and padding remains zero.
+Zero/broadcast requests retain wildcard behavior. Multicast selectors fail
+before mutating either plan or command. Focused native_scan/native_profile/
+wmi_scan sanitizer tests and native compilation/symbol validation passed.
+Logs: build/security-followup-directed-bssid.log and
+build/security-followup-directed-bssid-native.log. No hardware claim: the OWE
+discovery owner still needs join/scan completion, cancellation/drain and original
+deadline integration. This stays in the same unpublished security batch.
+
+### 2026-10-31 — OWE discovery integrated with native lifecycle (local)
+
+Missing/aged transition peers now start one internal directed scan under the
+join owner. NativeSecurity reset cancels the logical owner; a separate controller
+flag retains physical scan ownership until completion, CE/credit and RX drain.
+The notification dispatcher withholds public scan/join/abort completion during
+that drain. Normal protected join admission resumes only after reciprocal pair
+revalidation, with the original deadline restored and recursive discovery
+disallowed. Aborted requests do not resume; errors never fall back to plaintext.
+Production-body tests cover successful continuation, missing peer, abort, radio
+off, station change, scan cancellation/error, leave/reset and deadline; each
+waits through incomplete scan, TX, credits and RX. The dispatcher suppression
+fixture tests its production body with a still-pending helper; helper behavior
+is separately exercised by native_sae_radio. Five focused fixtures passed with
+ASan/UBSan (build/security-followup-owe-integrated-sanitizers.log); native build
+and symbol validation passed (build/security-followup-owe-integration-native.log).
+No publication, installation or hardware acceptance. Final grouped regression,
+Debug/offline candidate checks and hardware confirmation remain.
+
+### 2026-10-31 — Grouped security validation before publication
+
+All 87 C++ fixtures passed in one consolidated run using clang++ with
+-fsanitize=address,undefined -fno-sanitize-recover=all. Preparatory Python/policy
+checks passed too. Release and Debug compiled and passed symbol/signature checks.
+Release UUID D5B77751-03F7-39CB-83DA-ACDDDC694B43 was included in the offline
+kernel collection. Logs: build/security-followup-batch-regression.log and
+build/security-followup-batch-debug.log; bundles and dependency evidence at
+work.noindex/security-followup-local-validation and verified SD copy
+local-unpublished-security-validation. No hardware success inferred. Pending
+code-only changelog: bounded Enterprise completion delivery, WEP receipt aliases,
+selected association RSN, directed OWE scan and cancel/drain/continuation.
+Assign the next build only after successful remote publication.

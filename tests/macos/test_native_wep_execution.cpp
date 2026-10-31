@@ -101,6 +101,30 @@ int main(){
   Ath10k::commitConnectionHTT(s,frame);assert(s.securityReceiptRejected && !s.securityAck);
  }
 
+ // Firmware commands identify the AP by MAC, not the last mapped alias.
+ // Bind accepted aliases at submission and reject post-arm mapping/reuse.
+ for(unsigned mode=0;mode<5;++mode){
+  Ath10k::ConnectionState s{};s.secure=true;s.securityAKM=1;s.pairCipher=1;
+  s.stage=Ath10k::LinkStage::Connected;s.peerId=20;s.peerCount=2;
+  s.peerIDs[0]=(1u<<4)|(1u<<20);s.bssid[0]=2;s.bssid[5]=1;
+  assert(Ath10k::armWEPKeyReceipt(s,1,9,20,3));
+  uint8_t frame[36]{};frame[8]=0xb;frame[9]=3;frame[10]=4;
+  if(mode==1){frame[10]=5;s.peerIDs[0]|=1u<<5;} // new alias not in submitted set
+  if(mode==2){s.peerIDs[0]&=~(1u<<4);} // unmapped alias cannot acknowledge
+  if(mode==3 || mode==4){
+   uint8_t map[20]{};map[8]=3;map[10]=4;
+   memcpy(map+12,s.bssid,6);if(mode==4)map[17]=2;
+   assert(!Ath10k::validateConnectionHTT(s,map,sizeof(map)));
+   Ath10k::commitConnectionHTT(s,map); // same/foreign MAC reuse both retire old alias
+  }
+  assert(!Ath10k::validateConnectionHTT(s,frame,sizeof(frame)));
+  Ath10k::commitConnectionHTT(s,frame);
+  assert(s.wepKeyReceipt.received==(mode==0));
+  assert(s.securityReceiptRejected==(mode!=0));
+  assert(!s.portAuthorized && !s.securityAck);
+  if(!mode){assert(!Ath10k::retireWEPKeyReceiptAfterFence(s,2,9));
+   assert(Ath10k::retireWEPKeyReceiptAfterFence(s,1,9));}
+ }
  uint8_t station[6]{2,1,2,3,4,5},peer[6]{2,6,7,8,9,10};
  for(unsigned length:{5u,13u})for(unsigned flags:{2u,5u}){
   O owner;E engine;uint8_t record[148]{};

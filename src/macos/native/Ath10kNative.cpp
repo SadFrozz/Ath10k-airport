@@ -10,6 +10,7 @@
 #include "../abi/Ath10kNativeAddressABI.hpp"
 #include "Ath10kNativeCapture.hpp"
 #include "Ath10kNativeCandidates.hpp"
+#include "Ath10kNativeOWEDiscovery.hpp"
 #include "Ath10kNativeProfile.hpp"
 #include "Ath10kNativeEAPOwner.hpp"
 #include "Ath10kNativeWEPExecution.hpp"
@@ -33,6 +34,7 @@
 #include <net/kpi_interface.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IONotifier.h>
+#include <IOKit/IOMessage.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <sys/kpi_mbuf.h>
 #include <sys/random.h>
@@ -157,6 +159,7 @@ public:
     UInt64 managementGeneration=0;bool managementPending=false;
     void clearManagement(){AthSecurity::wipe(&pendingManagement,sizeof(pendingManagement));managementOwner=nullptr;managementGeneration=0;managementPending=false;}
     AthNative::CandidateCache candidates;
+    AthNative::OWEDiscovery oweDiscovery;
     UInt32 cachedGeneration=~0u;
     bool ready=false,replyPending=false,keysPending=false,authorizePending=false;
     bool pairUpdateReply=false,ptkUpdatePending=false;
@@ -184,6 +187,7 @@ private:
     // Software association owners only. Firmware DELETE/STOP/ECHO and DMA
     // retirement remain the radio worker's responsibility.
     void resetAssociation(){
+        oweDiscovery.clear();
         sharedWEP.cancel();sharedWEPGeneration=0;sharedWEPTXPhase=0;
         wepExecution.cancel();eapOwner.clear();eapTXInFlight=false;
         tkipMICOwner.retire();tkipMICTicket={};tkipMICInFlight=false;
@@ -424,7 +428,7 @@ void Ath10kPCIDevice::serviceNativeWEP(UInt64 now){
     const UInt32 bytes=execution.build(owner,s.local,s.bssid,now,
         static_cast<UInt8 *>(_connectionCommand.virtualAddress()),256,_htcWMIControl.endpoint,s.wmiSequence);
     if(!bytes || !execution.submitted(owner,s.local,s.bssid,now)){fail("native-wep-command-build");return;}
-    if(execution.expectedReceipt()!=0xff && !Ath10k::armWEPKeyReceipt(s,execution.generation(),execution.ticket(),s.peerId,execution.expectedReceipt())){
+    if(execution.expectedReceipt()!=0xff && !Ath10k::armWEPKeyReceipt(s,execution.generation(),execution.ticket(),execution.peerID(),execution.expectedReceipt())){
         AthSecurity::wipe(_connectionCommand.virtualAddress(),256);fail("native-wep-receipt-arm");return;
     }
     const char *error=submitNetworkCE(3,_connectionCommand,bytes,s.wmiNext);
@@ -746,6 +750,7 @@ bool Ath10kPCIDevice::restoreNativeMICWindow(){
 }
 
 bool Ath10kPCIDevice::prepareNativeInterface() {
+    _nativeOWEDiscoveryScan=_nativeOWEDiscoveryResuming=false;
     _nativeStopping=false;_nativeReadyRequested=_nativeAbortRequested=_nativeReadyResetSent=false;
     _nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=false;
     _nativeWasUp=_nativeDeauthSent=_nativeJoinFailed=false;
@@ -1630,7 +1635,12 @@ IOReturn Ath10kPCIDevice::nativeCurrentAPInfo(AthNativeOp op,void *data) {
         NativeExtendedBSSInput input{};input.rates=s.ap.rates;input.rateCount=s.ap.rateCount;
         input.htRates=s.htRates;input.htRateCount=s.htEnabled?s.htRateCount:0;
         input.vhtMap=s.vhtEnabled?s.vhtTxMap:0xffff;
-        if(s.secure){input.rsn=s.ap.rsn;input.rsnLength=s.ap.rsnLength;}
+        // WCL stores this field as associated-auth RSN and derives the selected
+        // AKM from it. A beacon may advertise multiple unselected alternatives.
+        if(s.secure && !s.wepSelected && !s.wpa1Selected){
+            if(!s.associationRSNValid || !s.associationRSNLength)return kIOReturnNotReady;
+            input.rsn=s.associationRSN;input.rsnLength=s.associationRSNLength;
+        }
         return nativeExtendedBSS(input,data,0x1e0)?kIOReturnSuccess:kIOReturnBadArgument;}
     default:return kIOReturnUnsupported;
     }
@@ -1825,6 +1835,62 @@ IOReturn Ath10kPCIDevice::nativeContinueRoam(UInt64 now){
     return result;
 }
 
+// Internal transition discovery owns the scan until the transport retires.
+// It never publishes public ScanDone and never grants a second join budget.
+IOReturn Ath10kPCIDevice::nativeBeginOWEDiscovery(AirportWCL::JoinRequest &join,UInt64 now){
+    auto sec=_nativeSecurity;
+    if(!sec || _nativeOWEDiscoveryScan || _nativeOWEDiscoveryResuming ||
+       _nativeRoamPending || _nativeRoamJoinGeneration || !_nativeRadioOn ||
+       !_networkEnabled || powerIOBlocked() || _wmiEvents.rfKill)return kIOReturnNotReady;
+    if(!nativeJoinOwnersRetired())return kIOReturnBusy;
+    if(!Ath10k::regulatoryScanCount(&_regulatory,~UInt64(0)) ||
+       now>~UInt64(0)-30000 || _wmiScan.generation==~UInt32(0))return kIOReturnNotReady;
+    sec->reset();
+    if(!sec->oweDiscovery.begin(join,sec->candidates,_nativeMACCurrent,now,now+30000))return kIOReturnNotReady;
+    AirportWCL::ScanRequest scan{};const auto owner=sec->oweDiscovery.generation();
+    const UInt32 generation=_wmiScan.generation+1;
+    if(!sec->oweDiscovery.prepareScan(owner,_nativeMACCurrent,now,scan) ||
+       !sec->oweDiscovery.bindScan(owner,_nativeMACCurrent,now,generation)){
+        sec->oweDiscovery.clear();return kIOReturnNotReady;
+    }
+    Ath10k::resetInPlace(_wmiScan);_wmiScan.generation=generation;
+    _wmiScan.id=0xa000|((0x36+generation)&0xfff);Ath10k::resetInPlace(_wmiBSS);
+    _nativeScan=scan;_nativeScanPending=_nativeOWEDiscoveryScan=true;
+    _nativeScanResultIndex=_nativeScanResultsEmitted=0;_nativeScanStreamed=false;
+    _nativeJoin=join;AthSecurity::wipe(_nativeJoin.key,sizeof(_nativeJoin.key));
+    _nativeJoinPending=true;_nativeJoinDeadline=now+30000;
+    _nativeAssocSent=_nativeBeaconSent=_nativeJoinBSSSent=_nativeLinkUpSent=_nativeJoinFailed=false;
+    setProperty("Ath10kNativeJoinReason","owe-transition-discovery");requestNativeService();
+    return kIOReturnSuccess;
+}
+void Ath10kPCIDevice::serviceNativeOWEDiscovery(UInt64 now){
+    if(!_nativeOWEDiscoveryScan)return;
+    auto sec=_nativeSecurity;
+    const bool failed=!sec || !sec->oweDiscovery.active() || !_nativeJoinPending || _nativeJoinFailed ||
+        _nativeAbortRequested || _nativeStopping || !_nativeRadioOn || !_networkEnabled ||
+        !_wmiLive.active || powerIOBlocked() || _wmiEvents.rfKill ||
+        (sec && !sec->oweDiscovery.current(sec->oweDiscovery.generation(),_nativeMACCurrent,now));
+    if(failed || _wmiScan.failed || _wmiScan.cancelRequested)_wmiScan.cancelRequested=true;
+    // Completion alone does not release CE descriptors, credits or RX buffers.
+    if(!_wmiScan.completed || _wmiScan.txOwned || _wmi.credits.outstanding ||
+       _connection.wmiOwned || _connection.txOwned || _rxSetup.pendingMPDUs)return;
+    AirportWCL::JoinRequest join{};
+    const UInt64 deadline=_nativeJoinDeadline;
+    const bool resume=sec && sec->oweDiscovery.finish(sec->oweDiscovery.generation(),_nativeMACCurrent,now,
+        _wmiScan.generation,true,failed || _wmiScan.failed || _wmiScan.cancelRequested,sec->candidates,join);
+    if(sec)sec->oweDiscovery.clear();
+    _nativeOWEDiscoveryScan=_nativeScanPending=false;_nativeBSSBytes=0;
+    if(!_nativeJoinPending){AthSecurity::wipe(&join,sizeof(join));return;}
+    IOReturn result=kIOReturnNotReady;
+    if(resume){
+        _nativeJoinPending=false;_nativeOWEDiscoveryResuming=true;
+        result=nativeBeginJoin(join);_nativeOWEDiscoveryResuming=false;
+        _nativeJoinPending=true;_nativeJoinDeadline=deadline;
+    }
+    AthSecurity::wipe(&join,sizeof(join));
+    if(result!=kIOReturnSuccess){_nativeJoinFailed=true;setProperty("Ath10kNativeJoinReason","owe-transition-discovery-failed");}
+}
+
 // Shared radio-gated admission for decoded macOS requests and prepared roaming
 // requests. Consumes/wipes the supplied credential copy on every return path.
 IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
@@ -1868,7 +1934,9 @@ IOReturn Ath10kPCIDevice::nativeBeginJoin(AirportWCL::JoinRequest &join){
             if(const char *error=AthNative::prepareOWETransitionJoin(join,_nativeSecurity->candidates,
                 Ath10k::uptimeNS()/1000000u,join,target)){
                 setProperty("Ath10kNativeJoinReason",error);
-                AthSecurity::wipe(&join,sizeof(join));return kIOReturnNotReady;
+                const IOReturn result=(!strcmp(error,"owe-transition-peer-missing") || !strcmp(error,"owe-transition-peer-stale"))?
+                    nativeBeginOWEDiscovery(join,Ath10k::uptimeNS()/1000000u):kIOReturnNotReady;
+                AthSecurity::wipe(&join,sizeof(join));return result;
             }
             authCandidate=&_nativeSecurity->candidates.bss.entries[target];
         }
@@ -2498,6 +2566,10 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
             }
         }
     }
+    if(_nativeOWEDiscoveryScan){
+        serviceNativeOWEDiscovery(now);
+        if(_nativeOWEDiscoveryScan)return;
+    }
     if(_nativeAbortRequested && !_nativeRoamPending && !_nativeRoamJoinGeneration && post(AirportWCL::JoinAbortComplete,nullptr,0))_nativeAbortRequested=false;
 
     if(_nativeScanPending){
@@ -2677,6 +2749,33 @@ void Ath10kPCIDevice::serviceNativeNotifications(UInt64 now) {
                     sec->eapOwner.finishReplacement(sec->eapOwner.generation(),s.local,s.bssid,now);
                 sec->ptkUpdatePending=false;sec->ptkUpdateSince=0;
             }
+        }
+    }
+    // Installed eapolclient follows two actual IOService parents from en1.
+    // Our legacy BSD and native interfaces are siblings, so stock key-done on
+    // the native interface cannot reach that subscription. Bridge only the
+    // completed current EAP generation, never early LinkUp or generic changes.
+    if(sec){
+        const bool authorized=up && associated && s.portAuthorized && s.securityPhase==5 &&
+            !s.cancelRequested && s.disconnect==Ath10k::DisconnectStage::None && !s.rekeyKind &&
+            !sec->replyPending && !sec->keysPending && !sec->authorizePending && !sec->ptkUpdatePending &&
+            !sec->supplicant.pairwisePending() && !_nativeJoinPending && !_nativeJoinFailed &&
+            _nativeLinkUpSent && _nativeBeaconSent &&
+            (!s.pmfRequired || (sec->pmfSession && sec->pmfSession->portReady()));
+        const UInt64 generation=sec->eapOwner.generation();
+        if(sec->eapOwner.completionExpired(generation,s.local,s.bssid,now)){
+            s.error="native-eap-completion-timeout";s.cancelRequested=true;s.portAuthorized=false;
+        }else if(sec->eapOwner.beginCompletionAttempt(generation,s.local,s.bssid,now,authorized)){
+            auto parent=_networkInterface?_networkInterface->copyParentEntry(gIOServicePlane):nullptr;
+            auto ancestor=parent?parent->copyParentEntry(gIOServicePlane):nullptr;
+            auto target=OSDynamicCast(IOService,ancestor);
+            // A topology that already delivers stock key-done needs no bridge.
+            const IOReturn result=!target?kIOReturnNotAttached:target==_nativeInterface?
+                kIOReturnSuccess:target->messageClients(kIOMessageServicePropertyChange);
+            if(result==kIOReturnSuccess)
+                sec->eapOwner.completionNotified(generation,s.local,s.bssid,now,authorized);
+            if(ancestor)ancestor->release();
+            if(parent)parent->release();
         }
     }
     const int quality=up && s.signalDbm!=INT32_MIN?(s.signalDbm>=-70?100:(s.signalDbm>=-85?50:20)):-2;

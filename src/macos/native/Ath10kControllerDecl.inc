@@ -31,6 +31,8 @@ public:
     IOReturn nativeRoamCacheRequest(void *);
     bool nativeRetainSystemLink();
     IOReturn nativeBeginJoin(AirportWCL::JoinRequest &);
+    IOReturn nativeBeginOWEDiscovery(AirportWCL::JoinRequest &,UInt64);
+    void serviceNativeOWEDiscovery(UInt64);
     bool nativeJoinOwnersRetired(bool retainedPublication=false) const;
     IOReturn nativeContinueRoam(UInt64);
     IOReturn nativeDisconnectForRoam(UInt64);
@@ -124,6 +126,7 @@ private:
     CCStream *_nativeFaultStream=nullptr;
     CCFaultReporter *_nativeCoreFault=nullptr;
     IO80211FaultReporter *_nativeFault=nullptr;
+    bool _nativeOWEDiscoveryScan=false,_nativeOWEDiscoveryResuming=false;
     bool _nativeRadioOn=true,_nativeScanPending=false,_nativeJoinPending=false;
     bool _nativeAssocSent=false,_nativeBeaconSent=false,_nativeWasUp=false;
     bool _nativeJoinBSSSent=false,_nativeLinkUpSent=false,_nativeDeauthSent=false,_nativeJoinFailed=false;

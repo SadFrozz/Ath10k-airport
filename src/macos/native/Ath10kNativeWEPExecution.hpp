@@ -24,6 +24,7 @@ public:
     State state() const {return state_;}
     uint64_t generation() const {return program_.generation;}
     uint64_t ticket() const {return program_.ticket;}
+    uint16_t peerID() const {return peer_;}
     uint8_t operation() const {return operation_;}
     uint8_t expectedReceipt() const {return expected_;}
     bool begin(const EAPOwner &owner,const uint8_t *station,const uint8_t *peer,

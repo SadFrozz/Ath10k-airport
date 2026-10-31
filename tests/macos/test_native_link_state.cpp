@@ -35,7 +35,24 @@ static void associated(Ath10kPCIDevice &d){
     s.beaconFrameBytes=36;s.beaconFrame[0]=0x80;
     memcpy(s.beaconFrame+10,ap,6);memcpy(s.beaconFrame+16,ap,6);
 }
+static void selectedAssociationReporting(){
+ auto d=std::make_unique<Ath10kPCIDevice>();associated(*d);auto &s=d->_connection;
+ s.secure=true;s.securityAKM=6;s.groupCipher=s.pairCipher=4;
+ // AP advertisement is PSK; retained local selection is PSK-SHA256.
+ size_t n=0;assert(AthSecurity::buildSelectedStationRSN(4,4,2,s.ap.rsn,sizeof(s.ap.rsn),n));s.ap.rsnLength=n;
+ UInt8 out[0x1e0];memset(out,0xa5,sizeof(out));
+ assert(d->nativeCurrentAPInfo(AthNativeOp::getWCL_EXTENDED_BSS_INFO,out)==kIOReturnNotReady);
+ for(auto b:out)assert(b==0xa5);
+ assert(AthSecurity::buildSelectedStationRSN(4,4,6,s.associationRSN,sizeof(s.associationRSN),n));
+ s.associationRSNLength=n;s.associationRSNValid=true;
+ assert(d->nativeCurrentAPInfo(AthNativeOp::getWCL_EXTENDED_BSS_INFO,out)==kIOReturnSuccess);
+ AthSecurity::RSNInfo info{};assert(AthSecurity::parseRSN(out+0xdd,n,info));assert(info.akms==(1u<<6));
+ s.cancelRequested=true;memset(out,0xa5,sizeof(out));
+ assert(d->nativeCurrentAPInfo(AthNativeOp::getWCL_EXTENDED_BSS_INFO,out)==kIOReturnNotReady);
+ for(auto b:out)assert(b==0xa5);
+}
 int main(){
+ selectedAssociationReporting();
     using L=Ath10k::LinkStage;using D=Ath10k::DisconnectStage;
     const AthNativeOp queries[]={AthNativeOp::getWCL_BSS_INFO,AthNativeOp::getBEACON_INFO,AthNativeOp::getWCL_EXTENDED_BSS_INFO};
     for(unsigned state=0;state<9;++state){

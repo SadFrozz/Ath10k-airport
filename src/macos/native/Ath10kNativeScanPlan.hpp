@@ -8,10 +8,15 @@ struct NativeScanPlan {
     Ath10k::WMIScanSSID ssids[10]{};
     UInt32 count=0;
     bool active=false;
+    UInt8 bssid[6]{};
 };
 inline bool nativeScanPlan(const AirportWCL::ScanRequest &request,NativeScanPlan &out) {
     if(request.ssidLength>32 || request.ssids.count>10 || request.type<1 || request.type>4)return false;
     NativeScanPlan plan{};
+    bool zero=true,broadcast=true;
+    for(unsigned i=0;i<6;++i){zero=zero && request.bssid[i]==0;broadcast=broadcast && request.bssid[i]==255;}
+    if(!zero && !broadcast && (request.bssid[0]&1))return false;
+    for(unsigned i=0;i<6;++i)plan.bssid[i]=zero?255:request.bssid[i];
     plan.active=request.type==1 || request.type==4;
     if(request.ssids.count){
         if(request.ssidLength)return false; // Stock serializer rejects mixed forms.

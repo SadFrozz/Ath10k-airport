@@ -1,6 +1,6 @@
 # Native macOS EAP integration contract
 
-Status: local experimental integration, disabled by default and not hardware verified. This is separate from implemented
+Status: experimental integration, disabled by default. Installed1.0.113 has bounded EAP-TLS/traffic evidence but failed connection stability; the status map records exact hardware scope. This is separate from implemented
 WPA3-Personal SAE/PMF and from the local PTK-notification timeout correction.
 
 ## One implementation and validation group
@@ -624,3 +624,10 @@ rules for Enhanced Open. Reset/cancellation cannot update the next profile.
 Reference behavior inspected: wpa_supplicant wpas_glue.c, commit
 59fa4b44b84301ac01b937a6a0e687cf5dd3593a, transition-disable consumer; Enterprise
 sets required PMF and removes legacy protection. No upstream source copied.
+
+
+## Initial completion subscription and bounded delivery
+
+The installed24G90 eapolclient subscribes on the second actual IOService-plane ancestor of the BSD interface. A getProvider override does not change that registry ancestry. Preserve preauthorization EAP transport and stock native events, but deliver the current authorized EAP completion to the actual subscriber when the native interface is not that target. Never use generic property changes, initial LinkUp or PMK consumption as authorization evidence. Replacement and initial generations must not share completion ownership; GTK-only changes create no new EAP generation.
+
+Delivery failure must retain the same generation and use a fixed five-second budget from first eligible delivery, matching the existing native pairwise-event retry policy. Retry, temporary readiness loss and missing registry target must not reset that budget. Expiry or clock rollback cancels the association and closes the controlled port; no later success revives it. Balance temporary registry references on every path. Source fixtures and native compilation do not establish successful OS consumption or stable hardware behavior.

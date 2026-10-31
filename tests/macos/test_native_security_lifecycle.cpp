@@ -2,6 +2,7 @@
 #include <cstring>
 #include <vector>
 #include "../../src/macos/native/Ath10kNativeCandidates.hpp"
+#include "../../src/macos/native/Ath10kNativeOWEDiscovery.hpp"
 #include "../../src/macos/native/Ath10kNativeProfile.hpp"
 #include "../../src/macos/native/Ath10kNativeEAPOwner.hpp"
 #include "../../src/macos/native/Ath10kNativeWEPExecution.hpp"
